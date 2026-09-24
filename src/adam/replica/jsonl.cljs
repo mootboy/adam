@@ -3,6 +3,7 @@
             ["node:fs" :refer [closeSync openSync readSync statSync]]))
 
 (def ^:private chunk-bytes (* 64 1024))
+(def ^:private max-session-header-bytes (* 1024 1024))
 
 (defn- session-error
   ([path message]
@@ -38,6 +39,43 @@
 
 (defn- digest-copy [^js hash]
   (-> (.copy hash) (.digest "hex")))
+
+(defn read-session-header [path]
+  (let [file-descriptor (openSync path "r")]
+    (try
+      (let [header-bytes
+            (loop [chunks []
+                   total-bytes 0]
+              (when (> total-bytes max-session-header-bytes)
+                (throw (session-error path 1
+                                      (str "session header exceeds "
+                                           max-session-header-bytes " bytes"))))
+              (let [buffer-size (min chunk-bytes
+                                     (inc (- max-session-header-bytes total-bytes)))
+                    buffer (js/Buffer.allocUnsafe buffer-size)
+                    bytes-read (readSync file-descriptor buffer 0 buffer-size nil)]
+                (if (zero? bytes-read)
+                  (js/Buffer.concat (clj->js chunks) total-bytes)
+                  (let [bytes (.subarray buffer 0 bytes-read)
+                        newline-index (.indexOf bytes 10)]
+                    (if (neg? newline-index)
+                      (recur (conj chunks bytes) (+ total-bytes bytes-read))
+                      (js/Buffer.concat
+                       (clj->js (conj chunks (.subarray bytes 0 newline-index)))
+                       (+ total-bytes newline-index)))))))
+            header-json (.toString header-bytes "utf8")]
+        (when (= "" header-json)
+          (throw (session-error path "missing session header")))
+        (let [header (parse-object header-json path 1)]
+          (when-not (= "session" (aget header "type"))
+            (throw (session-error path 1 "first line must be a session header")))
+          (cond-> {:pi-session-id (required-string (aget header "id") "session id" path 1)
+                   :header-json header-json}
+            (string? (aget header "cwd")) (assoc :cwd (aget header "cwd"))
+            (string? (aget header "parentSession"))
+            (assoc :parent-session (aget header "parentSession")))))
+      (finally
+        (closeSync file-descriptor)))))
 
 (defn scan-file
   ([path]

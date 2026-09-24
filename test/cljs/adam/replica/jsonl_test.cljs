@@ -96,3 +96,14 @@
           (is (= entry (:raw-json (first @entries))))
           (is (= false (:has-final-newline? summary)))
           (is (= (sha-256 contents) (:log-hash summary))))))))
+
+(deftest reads-only-the-bounded-session-header
+  (let [header "{\"type\":\"session\",\"id\":\"parent-1\",\"cwd\":\"/repo\",\"parentSession\":\"/older.jsonl\"}"]
+    (with-session-file
+      (str header "\n" (apply str (repeat 70000 "x")))
+      (fn [path]
+        (is (= {:pi-session-id "parent-1"
+                :header-json header
+                :cwd "/repo"
+                :parent-session "/older.jsonl"}
+               (jsonl/read-session-header path)))))))
