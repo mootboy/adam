@@ -2,7 +2,13 @@
 
 **Aloi Distributed Agent Memory** — a standalone memory and session-graph extension for [Pi](https://pi.dev).
 
-The repository is in its initial bootstrap phase. The current ClojureScript tracer bullet registers `/adam:status`; session replication and memory retrieval will follow incrementally.
+The ClojureScript runtime tracer bullet is complete: compiled code registers `/adam:status` through the packaged JavaScript boundary. Session replication and memory retrieval will follow incrementally under the documented contracts.
+
+## Design documents
+
+- [`docs/architecture.md`](docs/architecture.md) — product boundary, internal layers, consistency, adapters, and query architecture.
+- [`docs/session-replica-contract.md`](docs/session-replica-contract.md) — authority, identity, graph schema, commands, restoration, privacy, and failure semantics.
+- [`docs/acceptance-matrix.md`](docs/acceptance-matrix.md) — deterministic and live acceptance cases for incremental delivery.
 
 ## Development
 
