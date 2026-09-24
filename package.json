@@ -30,5 +30,8 @@
     "extensions": [
       "./extension.js"
     ]
+  },
+  "dependencies": {
+    "neo4j-driver": "^5.28.3"
   }
 }
