@@ -15,9 +15,10 @@
   ],
   "scripts": {
     "build": "shadow-cljs release extension",
-    "clean": "rm -rf dist .shadow-cljs",
-    "test": "npm run build && node --test test/*.test.js",
-    "watch": "shadow-cljs watch extension"
+    "clean": "rm -rf dist target .shadow-cljs",
+    "test": "npm run build && npm run test:cljs && node --test test/*.test.js",
+    "test:cljs": "shadow-cljs compile test",
+    "watch": "shadow-cljs watch extension test"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"

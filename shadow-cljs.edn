@@ -1,4 +1,4 @@
-{:source-paths ["src"]
+{:source-paths ["src" "test/cljs"]
  :builds
  {:extension
   {:target :esm
@@ -6,4 +6,10 @@
    :modules
    {:adam
     {:entries [adam.extension]
-     :exports {start adam.extension/start}}}}}}
+     :exports {start adam.extension/start}}}}
+
+  :test
+  {:target :node-test
+   :output-to "target/tests.cjs"
+   :ns-regexp "-test$"
+   :autorun true}}}
