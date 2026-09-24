@@ -1,4 +1,6 @@
-(ns adam.replica.sync)
+(ns adam.replica.sync
+  (:require [adam.replica.model :as model]
+            [adam.replica.store :as store]))
 
 (def default-batch-bytes (* 4 1024 1024))
 
@@ -102,3 +104,90 @@
             :completion (assoc final-checkpoint
                                :entry-count (:entry-count summary)
                                :log-hash (:log-hash summary))}))))))
+
+(defn- completion-request [session summary checkpoint]
+  {:session session
+   :checkpoint checkpoint
+   :log-bytes (:log-bytes summary)
+   :largest-entry-bytes (:largest-entry-bytes summary)
+   :has-final-newline? (:has-final-newline? summary)})
+
+(defn- record-conflict! [replica session source-file conflict]
+  (let [detail (assoc conflict
+                      :session-id (:id session)
+                      :source-file source-file)]
+    (-> (store/mark-conflict! replica detail)
+        (.then (fn [_]
+                 {:status :conflict
+                  :entries-written 0
+                  :batches-written 0
+                  :conflict detail})))))
+
+(defn sync-scanned-session!
+  [{:keys [summary entries user-uuid source-file current-leaf-id parent identity
+           replica batch-bytes]
+    :or {batch-bytes default-batch-bytes}
+    :as options}]
+  (let [session-options (cond-> {:user-uuid user-uuid
+                                 :source-file source-file}
+                          (contains? options :current-leaf-id)
+                          (assoc :current-leaf-id current-leaf-id)
+                          parent (assoc :parent parent)
+                          identity (assoc :identity identity))
+        session (model/session-from-summary summary session-options)]
+    (-> (store/get-checkpoint! replica (:id session))
+        (.then
+         (fn [checkpoint]
+           (let [plan (plan-sync summary entries checkpoint batch-bytes)]
+             (case (:status plan)
+               :unchanged
+               (-> (store/complete-session!
+                    replica
+                    (completion-request session summary checkpoint))
+                   (.then (fn [_]
+                            {:status :unchanged
+                             :entries-written 0
+                             :batches-written 0})))
+
+               :conflict
+               (record-conflict! replica session source-file (dissoc plan :status))
+
+               :pending
+               (let [batches (:batches plan)
+                     write-chain
+                     (reduce
+                      (fn [promise batch]
+                        (.then
+                         promise
+                         (fn [_]
+                           (store/write-batch!
+                            replica
+                            {:session session
+                             :entries (mapv #(model/entry-from-scan
+                                              user-uuid
+                                              (:pi-session-id summary)
+                                              %)
+                                            (:entries batch))
+                             :checkpoint (:checkpoint batch)}))))
+                      (js/Promise.resolve nil)
+                      batches)]
+                 (-> write-chain
+                     (.then
+                      (fn [_]
+                        (store/complete-session!
+                         replica
+                         (completion-request session summary (:completion plan)))))
+                     (.then
+                      (fn [_]
+                        {:status :mirrored
+                         :entries-written (reduce + 0 (map #(count (:entries %)) batches))
+                         :batches-written (count batches)}))))))))
+        (.catch
+         (fn [error]
+           (if (store/immutable-entry-conflict? error)
+             (record-conflict!
+              replica
+              session
+              source-file
+              (assoc (ex-data error) :reason :payload-mismatch))
+             (js/Promise.reject error)))))))
