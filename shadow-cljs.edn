@@ -1,0 +1,9 @@
+{:source-paths ["src"]
+ :builds
+ {:extension
+  {:target :esm
+   :output-dir "dist"
+   :modules
+   {:adam
+    {:entries [adam.extension]
+     :exports {start adam.extension/start}}}}}}

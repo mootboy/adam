@@ -1,0 +1,33 @@
+{
+  "name": "@aloi/adam",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Aloi Distributed Agent Memory for Pi",
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "files": [
+    "dist/",
+    "extension.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "shadow-cljs release extension",
+    "clean": "rm -rf dist .shadow-cljs",
+    "test": "npm run build && node --test test/*.test.js",
+    "watch": "shadow-cljs watch extension"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "shadow-cljs": "3.5.3"
+  },
+  "pi": {
+    "extensions": [
+      "./extension.js"
+    ]
+  }
+}
