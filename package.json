@@ -10,8 +10,7 @@
   "files": [
     "dist/",
     "extension.js",
-    "README.md",
-    "LICENSE"
+    "README.md"
   ],
   "scripts": {
     "build": "shadow-cljs release extension",
