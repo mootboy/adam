@@ -11,7 +11,12 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 | Compiled package loads through `extension.js` | Pi factory executes ClojureScript output |
 | `/adam:status` is invoked | Configuration, connection, identity, active-session, last-sync, and bounded error state are displayed |
 | Java is absent at runtime | Committed ESM output still loads and executes |
-| npm package is inspected | Runtime boundary, compiled output, and docs are present; source compilation is not required |
+| npm package is inspected | Runtime boundary, compiled output, changelog, and docs are present; source compilation is not required |
+| Packed tarball is installed in a clean consumer | Extension loads and registers its public surface without ClojureScript source compilation |
+| Supported Node matrix runs in CI | Deterministic build, tests, package smoke, and committed `dist` verification pass on Node 22.19 and current Node 24 |
+| Ephemeral Neo4j CI job runs | The live integration suite passes without external service credentials |
+| Release tag differs from package or lockfile version | Release is rejected before an artifact is created |
+| A valid `v*` tag passes all validation | One GitHub Release contains the tested tarball and its SHA-256 checksum |
 
 ## Configuration and identity
 

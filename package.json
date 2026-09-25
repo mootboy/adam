@@ -1,6 +1,6 @@
 {
   "name": "@mootboy/adam",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "A Distributed Agent Memory for Pi",
   "type": "module",
@@ -11,7 +11,8 @@
     "dist/",
     "docs/",
     "extension.js",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "shadow-cljs release extension",
@@ -19,7 +20,9 @@
     "test": "npm run build && npm run test:cljs && node --test test/*.test.js",
     "test:cljs": "shadow-cljs compile test",
     "test:neo4j": "shadow-cljs compile neo4j-test",
-    "watch": "shadow-cljs watch extension test"
+    "watch": "shadow-cljs watch extension test",
+    "check:dist": "git diff --exit-code -- dist/adam.js",
+    "ci": "npm test && npm run check:dist"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
@@ -34,5 +37,16 @@
   },
   "dependencies": {
     "neo4j-driver": "^5.28.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/mootboy/adam.git"
+  },
+  "homepage": "https://github.com/mootboy/adam#readme",
+  "bugs": {
+    "url": "https://github.com/mootboy/adam/issues"
+  },
+  "engines": {
+    "node": ">=22.19.0"
   }
 }
