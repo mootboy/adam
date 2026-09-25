@@ -2,6 +2,10 @@
 
 This directory is adam's repository-local issue tracker. Use one Markdown file per issue so plans, decisions, and completion evidence remain versioned with the code.
 
+## Issues
+
+- [`001`](001-long-working-pause-after-turns.md) — Long “Working” pause after turns (`proposed`, bug)
+
 ## Naming
 
 Use `<number>-<short-kebab-case-title>.md`, for example:
