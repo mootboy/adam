@@ -83,7 +83,7 @@ test("the release tarball is complete and runs without source compilation", asyn
     assert.equal(manifest.private, true);
     assert.equal(manifest.license, "GPL-3.0-only");
     assert.equal(manifest.engines.node, ">=22.19.0");
-    assert.equal(manifest.repository.url, "git+ssh://git@github.com/mootboy/adam.git");
+    assert.equal(manifest.repository.url, "git+https://github.com/mootboy/adam.git");
 
     const savedEnvironment = new Map(neo4jEnvironment.map((key) => [key, process.env[key]]));
     try {

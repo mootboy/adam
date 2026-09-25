@@ -51,7 +51,7 @@ Install a stable GitHub release tag:
 pi install git:github.com/mootboy/adam@v0.1.1
 ```
 
-The repository is currently private, so Git access requires authorization. For local development, build and load the checkout directly:
+The repository is public and releases are distributed through GitHub. For local development, build and load the checkout directly:
 
 ```bash
 npm run build
@@ -85,7 +85,7 @@ With valid configuration, adam lazily initializes the graph and reconciles persi
 
 ## Releases
 
-A `v*` tag must exactly match the versions in `package.json` and `package-lock.json`. The release workflow reruns deterministic and live Neo4j validation, verifies committed generated output, smoke-tests the exact package tarball, and publishes a GitHub Release containing that tarball and its SHA-256 checksum. Public npm publication remains disabled while adam is private.
+A `v*` tag must exactly match the versions in `package.json` and `package-lock.json`. The release workflow reruns deterministic and live Neo4j validation, verifies committed generated output, smoke-tests the exact package tarball, and publishes a GitHub Release containing that tarball and its SHA-256 checksum. Public npm publication remains disabled; GitHub is the distribution channel for now.
 
 ## License
 
