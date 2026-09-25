@@ -85,6 +85,12 @@ With valid configuration, adam lazily initializes the graph and reconciles persi
 
 ## Releases
 
+Cut a release with npm, which runs the full deterministic check, commits the version bump, tags it, and pushes:
+
+```bash
+npm version patch   # or minor / major
+```
+
 A `v*` tag must exactly match the versions in `package.json` and `package-lock.json`. The release workflow reruns deterministic and live Neo4j validation, verifies committed generated output, smoke-tests the exact package tarball, and publishes a GitHub Release containing that tarball and its SHA-256 checksum. Public npm publication remains disabled; GitHub is the distribution channel for now.
 
 ## License
