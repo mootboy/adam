@@ -10,6 +10,7 @@ All notable changes to adam are documented here.
 - Tag-driven GitHub Releases containing the tested package tarball and its SHA-256 checksum.
 - A package-consumer smoke test that installs and loads the exact npm tarball without source compilation.
 - Automated npm and GitHub Actions dependency update configuration.
+- GNU General Public License version 3 licensing.
 
 ### Changed
 

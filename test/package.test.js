@@ -69,6 +69,7 @@ test("the release tarball is complete and runs without source compilation", asyn
       "dist/adam.js",
       "README.md",
       "CHANGELOG.md",
+      "LICENSE",
       "docs/architecture.md",
       "docs/session-replica-contract.md",
       "docs/acceptance-matrix.md",
@@ -80,6 +81,7 @@ test("the release tarball is complete and runs without source compilation", asyn
     const manifest = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
     assert.equal(manifest.name, "@mootboy/adam");
     assert.equal(manifest.private, true);
+    assert.equal(manifest.license, "GPL-3.0-only");
     assert.equal(manifest.engines.node, ">=22.19.0");
     assert.equal(manifest.repository.url, "git+ssh://git@github.com/mootboy/adam.git");
 

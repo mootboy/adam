@@ -2,6 +2,7 @@
   "name": "@mootboy/adam",
   "version": "0.1.1",
   "private": true,
+  "license": "GPL-3.0-only",
   "description": "A Distributed Agent Memory for Pi",
   "type": "module",
   "keywords": [
@@ -12,7 +13,8 @@
     "docs/",
     "extension.js",
     "README.md",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "shadow-cljs release extension",

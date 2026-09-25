@@ -85,4 +85,8 @@ With valid configuration, adam lazily initializes the graph and reconciles persi
 
 ## Releases
 
-A `v*` tag must exactly match the versions in `package.json` and `package-lock.json`. The release workflow reruns deterministic and live Neo4j validation, verifies committed generated output, smoke-tests the exact package tarball, and publishes a GitHub Release containing that tarball and its SHA-256 checksum. Public npm publication remains disabled while adam is private and unlicensed.
+A `v*` tag must exactly match the versions in `package.json` and `package-lock.json`. The release workflow reruns deterministic and live Neo4j validation, verifies committed generated output, smoke-tests the exact package tarball, and publishes a GitHub Release containing that tarball and its SHA-256 checksum. Public npm publication remains disabled while adam is private.
+
+## License
+
+adam is licensed under the [GNU General Public License, version 3](LICENSE) (`GPL-3.0-only`).
