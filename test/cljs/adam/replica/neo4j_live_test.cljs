@@ -32,6 +32,8 @@
               directory (mkdtempSync (join (tmpdir) "adam-neo4j-live-"))
               parent-path (join directory "parent.jsonl")
               child-path (join directory "child.jsonl")
+              parent-first-path (join directory "parent-first.jsonl")
+              child-after-parent-path (join directory "child-after-parent.jsonl")
               parent-header (js/JSON.stringify
                              #js {:type "session" :version 3
                                   :id "parent-live" :cwd "/repo"})
@@ -40,7 +42,18 @@
                                  :id "child-live" :cwd "/repo"
                                  :parentSession parent-path})
               child-entry "{\"type\":\"message\",\"id\":\"entry-live\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"hello\"}}"
+              parent-first-header (js/JSON.stringify
+                                   #js {:type "session" :version 3
+                                        :id "parent-first-live" :cwd "/repo"})
+              child-after-parent-header
+              (js/JSON.stringify
+               #js {:type "session" :version 3
+                    :id "child-after-parent-live" :cwd "/repo"
+                    :parentSession parent-first-path})
+              child-after-parent-entry "{\"type\":\"message\",\"id\":\"entry-after-parent\",\"parentId\":null}"
               child-session-id (identity/session-urn user-uuid "child-live")
+              child-after-parent-session-id
+              (identity/session-urn user-uuid "child-after-parent-live")
               finish!
               (fn [error]
                 (-> (.run query-session
@@ -58,6 +71,10 @@
                               (done))))))))]
           (writeFileSync parent-path (str parent-header "\n") "utf8")
           (writeFileSync child-path (str child-header "\n" child-entry "\n") "utf8")
+          (writeFileSync parent-first-path (str parent-first-header "\n") "utf8")
+          (writeFileSync child-after-parent-path
+                         (str child-after-parent-header "\n" child-after-parent-entry "\n")
+                         "utf8")
           (-> (store/initialize! replica {:id user-id})
               (.then
                (fn [_]
@@ -90,5 +107,41 @@
                (fn [^js result]
                  (let [^js record (first (array-seq (.-records result)))]
                    (is (= "parent-live" (.get record "parentId"))))
+                 (sync/sync-session-file!
+                  {:path parent-first-path
+                   :user-uuid user-uuid
+                   :replica replica})))
+              (.then
+               (fn [_]
+                 (sync/sync-session-file!
+                  {:path child-after-parent-path
+                   :user-uuid user-uuid
+                   :current-leaf-id "entry-after-parent"
+                   :replica replica})))
+              (.then
+               (fn [_]
+                 (sync/sync-session-file!
+                  {:path child-after-parent-path
+                   :user-uuid user-uuid
+                   :current-leaf-id "entry-after-parent"
+                   :replica replica})))
+              (.then
+               (fn [result]
+                 (is (= :unchanged (:status result)))
+                 (store/read-session! replica child-after-parent-session-id)))
+              (.then
+               (fn [restored]
+                 (is (= [child-after-parent-entry]
+                        (mapv :raw-json (:entries restored))))
+                 (.run query-session
+                       "MATCH (:AdamSession {id: $childId})-[:FORKED_FROM]->(parent:AdamSession)
+                        RETURN parent.piSessionId AS parentId"
+                       #js {:childId child-after-parent-session-id})))
+              (.then
+               (fn [^js result]
+                 (let [records (array-seq (.-records result))
+                       ^js record (first records)]
+                   (is (= 1 (count records)))
+                   (is (= "parent-first-live" (.get record "parentId"))))
                  (finish! nil)))
               (.catch finish!)))))))
