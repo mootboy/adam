@@ -11,5 +11,11 @@
   :test
   {:target :node-test
    :output-to "target/tests.cjs"
-   :ns-regexp "-test$"
+   :ns-regexp "(?<!live)-test$"
+   :autorun true}
+
+  :neo4j-test
+  {:target :node-test
+   :output-to "target/neo4j-tests.cjs"
+   :ns-regexp "-live-test$"
    :autorun true}}}

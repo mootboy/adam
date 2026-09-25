@@ -18,6 +18,7 @@
     "clean": "rm -rf dist target .shadow-cljs",
     "test": "npm run build && npm run test:cljs && node --test test/*.test.js",
     "test:cljs": "shadow-cljs compile test",
+    "test:neo4j": "shadow-cljs compile neo4j-test",
     "watch": "shadow-cljs watch extension test"
   },
   "peerDependencies": {
