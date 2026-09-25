@@ -128,6 +128,35 @@
              (is false (.-stack error))
              (done)))))))
 
+(deftest import-clears-progress-status-with-undefined
+  (async done
+    (let [{:keys [pi registered]} (fake-pi)
+          notifications (atom [])
+          statuses (atom [])
+          ctx (base-context notifications)]
+      (aset (aget ctx "ui") "confirm" (fn [_title _message] (js/Promise.resolve true)))
+      (aset (aget ctx "ui") "setStatus"
+            (fn [key text]
+              (swap! statuses conj [key text])))
+      (commands/register!
+       pi
+       {:config {:enabled? true}
+        :list-sessions! (fn [_all? _cwd _session-dir]
+                          (js/Promise.resolve [{:path "/sessions/one.jsonl"}]))
+        :import-file! (fn [_path _ctx]
+                        (js/Promise.resolve {:status :mirrored}))})
+      (-> (js/Promise.resolve nil)
+          (.then (fn [_] ((command-handler registered "adam:import") "--all" ctx)))
+          (.then
+           (fn [_]
+             (is (= "Importing 1/1" (second (first @statuses))))
+             (is (undefined? (second (last @statuses))))
+             (done)))
+          (.catch
+           (fn [error]
+             (is false (.-stack error))
+             (done)))))))
+
 (deftest resume-prefers-a-conflicted-authoritative-local-session
   (async done
     (let [{:keys [pi registered]} (fake-pi)

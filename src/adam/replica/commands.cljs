@@ -157,7 +157,7 @@
                                            (invoke (aget ctx "ui")
                                                    "setStatus"
                                                    "adam-import"
-                                                   nil)
+                                                   js/undefined)
                                            (let [{:keys [mirrored unchanged conflict malformed failed]} @counts
                                                  warning? (pos? (+ conflict malformed failed))]
                                              (notify!

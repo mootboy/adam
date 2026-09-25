@@ -14,7 +14,22 @@ test("the compiled ClojureScript extension registers and serves adam:status", as
     },
   };
 
-  await adam(pi);
+  const neo4jEnvironment = [
+    "ADAM_NEO4J_URI",
+    "ADAM_NEO4J_USERNAME",
+    "ADAM_NEO4J_PASSWORD",
+    "ADAM_NEO4J_DATABASE",
+  ];
+  const savedEnvironment = new Map(neo4jEnvironment.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of neo4jEnvironment) delete process.env[key];
+    await adam(pi);
+  } finally {
+    for (const [key, value] of savedEnvironment) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 
   const status = commands.get("adam:status");
   assert.ok(status, "expected adam:status to be registered");
