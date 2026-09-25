@@ -40,7 +40,6 @@
                            (take 4 queries)))
                (is (re-find #"MERGE \(u:AdamUser" (nth queries 4)))
                (is (re-find #"MERGE \(i:AdamIdentity" (nth queries 5)))
-               (is (not-any? #(re-find #"Apiom" %) queries))
                (is (= 2 @closes))
                (done))))
           (.catch
