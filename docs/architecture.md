@@ -118,7 +118,7 @@ One shared service owns repository discovery, path validation, bounded lookup, c
 - `/adam:context <path>` is the human-facing command.
 - `adam_file_context({ path })` is the smaller model-facing adapter.
 
-Both are explicit and read-only. adam does not inject retrieved memory automatically and does not provide semantic or global search in the first release.
+Both are explicit and read-only. The implemented shared service in `src/adam/knowledge/query.cljs` owns Git/worktree discovery, repository-bounded path validation, Neo4j lookup, content compaction, and provenance rendering. `src/adam/knowledge/surfaces.cljs` keeps the command at 20 results and probes 11 rows for the tool's 10-result bound, then applies independent 200-line and 12,000-byte output caps with explicit omission notices. Backend failures remain invocation-local so a later call can retry. adam does not inject retrieved memory automatically and does not provide semantic or global search in the first release.
 
 ## Failure isolation
 

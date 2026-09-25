@@ -2,7 +2,7 @@
 
 **Aloi Distributed Agent Memory** — a standalone memory and session-graph extension for [Pi](https://pi.dev).
 
-adam currently provides automatic, lossless Neo4j session replication with resumable checkpoints, complete entry trees, selected-leaf preservation, canonical fork lineage, historical import, local-first session restoration, deterministic repository/file evidence across Git worktrees, and structural adaptation of persisted `pi-observational-memory` entries. File-context retrieval is being delivered next under the documented contracts.
+adam currently provides automatic, lossless Neo4j session replication with resumable checkpoints, complete entry trees, selected-leaf preservation, canonical fork lineage, historical import, local-first session restoration, deterministic repository/file evidence across Git worktrees, structural adaptation of persisted `pi-observational-memory` entries, and bounded file-context retrieval for humans and agents.
 
 ## Design documents
 
@@ -55,7 +55,10 @@ Then run:
 /adam:import
 /adam:import --all
 /adam:resume
+/adam:context src/adam/knowledge/query.cljs
 ```
+
+Agents can call `adam_file_context({ path })` for explicit, provenance-bearing retrieval of memories linked to a known repository file. The command returns up to 20 memories; the agent tool returns up to 10 and applies fixed item, line, and byte bounds. Both accept repository-relative, workspace-relative, or absolute paths and do not perform semantic or global search.
 
 Import requires interactive confirmation. Resume lists the exact-cwd union of local and remote sessions, always prefers existing local JSONL, and only materializes complete, validated remote-only sessions without overwriting files.
 

@@ -2,6 +2,7 @@
   (:require [adam.knowledge.index :as knowledge-index]
             [adam.knowledge.repository :as knowledge-repository]
             [adam.knowledge.store :as knowledge-store]
+            [adam.knowledge.surfaces :as knowledge-surfaces]
             [adam.replica.commands :as commands]
             [adam.replica.config :as config]
             [adam.replica.identity :as identity]
@@ -313,6 +314,10 @@
                               false))))))]
                (reset! queue (.then result (fn [_] nil) (fn [_] nil)))
                result)))
+         query-dependencies
+         {:get-store! get-replica!
+          :get-user! get-user!
+          :resolve-repository! resolve-repository!}
          shutdown!
          (fn []
            (-> @queue
@@ -340,7 +345,9 @@
        :get-replica! get-replica!
        :get-user! get-user!
        :list-sessions! (:list-sessions options)})
+     (knowledge-surfaces/register-command! pi query-dependencies)
      (when (:enabled? resolved-config)
+       (knowledge-surfaces/register-tool! pi query-dependencies)
        (doseq [event ["session_start"
                       "turn_end"
                       "session_compact"

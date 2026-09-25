@@ -2,6 +2,7 @@
   (:require [adam.knowledge.evidence :as evidence]
             [adam.knowledge.index :as knowledge-index]
             [adam.knowledge.store :as knowledge-store]
+            [adam.knowledge.surfaces :as knowledge-surfaces]
             [adam.replica.identity :as identity]
             [adam.replica.neo4j :as adam-neo4j]
             [adam.replica.restore :as restore]
@@ -54,6 +55,15 @@
                           {:user-uuid user-uuid :root "/repo"
                            :remote "git@github.com:AloiAI/adam.git"
                            :commit "live-commit" :branch "live" :dirty? true})
+              tools (atom {})
+              _ (knowledge-surfaces/register-tool!
+                 #js {:registerTool (fn [definition]
+                                      (swap! tools assoc
+                                             (aget definition "name") definition))}
+                 {:get-store! #(js/Promise.resolve replica)
+                  :get-user! #(js/Promise.resolve {:user-uuid user-uuid})
+                  :resolve-repository! (fn [_ _] (js/Promise.resolve repository))})
+              file-context-tool (get @tools "adam_file_context")
               parent-first-header (js/JSON.stringify
                                    #js {:type "session" :version 3
                                         :id "parent-first-live" :cwd "/repo"})
@@ -142,29 +152,31 @@
                    :repository repository :current-leaf-id "drop-live"})))
               (.then
                (fn [_]
-                 (.run query-session
-                       "MATCH (:AdamSession {id: $sessionId})-[:HAS_MEMORY]->(observation:AdamObservation)-[:ABOUT]->(file:AdamCodeFile)
-                        MATCH (reflection:AdamReflection)-[:SUPPORTED_BY]->(observation)
-                        OPTIONAL MATCH (observation)-[:SOURCED_FROM]->(source:AdamEntry)
-                        OPTIONAL MATCH (source)-[touch:TOUCHES]->(file)
-                        RETURN observation.memoryId AS observationId, observation.dropped AS dropped,
-                               reflection.memoryId AS reflectionId, file.relativePath AS path,
-                               source.entryId AS entryId, touch.commit AS commit,
-                               touch.branch AS branch, touch.dirty AS dirty"
-                       #js {:sessionId child-session-id})))
+                 (knowledge-store/query-file-memory!
+                  replica user-id (:id repository) "src/live.cljs" 20)))
               (.then
-               (fn [^js result]
-                 (let [records (array-seq (.-records result))
-                       ^js first-record (first records)]
-                   (is (= 1 (count records)))
-                   (is (= "aaaaaaaaaaaa" (.get first-record "observationId")))
-                   (is (= true (.get first-record "dropped")))
-                   (is (= "bbbbbbbbbbbb" (.get first-record "reflectionId")))
-                   (is (= "src/live.cljs" (.get first-record "path")))
-                   (is (= "result-live" (.get first-record "entryId")))
-                   (is (= "live-commit" (.get first-record "commit")))
-                   (is (= "live" (.get first-record "branch")))
-                   (is (= true (.get first-record "dirty"))))
+               (fn [memories]
+                 (let [[observation reflection] memories]
+                   (is (= 2 (count memories)))
+                   (is (= :observation (:kind observation)))
+                   (is (= "aaaaaaaaaaaa" (:memory-id observation)))
+                   (is (= true (:dropped? observation)))
+                   (is (= :reflection (:kind reflection)))
+                   (is (= "bbbbbbbbbbbb" (:memory-id reflection)))
+                   (is (= ["result-live"] (:source-entry-ids observation)))
+                   (is (= [{:entry-id "result-live" :commit "live-commit"
+                            :branch "live" :dirty? true}]
+                          (:source-contexts reflection))))
+                 (.call (aget file-context-tool "execute") file-context-tool
+                        "call-live" #js {:path "src/live.cljs"}
+                        nil nil #js {:cwd "/repo"})))
+              (.then
+               (fn [tool-result]
+                 (let [text (aget (aget (aget tool-result "content") 0) "text")]
+                   (is (= "ok" (aget (aget tool-result "details") "status")))
+                   (is (re-find #"Live file decision" text))
+                   (is (re-find #"Preserve the live decision" text))
+                   (is (re-find #"live @ live-co \(dirty\)" text)))
                  (.run query-session
                        "MATCH (:AdamSession {id: $childId})-[:FORKED_FROM]->(parent:AdamSession)
                         RETURN parent.piSessionId AS parentId"

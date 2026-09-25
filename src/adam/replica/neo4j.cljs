@@ -516,6 +516,32 @@
    :complete? (and (some? (aget properties "entryCount"))
                    (some? (aget properties "logHash")))})
 
+(defn- file-memory-record [record]
+  (let [memory (.-properties (record-get record "memory"))
+        stored-session (.-properties (record-get record "s"))
+        contexts (or (record-get record "sourceContexts") #js [])]
+    {:kind (keyword (str (record-get record "kind")))
+     :memory-id (str (aget memory "memoryId"))
+     :content (str (aget memory "content"))
+     :session-id (str (aget stored-session "id"))
+     :pi-session-id (str (aget stored-session "piSessionId"))
+     :source-entry-ids (->> (or (record-get record "sourceEntryIds") #js [])
+                            array-seq (mapv str) sort vec)
+     :source-contexts
+     (->> (array-seq contexts)
+          (keep (fn [context]
+                  (let [entry-id (aget context "entryId")
+                        commit (aget context "commit")]
+                    (when (and (string? entry-id) (string? commit))
+                      (cond-> {:entry-id entry-id
+                               :commit commit
+                               :dirty? (= true (aget context "dirty"))}
+                        (string? (aget context "branch"))
+                        (assoc :branch (aget context "branch")))))))
+          (sort-by :entry-id)
+          vec)
+     :dropped? (= true (aget memory "dropped"))}))
+
 (defrecord Neo4jSessionReplica [driver database]
   knowledge-store/FileEvidenceStore
   (ensure-file-evidence-schema! [_]
@@ -529,6 +555,39 @@
         (.executeWrite session
                        (fn [tx]
                          (index-file-evidence-transaction! tx projection))))))
+
+  knowledge-store/FileMemoryQueryStore
+  (query-file-memory! [_ user-id repository-id relative-path limit]
+    (with-session!
+      driver
+      database
+      (fn [session]
+        (-> (.run
+             session
+             "MATCH (:AdamUser {id: $userId})-[:OWNS]->(repository:AdamRepository {id: $repositoryId})-[:CONTAINS]->(file:AdamCodeFile {relativePath: $relativePath})
+              MATCH (observation:AdamObservation)-[:ABOUT]->(file)
+              MATCH (s:AdamSession)-[:HAS_MEMORY]->(observation)
+              OPTIONAL MATCH (observation)-[:SOURCED_FROM]->(source:AdamEntry)
+              OPTIONAL MATCH (source)-[touch:TOUCHES]->(file)
+              WITH observation, s, collect(DISTINCT source.entryId) AS sourceEntryIds,
+                   [context IN collect(DISTINCT CASE WHEN touch IS NULL THEN null ELSE {entryId: source.entryId, commit: touch.commit, branch: touch.branch, dirty: touch.dirty} END) WHERE context IS NOT NULL] AS sourceContexts
+              RETURN 'observation' AS kind, observation AS memory, s, sourceEntryIds, sourceContexts
+              UNION ALL
+              MATCH (:AdamUser {id: $userId})-[:OWNS]->(repository:AdamRepository {id: $repositoryId})-[:CONTAINS]->(file:AdamCodeFile {relativePath: $relativePath})
+              MATCH (reflection:AdamReflection)-[:SUPPORTED_BY]->(observation:AdamObservation)-[:ABOUT]->(file)
+              MATCH (s:AdamSession)-[:HAS_MEMORY]->(reflection)
+              OPTIONAL MATCH (observation)-[:SOURCED_FROM]->(source:AdamEntry)
+              OPTIONAL MATCH (source)-[touch:TOUCHES]->(file)
+              WITH reflection, s, collect(DISTINCT source.entryId) AS sourceEntryIds,
+                   [context IN collect(DISTINCT CASE WHEN touch IS NULL THEN null ELSE {entryId: source.entryId, commit: touch.commit, branch: touch.branch, dirty: touch.dirty} END) WHERE context IS NOT NULL] AS sourceContexts
+              RETURN 'reflection' AS kind, reflection AS memory, s, sourceEntryIds, sourceContexts
+              ORDER BY kind, memory.memoryId, s.piSessionId
+              LIMIT $limit"
+             #js {:userId user-id
+                  :repositoryId repository-id
+                  :relativePath relative-path
+                  :limit ((.-int neo4j-driver) limit)})
+            (.then (fn [result] (mapv file-memory-record (records result))))))))
 
   store/SessionReplicaStore
   (initialize! [_ user]

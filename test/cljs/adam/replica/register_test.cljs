@@ -45,21 +45,27 @@
 
 (defn- fake-pi []
   (let [commands (atom {})
+        tools (atom {})
         events (atom {})]
     {:pi #js {:registerCommand (fn [name definition]
                                 (swap! commands assoc name definition))
+              :registerTool (fn [definition]
+                              (swap! tools assoc (aget definition "name") definition))
               :on (fn [event handler]
                     (swap! events assoc event handler))}
      :commands commands
+     :tools tools
      :events events}))
 
 (deftest disabled-registration-keeps-status-available
-  (let [{:keys [pi commands events]} (fake-pi)
+  (let [{:keys [pi commands tools events]} (fake-pi)
         notifications (atom [])]
     (register/register!
      pi
      {:config {:enabled? false :reason "configuration missing"}})
     (is (contains? @commands "adam:status"))
+    (is (contains? @commands "adam:context"))
+    (is (not (contains? @tools "adam_file_context")))
     (is (empty? @events))
     ((aget (get @commands "adam:status") "handler")
      ""
@@ -132,7 +138,7 @@
           closes (atom 0)
           replica (->LifecycleReplica checkpoint initializations writes completions closes
                                       (atom 0) (atom []))
-          {:keys [pi commands events]} (fake-pi)
+          {:keys [pi commands tools events]} (fake-pi)
           notifications (atom [])
           runtime (register/register!
                    pi
@@ -161,6 +167,7 @@
        "utf8")
       (is (contains? @events "session_start"))
       (is (contains? @events "turn_end"))
+      (is (contains? @tools "adam_file_context"))
       (-> (js/Promise.resolve nil)
           (.then (fn [_] ((:synchronize! runtime) ctx)))
           (.then
