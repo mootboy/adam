@@ -2,7 +2,7 @@
 
 **Aloi Distributed Agent Memory** — a standalone memory and session-graph extension for [Pi](https://pi.dev).
 
-adam currently provides automatic, lossless Neo4j session replication with resumable checkpoints, complete entry trees, selected-leaf preservation, canonical fork lineage, historical import, and local-first session restoration. Code-linked memory retrieval is being delivered incrementally under the documented contracts.
+adam currently provides automatic, lossless Neo4j session replication with resumable checkpoints, complete entry trees, selected-leaf preservation, canonical fork lineage, historical import, local-first session restoration, and deterministic repository/file evidence across Git worktrees. Persisted observational-memory adaptation and file-context retrieval are being delivered incrementally under the documented contracts.
 
 ## Design documents
 

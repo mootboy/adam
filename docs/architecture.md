@@ -107,6 +107,8 @@ When a session cwd is a non-Git workspace, the selected branch is searched in se
 
 The projection follows parent links from the recorded current leaf. Abandoned branches remain in the lossless replica but do not contribute current code-memory associations.
 
+This file-evidence layer is implemented in `src/adam/knowledge/evidence.cljs`, `repository.cljs`, `index.cljs`, and `store.cljs`, with lifecycle composition in `src/adam/replica/register.cljs` and Neo4j persistence in `src/adam/replica/neo4j.cljs`. It runs only after successful lossless mirroring, is rebuildable, and reports a healthy waiting state when neither the session cwd nor selected explicit evidence resolves to Git.
+
 ## Query architecture
 
 One shared service owns repository discovery, path validation, bounded lookup, content compaction, provenance rendering, and typed errors.
@@ -122,6 +124,7 @@ Both are explicit and read-only. adam does not inject retrieved memory automatic
 - Neo4j outages leave local Pi work unaffected and are retried later.
 - Malformed JSONL is reported and never repaired automatically.
 - Immutable payload conflicts stop writes for the affected session only.
+- Repository discovery or file-evidence indexing failures are reported separately and never mark successful lossless replication unhealthy.
 - Memory-adapter and file-projection failures do not mark the session mirror invalid.
 - Command and tool failures are bounded to their invocation.
 

@@ -1,10 +1,14 @@
 (ns adam.replica.neo4j
-  (:require [adam.replica.store :as store]
+  (:require [adam.knowledge.store :as knowledge-store]
+            [adam.replica.store :as store]
             [clojure.string :as string]
             ["neo4j-driver" :as neo4j-driver]))
 
 (def ^:private session-labels
   ["AdamUser" "AdamIdentity" "AdamSession" "AdamEntry"])
+
+(def ^:private file-evidence-labels
+  ["AdamRepository" "AdamCodeFile"])
 
 (defn- with-session! [^js driver database f]
   (let [^js session (.session driver #js {:database database})]
@@ -18,7 +22,7 @@
    (js/Promise.resolve nil)
    statements))
 
-(defn ensure-session-constraints! [driver database]
+(defn- ensure-label-constraints! [driver database labels]
   (with-session!
     driver
     database
@@ -30,7 +34,13 @@
           [(str "CREATE CONSTRAINT " (string/lower-case label)
                 "_id_unique IF NOT EXISTS FOR (n:" label ") REQUIRE n.id IS UNIQUE")
            nil])
-        session-labels)))))
+        labels)))))
+
+(defn ensure-session-constraints! [driver database]
+  (ensure-label-constraints! driver database session-labels))
+
+(defn ensure-file-evidence-constraints! [driver database]
+  (ensure-label-constraints! driver database file-evidence-labels))
 
 (defn- initialize-user! [driver database {:keys [id identity]}]
   (with-session!
@@ -310,6 +320,90 @@
            (reject-checkpoint! tx (:id session) (:complete-through-byte-offset checkpoint))
            (update-current-leaf! tx session))))))
 
+(defn- repository-properties [repository]
+  (let [properties #js {:id (:id repository)
+                        :root (:root repository)}]
+    (when-let [remote (:normalized-remote repository)]
+      (aset properties "normalizedRemote" remote))
+    properties))
+
+(defn- file-properties [file]
+  #js {:id (:id file)
+       :repositoryId (:repository-id file)
+       :relativePath (:relative-path file)})
+
+(defn- evidence-properties [evidence]
+  (let [properties #js {:entryId (:entry-id evidence)
+                        :fileId (:file-id evidence)
+                        :commit (:commit evidence)
+                        :dirty (= true (:dirty? evidence))}]
+    (when-let [branch (:branch evidence)]
+      (aset properties "branch" branch))
+    properties))
+
+(defn- index-file-evidence-transaction! [^js tx projection]
+  (let [repository (:repository projection)]
+    (-> (.run
+         tx
+         "MATCH (s:AdamSession {id: $sessionId})-[:HAS_ENTRY]->(entry)
+          OPTIONAL MATCH (entry)-[touch:TOUCHES]->()
+          DELETE touch"
+         #js {:sessionId (:session-id projection)})
+        (.then
+         (fn [_]
+           (.run
+            tx
+            "MATCH (u:AdamUser {id: $userId}), (s:AdamSession {id: $sessionId})
+             OPTIONAL MATCH (s)-[old:WORKED_ON]->()
+             DELETE old
+             WITH u, s
+             MERGE (repository:AdamRepository {id: $repository.id})
+             SET repository.root = $repository.root,
+                 repository.normalizedRemote = $repository.normalizedRemote
+             MERGE (u)-[:OWNS]->(repository)
+             MERGE (s)-[worked:WORKED_ON]->(repository)
+             SET worked.commit = $commit,
+                 worked.branch = $branch,
+                 worked.dirty = $dirty,
+                 worked.extractorVersion = $extractorVersion,
+                 worked.indexedAt = datetime()"
+            #js {:userId (:user-id projection)
+                 :sessionId (:session-id projection)
+                 :repository (repository-properties repository)
+                 :commit (:commit repository)
+                 :branch (:branch repository)
+                 :dirty (= true (:dirty? repository))
+                 :extractorVersion (:extractor-version projection)})))
+        (.then
+         (fn [_]
+           (.run
+            tx
+            "MATCH (repository:AdamRepository {id: $repositoryId})
+             UNWIND $files AS input
+             MERGE (file:AdamCodeFile {id: input.id})
+             SET file.repositoryId = input.repositoryId,
+                 file.relativePath = input.relativePath
+             MERGE (repository)-[:CONTAINS]->(file)"
+            #js {:repositoryId (:id repository)
+                 :files (clj->js (mapv file-properties (:files projection)))})))
+        (.then
+         (fn [_]
+           (.run
+            tx
+            "UNWIND $evidence AS input
+             MATCH (entry:AdamEntry {sessionId: $sessionId, entryId: input.entryId})
+             MATCH (file:AdamCodeFile {id: input.fileId})
+             MERGE (entry)-[touch:TOUCHES]->(file)
+             SET touch.basis = 'tool_path',
+                 touch.extractorVersion = $extractorVersion,
+                 touch.commit = input.commit,
+                 touch.branch = input.branch,
+                 touch.dirty = input.dirty"
+            #js {:sessionId (:session-id projection)
+                 :evidence (clj->js (mapv evidence-properties
+                                           (:entry-file-evidence projection)))
+                 :extractorVersion (:extractor-version projection)}))))))
+
 (defn- session-summary [properties]
   {:id (str (aget properties "id"))
    :pi-session-id (str (aget properties "piSessionId"))
@@ -324,6 +418,19 @@
                    (some? (aget properties "logHash")))})
 
 (defrecord Neo4jSessionReplica [driver database]
+  knowledge-store/FileEvidenceStore
+  (ensure-file-evidence-schema! [_]
+    (ensure-file-evidence-constraints! driver database))
+
+  (index-file-evidence! [_ projection]
+    (with-session!
+      driver
+      database
+      (fn [^js session]
+        (.executeWrite session
+                       (fn [tx]
+                         (index-file-evidence-transaction! tx projection))))))
+
   store/SessionReplicaStore
   (initialize! [_ user]
     (initialize-schema! driver database user))

@@ -1,5 +1,6 @@
 (ns adam.replica.neo4j-live-test
-  (:require [adam.replica.identity :as identity]
+  (:require [adam.knowledge.store :as knowledge-store]
+            [adam.replica.identity :as identity]
             [adam.replica.neo4j :as adam-neo4j]
             [adam.replica.restore :as restore]
             [adam.replica.store :as store]
@@ -42,7 +43,8 @@
                             #js {:type "session" :version 3
                                  :id "child-live" :cwd "/repo"
                                  :parentSession parent-path})
-              child-entry "{\"type\":\"message\",\"id\":\"entry-live\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"hello\"}}"
+              child-entry "{\"type\":\"message\",\"id\":\"entry-live\",\"parentId\":null,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"call-live\",\"name\":\"read\",\"arguments\":{\"path\":\"src/live.cljs\"}}]}}"
+              child-result "{\"type\":\"message\",\"id\":\"result-live\",\"parentId\":\"entry-live\",\"message\":{\"role\":\"toolResult\",\"toolCallId\":\"call-live\"}}"
               parent-first-header (js/JSON.stringify
                                    #js {:type "session" :version 3
                                         :id "parent-first-live" :cwd "/repo"})
@@ -59,8 +61,14 @@
               finish!
               (fn [error]
                 (-> (.run query-session
-                          "MATCH (n) WHERE n.id CONTAINS $userUuid DETACH DELETE n"
-                          #js {:userUuid user-uuid})
+                          "MATCH (:AdamUser {id: $userId})-[:OWNS]->(:AdamRepository)-[:CONTAINS]->(file:AdamCodeFile)
+                           DETACH DELETE file"
+                          #js {:userId user-id})
+                    (.then
+                     (fn [_]
+                       (.run query-session
+                             "MATCH (n) WHERE n.id CONTAINS $userUuid DETACH DELETE n"
+                             #js {:userUuid user-uuid})))
                     (.catch (fn [_] nil))
                     (.finally
                      (fn []
@@ -72,7 +80,9 @@
                               (when error (is false (.-stack error)))
                               (done))))))))]
           (writeFileSync parent-path (str parent-header "\n") "utf8")
-          (writeFileSync child-path (str child-header "\n" child-entry "\n") "utf8")
+          (writeFileSync child-path
+                         (str child-header "\n" child-entry "\n" child-result "\n")
+                         "utf8")
           (writeFileSync parent-first-path (str parent-first-header "\n") "utf8")
           (writeFileSync child-after-parent-path
                          (str child-after-parent-header "\n" child-after-parent-entry "\n")
@@ -83,7 +93,7 @@
                  (sync/sync-session-file!
                   {:path child-path
                    :user-uuid user-uuid
-                   :current-leaf-id "entry-live"
+                   :current-leaf-id "result-live"
                    :replica replica})))
               (.then
                (fn [child-result]
@@ -99,14 +109,50 @@
               (.then
                (fn [restored]
                  (is (= child-header (:header-json restored)))
-                 (is (= [child-entry] (mapv :raw-json (:entries restored))))
-                 (is (= "entry-live" (get-in restored [:session :current-leaf-id])))
+                 (is (= [child-entry child-result] (mapv :raw-json (:entries restored))))
+                 (is (= "result-live" (get-in restored [:session :current-leaf-id])))
                  (restore/materialize-session! replica child-session-id materialized-path)))
               (.then
                (fn [materialized]
                  (is (= materialized-path (:path materialized)))
-                 (is (= (str child-header "\n" child-entry "\n")
+                 (is (= (str child-header "\n" child-entry "\n" child-result "\n")
                         (readFileSync materialized-path "utf8")))
+                 (knowledge-store/ensure-file-evidence-schema! replica)))
+              (.then
+               (fn [_]
+                 (knowledge-store/index-file-evidence!
+                  replica
+                  {:extractor-version 1
+                   :user-id user-id
+                   :session-id child-session-id
+                   :repository {:id (str "urn:adam:repository:" user-uuid ":live-hash")
+                                :root "/repo" :normalized-remote "github.com/AloiAI/adam"
+                                :commit "live-commit" :branch "live" :dirty? true}
+                   :files [{:id (str "urn:adam:file:" user-uuid "-live-file")
+                            :repository-id (str "urn:adam:repository:" user-uuid ":live-hash")
+                            :relative-path "src/live.cljs"}]
+                   :entry-file-evidence
+                   [{:entry-id "entry-live" :file-id (str "urn:adam:file:" user-uuid "-live-file")
+                     :commit "live-commit" :branch "live" :dirty? true}
+                    {:entry-id "result-live" :file-id (str "urn:adam:file:" user-uuid "-live-file")
+                     :commit "live-commit" :branch "live" :dirty? true}]})))
+              (.then
+               (fn [_]
+                 (.run query-session
+                       "MATCH (:AdamSession {id: $sessionId})-[:HAS_ENTRY]->(entry)-[touch:TOUCHES]->(file:AdamCodeFile)
+                        RETURN entry.entryId AS entryId, file.relativePath AS path,
+                               touch.commit AS commit, touch.branch AS branch, touch.dirty AS dirty
+                        ORDER BY entry.entryId"
+                       #js {:sessionId child-session-id})))
+              (.then
+               (fn [^js result]
+                 (let [records (array-seq (.-records result))
+                       ^js first-record (first records)]
+                   (is (= 2 (count records)))
+                   (is (= "src/live.cljs" (.get first-record "path")))
+                   (is (= "live-commit" (.get first-record "commit")))
+                   (is (= "live" (.get first-record "branch")))
+                   (is (= true (.get first-record "dirty"))))
                  (.run query-session
                        "MATCH (:AdamSession {id: $childId})-[:FORKED_FROM]->(parent:AdamSession)
                         RETURN parent.piSessionId AS parentId"

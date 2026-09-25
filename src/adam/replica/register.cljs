@@ -1,5 +1,8 @@
 (ns adam.replica.register
-  (:require [adam.replica.commands :as commands]
+  (:require [adam.knowledge.index :as knowledge-index]
+            [adam.knowledge.repository :as knowledge-repository]
+            [adam.knowledge.store :as knowledge-store]
+            [adam.replica.commands :as commands]
             [adam.replica.config :as config]
             [adam.replica.identity :as identity]
             [adam.replica.neo4j :as neo4j]
@@ -57,7 +60,8 @@
 
 (defn- render-status [runtime-state]
   (let [{:keys [configured? connected? reason user-uuid git-email active-session-file
-                last-result last-mirrored-at last-error]} runtime-state]
+                last-result last-mirrored-at last-error file-evidence-indexed-at
+                file-evidence-repository file-evidence-status file-evidence-error]} runtime-state]
     (string/join
      "\n"
      (remove nil?
@@ -72,7 +76,13 @@
               (when active-session-file (str "Session: " active-session-file))
               (when last-result (str "Last sync: " (name (:status last-result))))
               (when last-mirrored-at (str "Mirrored at: " last-mirrored-at))
-              (when last-error (str "Last error: " last-error))]))))
+              (when last-error (str "Last error: " last-error))
+              (when file-evidence-indexed-at
+                (str "File evidence indexed: " file-evidence-indexed-at))
+              (when file-evidence-repository
+                (str "File evidence repository: " file-evidence-repository))
+              (when file-evidence-status (str "File evidence: " file-evidence-status))
+              (when file-evidence-error (str "File evidence error: " file-evidence-error))]))))
 
 (defn register!
   ([pi]
@@ -88,6 +98,7 @@
          user-promise (atom nil)
          queue (atom (js/Promise.resolve nil))
          initialized-identities (atom #{})
+         file-evidence-schema-promise (atom nil)
          warned-unavailable? (atom false)
          create-replica (or (:create-replica options)
                             #(neo4j/create-replica resolved-config))
@@ -120,6 +131,14 @@
                             user)))]
                  (reset! user-promise promise)
                  promise)))
+         resolve-repository!
+         (or (:resolve-repository options)
+             (fn [cwd user-uuid]
+               (knowledge-repository/resolve-git-repository!
+                (fn [command arguments exec-options]
+                  (invoke pi "exec" command arguments exec-options))
+                cwd
+                user-uuid)))
          get-replica!
          (fn []
            (or @replica-promise
@@ -141,6 +160,59 @@
                             (js/Promise.reject error))))]
                  (reset! replica-promise promise)
                  promise)))
+         project-file-evidence!
+         (fn [replica path user-uuid selected-leaf-id selection-known?]
+           (if-not (satisfies? knowledge-store/FileEvidenceStore replica)
+             (js/Promise.resolve nil)
+             (let [projection-input
+                   (cond-> {:store replica
+                            :path path
+                            :user-uuid user-uuid
+                            :resolve-repository #(resolve-repository! % user-uuid)}
+                     selection-known? (assoc :current-leaf-id selected-leaf-id))]
+               (-> (or @file-evidence-schema-promise
+                       (let [promise
+                             (-> (knowledge-store/ensure-file-evidence-schema! replica)
+                                 (.catch
+                                  (fn [error]
+                                    (reset! file-evidence-schema-promise nil)
+                                    (js/Promise.reject error))))]
+                         (reset! file-evidence-schema-promise promise)
+                         promise))
+                   (.then (fn [_] (knowledge-index/index-session! projection-input)))
+                   (.then
+                    (fn [repository]
+                      (if repository
+                        (swap! runtime-state assoc
+                               :file-evidence-indexed-at (.toISOString (js/Date.))
+                               :file-evidence-repository (or (:normalized-remote repository)
+                                                             (:root repository))
+                               :file-evidence-status nil
+                               :file-evidence-error nil)
+                        (swap! runtime-state assoc
+                               :file-evidence-indexed-at nil
+                               :file-evidence-repository nil
+                               :file-evidence-status "waiting for a Git cwd or explicit file-tool path"
+                               :file-evidence-error nil))
+                      nil))
+                   (.catch
+                    (fn [error]
+                      (swap! runtime-state assoc
+                             :file-evidence-status nil
+                             :file-evidence-error (error-message error))
+                      nil))))))
+         synchronize-file!
+         (fn [replica user path selected-leaf-id selection-known?]
+           (let [sync-input (cond-> {:path path
+                                     :user-uuid (:user-uuid user)
+                                     :replica replica}
+                              selection-known? (assoc :current-leaf-id selected-leaf-id))]
+             (-> (sync/sync-session-file! sync-input)
+                 (.then
+                  (fn [result]
+                    (-> (project-file-evidence!
+                         replica path (:user-uuid user) selected-leaf-id selection-known?)
+                        (.then (fn [_] result))))))))
          run-sync!
          (fn [ctx]
            (if-not (:enabled? resolved-config)
@@ -174,11 +246,8 @@
                           (-> initialize-identity
                               (.then
                                (fn [_]
-                                 (sync/sync-session-file!
-                                  {:path path
-                                   :user-uuid (:user-uuid user)
-                                   :current-leaf-id (current-leaf-id ctx)
-                                   :replica replica})))))))
+                                 (synchronize-file!
+                                  replica user path (current-leaf-id ctx) true)))))))
                      (.then
                       (fn [result]
                         (swap! runtime-state assoc
@@ -224,10 +293,12 @@
                       (-> (js/Promise.all #js [(get-replica!) (get-user!)])
                           (.then
                            (fn [resolved]
-                             (sync/sync-session-file!
-                              {:path path
-                               :user-uuid (:user-uuid (aget resolved 1))
-                               :replica (aget resolved 0)}))))))]
+                             (synchronize-file!
+                              (aget resolved 0)
+                              (aget resolved 1)
+                              path
+                              nil
+                              false))))))]
                (reset! queue (.then result (fn [_] nil) (fn [_] nil)))
                result)))
          shutdown!

@@ -1,12 +1,24 @@
 (ns adam.replica.register-test
-  (:require [adam.replica.register :as register]
+  (:require [adam.knowledge.store :as knowledge-store]
+            [adam.replica.register :as register]
             [adam.replica.store :as store]
             [cljs.test :refer [async deftest is]]
             ["node:fs" :refer [mkdtempSync rmSync writeFileSync]]
             ["node:os" :refer [tmpdir]]
             ["node:path" :refer [join]]))
 
-(defrecord LifecycleReplica [checkpoint initializations writes completions closes]
+(defrecord LifecycleReplica [checkpoint initializations writes completions closes evidence-schemas projections]
+  knowledge-store/FileEvidenceStore
+  (ensure-file-evidence-schema! [_]
+    (swap! evidence-schemas inc)
+    (js/Promise.resolve nil))
+  (index-file-evidence! [_ projection]
+    (if (= :fail @projections)
+      (js/Promise.reject (js/Error. "evidence unavailable"))
+      (do
+        (swap! projections conj projection)
+        (js/Promise.resolve nil))))
+
   store/SessionReplicaStore
   (initialize! [_ user]
     (swap! initializations conj user)
@@ -61,7 +73,8 @@
   (async done
     (let [directory (mkdtempSync (join (tmpdir) "adam-register-outage-"))
           path (join directory "session.jsonl")
-          replica (->LifecycleReplica (atom nil) (atom []) (atom []) (atom []) (atom 0))
+          replica (->LifecycleReplica (atom nil) (atom []) (atom []) (atom []) (atom 0)
+                                      (atom 0) (atom []))
           attempts (atom 0)
           {:keys [pi]} (fake-pi)
           notifications (atom [])
@@ -117,7 +130,8 @@
           writes (atom [])
           completions (atom [])
           closes (atom 0)
-          replica (->LifecycleReplica checkpoint initializations writes completions closes)
+          replica (->LifecycleReplica checkpoint initializations writes completions closes
+                                      (atom 0) (atom []))
           {:keys [pi commands events]} (fake-pi)
           notifications (atom [])
           runtime (register/register!
@@ -125,6 +139,7 @@
                    {:config {:enabled? true}
                     :create-replica (fn [] replica)
                     :load-user (fn [] {:user-uuid "user-1"})
+                    :resolve-repository (fn [_cwd _user] (js/Promise.resolve nil))
                     :resolve-git-identity
                     (fn [_ctx]
                       (js/Promise.resolve
@@ -158,6 +173,8 @@
              (is (= "entry-1"
                     (get-in (first @writes) [:session :current-leaf-id])))
              (is (= :mirrored (get-in ((:status runtime)) [:last-result :status])))
+             (is (= "waiting for a Git cwd or explicit file-tool path"
+                    (:file-evidence-status ((:status runtime)))))
              ((aget (get @commands "adam:status") "handler") "" ctx)
              (is (re-find #"connected" (first (last @notifications))))
              (is (re-find #"l\*\*\*@example.com" (first (last @notifications))))
@@ -166,6 +183,108 @@
           (.then
            (fn [_]
              (is (= 1 @closes))
+             (rmSync directory #js {:recursive true :force true})
+             (done)))
+          (.catch
+           (fn [error]
+             (rmSync directory #js {:recursive true :force true})
+             (is false (.-stack error))
+             (done)))))))
+
+(deftest lifecycle-indexes-file-evidence-after-the-lossless-mirror
+  (async done
+    (let [directory (mkdtempSync (join (tmpdir) "adam-register-evidence-"))
+          path (join directory "session.jsonl")
+          projections (atom [])
+          schemas (atom 0)
+          replica (->LifecycleReplica (atom nil) (atom []) (atom []) (atom []) (atom 0)
+                                      schemas projections)
+          {:keys [pi]} (fake-pi)
+          repository {:id "urn:adam:repository:user-1:hash"
+                      :user-id "urn:adam:user:user-1"
+                      :root "/repo"
+                      :normalized-remote "github.com/AloiAI/adam"
+                      :commit "abc123"
+                      :branch "main"
+                      :dirty? false
+                      :worktrees [{:root "/repo" :commit "abc123"
+                                   :branch "main" :dirty? false}]}
+          runtime (register/register!
+                   pi
+                   {:config {:enabled? true}
+                    :create-replica (fn [] replica)
+                    :load-user (fn [] {:user-uuid "user-1"})
+                    :resolve-git-identity (fn [_] (js/Promise.resolve nil))
+                    :resolve-repository (fn [_cwd _user] (js/Promise.resolve repository))})
+          ctx #js {:cwd "/repo"
+                   :sessionManager #js {:getSessionFile (fn [] path)
+                                        :getLeafId (fn [] "result-1")}
+                   :ui #js {:notify (fn [_ _] nil)}}]
+      (writeFileSync
+       path
+       (str "{\"type\":\"session\",\"id\":\"session-1\",\"cwd\":\"/repo\"}\n"
+            "{\"type\":\"message\",\"id\":\"assistant-1\",\"parentId\":null,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"call-1\",\"name\":\"read\",\"arguments\":{\"path\":\"src/a.cljs\"}}]}}\n"
+            "{\"type\":\"message\",\"id\":\"result-1\",\"parentId\":\"assistant-1\",\"message\":{\"role\":\"toolResult\",\"toolCallId\":\"call-1\"}}\n")
+       "utf8")
+      (-> (js/Promise.resolve nil)
+          (.then (fn [_] ((:synchronize! runtime) ctx)))
+          (.then
+           (fn [_]
+             (is (= 1 @schemas))
+             (is (= 1 (count @projections)))
+             (is (= ["src/a.cljs"]
+                    (mapv :relative-path (:files (first @projections)))))
+             (is (= ["assistant-1" "result-1"]
+                    (mapv :entry-id (:entry-file-evidence (first @projections)))))
+             (is (= true (:connected? ((:status runtime)))))
+             (is (= "github.com/AloiAI/adam"
+                    (:file-evidence-repository ((:status runtime)))))
+             ((:shutdown! runtime))))
+          (.then
+           (fn [_]
+             (rmSync directory #js {:recursive true :force true})
+             (done)))
+          (.catch
+           (fn [error]
+             (rmSync directory #js {:recursive true :force true})
+             (is false (.-stack error))
+             (done)))))))
+
+(deftest file-evidence-failure-does-not-mark-session-replication-unhealthy
+  (async done
+    (let [directory (mkdtempSync (join (tmpdir) "adam-register-evidence-failure-"))
+          path (join directory "session.jsonl")
+          replica (->LifecycleReplica (atom nil) (atom []) (atom []) (atom []) (atom 0)
+                                      (atom 0) (atom :fail))
+          {:keys [pi]} (fake-pi)
+          runtime (register/register!
+                   pi
+                   {:config {:enabled? true}
+                    :create-replica (fn [] replica)
+                    :load-user (fn [] {:user-uuid "user-1"})
+                    :resolve-git-identity (fn [_] (js/Promise.resolve nil))
+                    :resolve-repository
+                    (fn [_cwd _user]
+                      (js/Promise.resolve
+                       {:id "repository" :user-id "user" :root "/repo"
+                        :commit "abc" :dirty? false
+                        :worktrees [{:root "/repo" :commit "abc" :dirty? false}]}))})
+          ctx #js {:sessionManager #js {:getSessionFile (fn [] path)
+                                        :getLeafId (fn [] nil)}
+                   :ui #js {:notify (fn [_ _] nil)}}]
+      (writeFileSync path
+                     "{\"type\":\"session\",\"id\":\"session-1\",\"cwd\":\"/repo\"}\n"
+                     "utf8")
+      (-> (js/Promise.resolve nil)
+          (.then (fn [_] ((:synchronize! runtime) ctx)))
+          (.then
+           (fn [_]
+             (let [status ((:status runtime))]
+               (is (= true (:connected? status)))
+               (is (= "evidence unavailable" (:file-evidence-error status))))
+             ((:shutdown! runtime))))
+          (.then
+           (fn [_]
              (rmSync directory #js {:recursive true :force true})
              (done)))
           (.catch

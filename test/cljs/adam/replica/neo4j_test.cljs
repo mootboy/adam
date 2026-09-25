@@ -1,5 +1,6 @@
 (ns adam.replica.neo4j-test
-  (:require [adam.replica.neo4j :as neo4j]
+  (:require [adam.knowledge.store :as knowledge-store]
+            [adam.replica.neo4j :as neo4j]
             [adam.replica.store :as store]
             [cljs.test :refer [async deftest is]]))
 
@@ -189,6 +190,64 @@
                (is (= "log-hash" (.-logHash params)))
                (is (= 42 (.-logBytes params)))
                (is (some #(re-find #"CURRENT_LEAF" (:query %)) @calls))
+               (is (= 1 @closes))
+               (done))))
+          (.catch
+           (fn [error]
+             (is false (.-stack error))
+             (done)))))))
+
+
+(deftest initializes-file-evidence-constraints-separately
+  (async done
+    (let [{:keys [driver calls closes]} (recording-driver)
+          replica (neo4j/replica-with-driver driver "neo4j")]
+      (-> (knowledge-store/ensure-file-evidence-schema! replica)
+          (.then
+           (fn [_]
+             (let [queries (mapv :query (filter :query @calls))]
+               (is (= 2 (count queries)))
+               (is (re-find #"AdamRepository" (first queries)))
+               (is (re-find #"AdamCodeFile" (second queries)))
+               (is (= 1 @closes))
+               (done))))
+          (.catch
+           (fn [error]
+             (is false (.-stack error))
+             (done)))))))
+
+(deftest replaces-derived-file-evidence-with-revision-provenance
+  (async done
+    (let [{:keys [driver calls closes]} (transactional-driver)
+          replica (neo4j/replica-with-driver driver "neo4j")
+          projection {:extractor-version 1
+                      :user-id "urn:adam:user:user-1"
+                      :session-id "urn:adam:session:user-1:session-1"
+                      :pi-session-id "session-1"
+                      :repository {:id "urn:adam:repository:user-1:hash"
+                                   :root "/repo"
+                                   :normalized-remote "github.com/AloiAI/adam"
+                                   :commit "feature-head"
+                                   :branch "feature/a"
+                                   :dirty? true}
+                      :files [{:id "urn:adam:file:file-hash"
+                               :repository-id "urn:adam:repository:user-1:hash"
+                               :relative-path "src/a.cljs"}]
+                      :entry-file-evidence
+                      [{:entry-id "entry-1" :file-id "urn:adam:file:file-hash"
+                        :commit "feature-head" :branch "feature/a" :dirty? true}]}]
+      (-> (knowledge-store/index-file-evidence! replica projection)
+          (.then
+           (fn [_]
+             (let [queries (mapv :query @calls)
+                   evidence-call (first (filter #(re-find #"UNWIND \$evidence" (:query %)) @calls))
+                   ^js evidence (first (array-seq (aget (:params evidence-call) "evidence")))]
+               (is (some #(re-find #"DELETE touch" %) queries))
+               (is (some #(re-find #"WORKED_ON" %) queries))
+               (is (some #(re-find #"AdamCodeFile" %) queries))
+               (is (= "feature-head" (.-commit evidence)))
+               (is (= "feature/a" (.-branch evidence)))
+               (is (= true (.-dirty evidence)))
                (is (= 1 @closes))
                (done))))
           (.catch
