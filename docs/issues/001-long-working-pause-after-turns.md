@@ -24,6 +24,8 @@ adam registers an asynchronous `turn_end` handler in `src/adam/replica/register.
 
 Pi treats `turn_end` as an actionable lifecycle boundary and waits for asynchronous handlers. A timing reproduction is still needed to identify which part dominates the observed pause and whether queued synchronizations amplify it.
 
+Instrumentation now retains the latest lifecycle event’s queue wait, initialization, replica synchronization, repository discovery, evidence extraction, Neo4j projection, total duration, and completion timestamp in runtime status and renders it through `/adam:status`. It emits no external telemetry and retains no content or timing history.
+
 ## Reproduction
 
 1. Configure a reachable Neo4j instance with `ADAM_NEO4J_*`.

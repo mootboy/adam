@@ -20,6 +20,8 @@
           path (join directory "session.jsonl")
           projections (atom [])
           diagnostics (atom nil)
+          timings (atom nil)
+          clock (atom -5)
           candidates (atom [])
           repository {:id "urn:adam:repository:user-1:hash"
                       :user-id "urn:adam:user:user-1"
@@ -60,7 +62,9 @@
                  :reflections []
                  :diagnostics [{:producer "fake" :entry-id (-> selected first :entry-id)
                                 :reason :test-diagnostic}]}))
-            :on-memory-diagnostics #(reset! diagnostics %)})
+            :on-memory-diagnostics #(reset! diagnostics %)
+            :now-ms (fn [] (swap! clock + 5))
+            :on-timing #(reset! timings %)})
           (.then
            (fn [resolved]
              (is (= repository resolved))
@@ -73,6 +77,11 @@
              (is (= [(get-in (first @projections) [:files 0 :id])]
                     (get-in (first @projections) [:observations 0 :file-ids])))
              (is (= :test-diagnostic (get-in @diagnostics [0 :reason])))
+             (is (every? pos?
+                         ((juxt :repository-discovery-ms
+                                :evidence-extraction-ms
+                                :neo4j-projection-ms)
+                          @timings)))
              (rmSync directory #js {:recursive true :force true})
              (done)))
           (.catch

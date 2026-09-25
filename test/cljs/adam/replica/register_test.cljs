@@ -140,9 +140,11 @@
                                       (atom 0) (atom []))
           {:keys [pi commands tools events]} (fake-pi)
           notifications (atom [])
+          clock (atom -10)
           runtime (register/register!
                    pi
                    {:config {:enabled? true}
+                    :now-ms (fn [] (swap! clock + 10))
                     :create-replica (fn [] replica)
                     :load-user (fn [] {:user-uuid "user-1"})
                     :resolve-repository (fn [_cwd _user] (js/Promise.resolve nil))
@@ -169,7 +171,7 @@
       (is (contains? @events "turn_end"))
       (is (contains? @tools "adam_file_context"))
       (-> (js/Promise.resolve nil)
-          (.then (fn [_] ((:synchronize! runtime) ctx)))
+          (.then (fn [_] ((get @events "turn_end") #js {} ctx)))
           (.then
            (fn [_]
              (is (= 2 (count @initializations)))
@@ -182,8 +184,16 @@
              (is (= :mirrored (get-in ((:status runtime)) [:last-result :status])))
              (is (= "waiting for a Git cwd or explicit file-tool path"
                     (:file-evidence-status ((:status runtime)))))
+             (let [timing (:last-timing ((:status runtime)))]
+               (is (= :turn-end (:event timing)))
+               (is (every? number?
+                           ((juxt :queue-wait-ms :initialization-ms :replica-sync-ms
+                                  :repository-discovery-ms :evidence-extraction-ms
+                                  :neo4j-projection-ms :total-ms)
+                            timing))))
              ((aget (get @commands "adam:status") "handler") "" ctx)
              (is (re-find #"connected" (first (last @notifications))))
+             (is (re-find #"Last timing: turn-end" (first (last @notifications))))
              (is (re-find #"l\*\*\*@example.com" (first (last @notifications))))
              (is (not (re-find #"linus@example.com" (first (last @notifications)))))
              ((:shutdown! runtime))))

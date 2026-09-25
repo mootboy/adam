@@ -59,11 +59,14 @@
       (str (subs email 0 1) "***" (subs email separator))
       "***")))
 
+(defn- format-ms [value]
+  (str (/ (.round js/Math (* value 10)) 10) " ms"))
+
 (defn- render-status [runtime-state]
   (let [{:keys [configured? connected? reason user-uuid git-email active-session-file
                 last-result last-mirrored-at last-error file-evidence-indexed-at
                 file-evidence-repository file-evidence-status file-evidence-error
-                memory-adapter-status]} runtime-state]
+                memory-adapter-status last-timing]} runtime-state]
     (string/join
      "\n"
      (remove nil?
@@ -79,6 +82,16 @@
               (when last-result (str "Last sync: " (name (:status last-result))))
               (when last-mirrored-at (str "Mirrored at: " last-mirrored-at))
               (when last-error (str "Last error: " last-error))
+              (when last-timing
+                (str "Last timing: " (name (:event last-timing))
+                     " completed " (:completed-at last-timing)
+                     ", total " (format-ms (:total-ms last-timing))
+                     " (queue " (format-ms (:queue-wait-ms last-timing))
+                     ", initialization " (format-ms (:initialization-ms last-timing))
+                     ", replica " (format-ms (:replica-sync-ms last-timing))
+                     ", repository " (format-ms (:repository-discovery-ms last-timing))
+                     ", extraction " (format-ms (:evidence-extraction-ms last-timing))
+                     ", projection " (format-ms (:neo4j-projection-ms last-timing)) ")"))
               (when file-evidence-indexed-at
                 (str "File evidence indexed: " file-evidence-indexed-at))
               (when file-evidence-repository
@@ -94,6 +107,10 @@
   ([pi options]
    (let [resolved-config (or (:config options)
                              (config/resolve-config (process-environment)))
+         now-ms (or (:now-ms options) #(.now js/performance))
+         record-duration!
+         (fn [timing key started-at]
+           (swap! timing assoc key (max 0 (- (now-ms) started-at))))
          runtime-state (atom {:configured? (:enabled? resolved-config)
                               :connected? false
                               :reason (when-not (:enabled? resolved-config)
@@ -165,14 +182,24 @@
                  (reset! replica-promise promise)
                  promise)))
          project-file-evidence!
-         (fn [replica path user-uuid selected-leaf-id selection-known?]
+         (fn [replica path user-uuid selected-leaf-id selection-known? timing]
            (if-not (satisfies? knowledge-store/FileEvidenceStore replica)
              (js/Promise.resolve nil)
-             (let [projection-input
+             (let [schema-started-at (now-ms)
+                   projection-input
                    (cond-> {:store replica
                             :path path
                             :user-uuid user-uuid
                             :resolve-repository #(resolve-repository! % user-uuid)
+                            :now-ms now-ms
+                            :on-timing
+                            (fn [index-timing]
+                              (swap! timing update :repository-discovery-ms +
+                                     (:repository-discovery-ms index-timing))
+                              (swap! timing update :evidence-extraction-ms +
+                                     (:evidence-extraction-ms index-timing))
+                              (swap! timing update :neo4j-projection-ms +
+                                     (:neo4j-projection-ms index-timing)))
                             :on-memory-diagnostics
                             (fn [diagnostics]
                               (swap! runtime-state assoc
@@ -192,7 +219,13 @@
                                     (js/Promise.reject error))))]
                          (reset! file-evidence-schema-promise promise)
                          promise))
-                   (.then (fn [_] (knowledge-index/index-session! projection-input)))
+                   (.finally
+                    (fn []
+                      (swap! timing update :neo4j-projection-ms +
+                             (max 0 (- (now-ms) schema-started-at)))))
+                   (.then
+                    (fn [_]
+                      (knowledge-index/index-session! projection-input)))
                    (.then
                     (fn [repository]
                       (if repository
@@ -215,25 +248,31 @@
                              :file-evidence-error (error-message error))
                       nil))))))
          synchronize-file!
-         (fn [replica user path selected-leaf-id selection-known?]
+         (fn [replica user path selected-leaf-id selection-known? timing]
            (let [sync-input (cond-> {:path path
                                      :user-uuid (:user-uuid user)
                                      :replica replica}
-                              selection-known? (assoc :current-leaf-id selected-leaf-id))]
-             (-> (sync/sync-session-file! sync-input)
+                              selection-known? (assoc :current-leaf-id selected-leaf-id))
+                 replica-started-at (now-ms)]
+             (-> (js/Promise.resolve nil)
+                 (.then (fn [_] (sync/sync-session-file! sync-input)))
+                 (.finally
+                  (fn []
+                    (record-duration! timing :replica-sync-ms replica-started-at)))
                  (.then
                   (fn [result]
                     (-> (project-file-evidence!
-                         replica path (:user-uuid user) selected-leaf-id selection-known?)
+                         replica path (:user-uuid user) selected-leaf-id selection-known? timing)
                         (.then (fn [_] result))))))))
          run-sync!
-         (fn [ctx]
+         (fn [ctx timing]
            (if-not (:enabled? resolved-config)
              (js/Promise.resolve nil)
              (if-let [path (session-file ctx)]
                (do
                  (swap! runtime-state assoc :active-session-file path)
-                 (-> (js/Promise.all #js [(get-replica!)
+                 (let [initialization-started-at (now-ms)]
+                   (-> (js/Promise.all #js [(get-replica!)
                                           (get-user!)
                                           (resolve-git-identity! ctx)])
                      (.then
@@ -259,8 +298,10 @@
                           (-> initialize-identity
                               (.then
                                (fn [_]
+                                 (record-duration! timing :initialization-ms
+                                                   initialization-started-at)
                                  (synchronize-file!
-                                  replica user path (current-leaf-id ctx) true)))))))
+                                  replica user path (current-leaf-id ctx) true timing)))))))
                      (.then
                       (fn [result]
                         (swap! runtime-state assoc
@@ -275,6 +316,9 @@
                         nil))
                      (.catch
                       (fn [error]
+                        (when (zero? (:initialization-ms @timing))
+                          (record-duration! timing :initialization-ms
+                                            initialization-started-at))
                         (swap! runtime-state assoc
                                :connected? false
                                :last-error (error-message error))
@@ -283,7 +327,7 @@
                                    "adam session replication unavailable; local JSONL remains authoritative"
                                    "warning")
                           (reset! warned-unavailable? true))
-                        nil))))
+                        nil)))))
                (do
                  (swap! runtime-state assoc
                         :connected? false
@@ -291,10 +335,33 @@
                         :active-session-file nil)
                  (js/Promise.resolve nil)))))
          synchronize!
-         (fn [ctx]
-           (let [next-run (.then @queue (fn [_] (run-sync! ctx)))]
-             (reset! queue next-run)
-             next-run))
+         (fn synchronize!
+           ([ctx] (synchronize! ctx :manual))
+           ([ctx event]
+            (let [enqueued-at (now-ms)
+                  timing (atom {:event event
+                                :queue-wait-ms 0
+                                :initialization-ms 0
+                                :replica-sync-ms 0
+                                :repository-discovery-ms 0
+                                :evidence-extraction-ms 0
+                                :neo4j-projection-ms 0
+                                :total-ms 0})
+                  next-run
+                  (.then
+                   @queue
+                   (fn [_]
+                     (record-duration! timing :queue-wait-ms enqueued-at)
+                     (-> (run-sync! ctx timing)
+                         (.finally
+                          (fn []
+                            (record-duration! timing :total-ms enqueued-at)
+                            (swap! runtime-state assoc
+                                   :last-timing
+                                   (assoc @timing
+                                          :completed-at (.toISOString (js/Date.)))))))))]
+              (reset! queue next-run)
+              next-run)))
          import-file!
          (fn [path ctx]
            (if-not (:enabled? resolved-config)
@@ -311,7 +378,15 @@
                               (aget resolved 1)
                               path
                               nil
-                              false))))))]
+                              false
+                              (atom {:event :import
+                                     :queue-wait-ms 0
+                                     :initialization-ms 0
+                                     :replica-sync-ms 0
+                                     :repository-discovery-ms 0
+                                     :evidence-extraction-ms 0
+                                     :neo4j-projection-ms 0
+                                     :total-ms 0})))))))]
                (reset! queue (.then result (fn [_] nil) (fn [_] nil)))
                result)))
          query-dependencies
@@ -355,7 +430,11 @@
                       "session_info_changed"
                       "model_select"
                       "thinking_level_select"]]
-         (invoke pi "on" event (fn [_event ctx] (synchronize! ctx))))
+         (invoke pi
+                 "on"
+                 event
+                 (fn [_event ctx]
+                   (synchronize! ctx (keyword (string/replace event "_" "-"))))))
        (invoke pi "on" "session_shutdown" (fn [_event _ctx] (shutdown!))))
      {:status (fn [] @runtime-state)
       :synchronize! synchronize!
