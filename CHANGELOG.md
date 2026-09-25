@@ -13,6 +13,7 @@ All notable changes to adam are documented here.
 
 ### Changed
 
+- Upgraded the Neo4j JavaScript driver to 6.2 while retaining live round-trip coverage.
 - Declared the supported Node.js range and completed repository package metadata.
 - Added generated-runtime drift and package-content checks to the release process.
 
