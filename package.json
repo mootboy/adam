@@ -22,7 +22,7 @@
     "test:neo4j": "shadow-cljs compile neo4j-test",
     "watch": "shadow-cljs watch extension test",
     "check:dist": "git diff --exit-code -- dist/adam.js",
-    "ci": "npm test && npm run check:dist"
+    "ci": "npm run clean && npm test && npm run check:dist"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
