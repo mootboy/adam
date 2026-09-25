@@ -2,7 +2,7 @@
   "name": "@aloi/adam",
   "version": "0.0.0",
   "private": true,
-  "description": "Aloi Distributed Agent Memory for Pi",
+  "description": "A Distributed Agent Memory for Pi",
   "type": "module",
   "keywords": [
     "pi-package"

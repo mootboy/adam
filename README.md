@@ -1,6 +1,6 @@
 # adam
 
-**Aloi Distributed Agent Memory** — a standalone memory and session-graph extension for [Pi](https://pi.dev).
+**A Distributed Agent Memory** — a standalone memory and session-graph extension for [Pi](https://pi.dev).
 
 adam currently provides automatic, lossless Neo4j session replication with resumable checkpoints, complete entry trees, selected-leaf preservation, canonical fork lineage, historical import, local-first session restoration, deterministic repository/file evidence across Git worktrees, structural adaptation of persisted `pi-observational-memory` entries, and bounded file-context retrieval for humans and agents.
 
