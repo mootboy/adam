@@ -1,5 +1,7 @@
 (ns adam.replica.sync
-  (:require [adam.replica.model :as model]
+  (:require [adam.replica.identity :as identity]
+            [adam.replica.jsonl :as jsonl]
+            [adam.replica.model :as model]
             [adam.replica.store :as store]))
 
 (def default-batch-bytes (* 4 1024 1024))
@@ -201,3 +203,30 @@
 
              :else
              (js/Promise.reject error)))))))
+
+(defn- resolve-parent [summary user-uuid]
+  (when-let [parent-path (:parent-session summary)]
+    (try
+      (let [parent-header (jsonl/read-session-header parent-path)
+            parent-pi-session-id (:pi-session-id parent-header)]
+        (when (not= parent-pi-session-id (:pi-session-id summary))
+          {:pi-session-id parent-pi-session-id
+           :session-id (identity/session-urn user-uuid parent-pi-session-id)}))
+      (catch :default _
+        nil))))
+
+(defn sync-session-file!
+  [{:keys [path user-uuid] :as options}]
+  (try
+    (let [entries (atom [])
+          summary (jsonl/scan-file path {:on-entry #(swap! entries conj %)})
+          parent (resolve-parent summary user-uuid)]
+      (sync-scanned-session!
+       (cond-> (-> options
+                   (dissoc :path)
+                   (assoc :summary summary
+                          :entries @entries
+                          :source-file path))
+         parent (assoc :parent parent))))
+    (catch :default error
+      (js/Promise.reject error))))

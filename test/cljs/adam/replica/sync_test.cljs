@@ -1,7 +1,10 @@
 (ns adam.replica.sync-test
   (:require [adam.replica.store :as store]
             [adam.replica.sync :as sync]
-            [cljs.test :refer [async deftest is]]))
+            [cljs.test :refer [async deftest is]]
+            ["node:fs" :refer [mkdtempSync rmSync writeFileSync]]
+            ["node:os" :refer [tmpdir]]
+            ["node:path" :refer [join]]))
 
 (defrecord FakeReplica [checkpoint writes completions conflicts]
   store/SessionReplicaStore
@@ -100,6 +103,45 @@
              (done)))
           (.catch
            (fn [error]
+             (is false (.-stack error))
+             (done)))))))
+
+(deftest mirrors-canonical-fork-lineage-from-the-parent-header
+  (async done
+    (let [directory (mkdtempSync (join (tmpdir) "adam-sync-test-"))
+          parent-path (join directory "parent.jsonl")
+          child-path (join directory "child.jsonl")
+          writes (atom [])
+          completions (atom [])
+          conflicts (atom [])
+          replica (->FakeReplica nil writes completions conflicts)
+          parent-header (js/JSON.stringify
+                         #js {:type "session" :id "parent-1" :cwd "/repo"})
+          child-header (js/JSON.stringify
+                        #js {:type "session"
+                             :id "child-1"
+                             :cwd "/repo"
+                             :parentSession parent-path})
+          entry "{\"type\":\"message\",\"id\":\"entry-1\",\"parentId\":null}"]
+      (writeFileSync parent-path (str parent-header "\n") "utf8")
+      (writeFileSync child-path (str child-header "\n" entry "\n") "utf8")
+      (-> (sync/sync-session-file!
+           {:path child-path
+            :user-uuid "user-1"
+            :replica replica})
+          (.then
+           (fn [result]
+             (let [session (:session (first @writes))]
+               (is (= :mirrored (:status result)))
+               (is (= parent-path (:parent-session session)))
+               (is (= "parent-1" (:parent-pi-session-id session)))
+               (is (= "urn:adam:session:user-1:parent-1"
+                      (:parent-session-id session)))
+               (rmSync directory #js {:recursive true :force true})
+               (done))))
+          (.catch
+           (fn [error]
+             (rmSync directory #js {:recursive true :force true})
              (is false (.-stack error))
              (done)))))))
 
