@@ -206,7 +206,8 @@
           (.then
            (fn [_]
              (let [queries (mapv :query (filter :query @calls))]
-               (is (= 4 (count queries)))
+               (is (= 5 (count queries)))
+               (is (some #(re-find #"AdamEntry.*sessionId.*entryId" %) queries))
                (is (some #(re-find #"AdamRepository" %) queries))
                (is (some #(re-find #"AdamCodeFile" %) queries))
                (is (some #(re-find #"AdamObservation" %) queries))

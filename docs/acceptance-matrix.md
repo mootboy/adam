@@ -80,6 +80,7 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 | Same relative path exists in different repositories | Distinct file identities |
 | Abandoned branch contains memory | It remains mirrored but is excluded from the current projection |
 | Projection runs repeatedly | Results and relationships remain deterministic without duplicates |
+| Replica contains many sessions and entries | Evidence projection uses the composite session/entry lookup index rather than scanning all AdamEntry nodes |
 
 ## Memory-source adapter
 

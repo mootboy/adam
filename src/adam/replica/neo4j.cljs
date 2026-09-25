@@ -40,7 +40,22 @@
   (ensure-label-constraints! driver database session-labels))
 
 (defn ensure-file-evidence-constraints! [driver database]
-  (ensure-label-constraints! driver database file-evidence-labels))
+  (with-session!
+    driver
+    database
+    (fn [session]
+      (run-sequentially!
+       session
+       (conj
+        (mapv
+         (fn [label]
+           [(str "CREATE CONSTRAINT " (string/lower-case label)
+                 "_id_unique IF NOT EXISTS FOR (n:" label ") REQUIRE n.id IS UNIQUE")
+            nil])
+         file-evidence-labels)
+        ["CREATE INDEX adamentry_session_entry IF NOT EXISTS
+          FOR (n:AdamEntry) ON (n.sessionId, n.entryId)"
+         nil])))))
 
 (defn- initialize-user! [driver database {:keys [id identity]}]
   (with-session!

@@ -108,6 +108,8 @@ Uniqueness constraints cover `id` on:
 - `AdamObservation`
 - `AdamReflection`
 
+A composite range index on `AdamEntry(sessionId, entryId)` supports bounded per-session evidence and memory projection lookups without scanning the complete replicated entry graph.
+
 ### Lossless replica nodes
 
 ```text

@@ -2,7 +2,7 @@
 
 # Long “Working” pause after turns
 
-- Status: proposed
+- Status: in_progress
 - Category: bug
 - Created: 2026-09-25
 - Owner: unassigned
@@ -22,7 +22,11 @@ adam registers an asynchronous `turn_end` handler in `src/adam/replica/register.
 3. repository discovery;
 4. a rebuild of the selected branch’s file-evidence and adapted-memory projection.
 
-Pi treats `turn_end` as an actionable lifecycle boundary and waits for asynchronous handlers. A timing reproduction is still needed to identify which part dominates the observed pause and whether queued synchronizations amplify it.
+Pi treats `turn_end` as an actionable lifecycle boundary and waits for asynchronous handlers.
+
+A live reproduction measured 69,589.2 ms total: 0.1 ms queueing, 123.8 ms initialization, 135.3 ms replica synchronization, 45.4 ms repository discovery, 391.3 ms extraction, and **68,891.3 ms in Neo4j projection**. The projection queries matched `AdamEntry` by `(sessionId, entryId)`, but the graph had 79,594 AdamEntry nodes and no index for those properties. `EXPLAIN` confirmed `NodeByLabelScan` for both TOUCHES and SOURCED_FROM writes.
+
+A read-only matching benchmark over 593 entry IDs reproduced the query-plan cost at 19.5–20.1 seconds per run. Adding a composite `AdamEntry(sessionId, entryId)` range index changed the plan to `NodeIndexSeek` and reduced the same benchmark to 49–76 ms, approximately 260–400× faster. adam now creates that index as part of file-evidence schema initialization.
 
 Instrumentation now retains the latest lifecycle event’s queue wait, initialization, replica synchronization, repository discovery, evidence extraction, Neo4j projection, total duration, and completion timestamp in runtime status and renders it through `/adam:status`. It emits no external telemetry and retains no content or timing history.
 
@@ -36,10 +40,10 @@ Instrumentation now retains the latest lifecycle event’s queue wait, initializ
 
 ## Ranked hypotheses
 
-1. **Awaited lifecycle work:** if returning the synchronization promise is the cause, making `turn_end` enqueue work without awaiting completion will remove the UI pause while synchronization continues safely in the serialized queue.
-2. **Projection rebuild cost:** if selected-branch re-indexing dominates, pause duration will grow with session size and profiling will concentrate in `knowledge-index/index-session!` and its Neo4j transaction.
-3. **Neo4j latency:** if backend round trips dominate, delay will correlate with Neo4j query timings and persist for similarly sized sessions.
-4. **Repository discovery:** if Git/worktree discovery dominates, delay will concentrate before projection writes and vary with repository/worktree layout.
+1. **Confirmed — missing projection lookup index:** repeated AdamEntry label scans dominated TOUCHES and SOURCED_FROM writes. A composite lookup index removed those scans and reduced the isolated benchmark by roughly 260–400×.
+2. **Still relevant — awaited lifecycle work:** Pi awaits the synchronization promise. After the query fix, a new end-to-end timing will determine whether decoupling routine derived work from the interactive boundary is still necessary.
+3. **Rejected as dominant — repository discovery/extraction:** together these consumed under 0.5 seconds in the 69.6-second reproduction.
+4. **Not observed — queue amplification:** queue wait was 0.1 ms in the reproduction.
 
 ## Outcome
 
@@ -63,7 +67,7 @@ adam replication and derived indexing do not hold Pi in `Working` after every tu
 ## Acceptance criteria
 
 - [ ] A deterministic test or timing harness reproduces the blocked `turn_end` behavior.
-- [ ] The dominant delay is measured rather than inferred.
+- [x] The dominant delay is measured rather than inferred.
 - [ ] Pi leaves `Working` promptly without waiting for routine adam synchronization.
 - [ ] Multiple rapid turns remain serialized and converge to the latest persisted suffix and selected leaf.
 - [ ] Shutdown safely waits for or terminates queued work without corrupting checkpoints.
@@ -76,4 +80,4 @@ Record before/after timings for short and large sessions, deterministic lifecycl
 
 ## Notes
 
-The likely interaction boundary is `turn_end`, but no fix should be selected until timing instrumentation distinguishes handler waiting from expensive work within the handler.
+The interaction boundary is awaited, but measurement showed the immediate regression was a missing AdamEntry composite lookup index rather than queueing or local extraction. Re-run `/adam:status` after the indexed build before deciding whether lifecycle detachment is also warranted.
