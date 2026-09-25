@@ -184,10 +184,20 @@
                          :batches-written (count batches)}))))))))
         (.catch
          (fn [error]
-           (if (store/immutable-entry-conflict? error)
+           (cond
+             (store/immutable-entry-conflict? error)
              (record-conflict!
               replica
               session
               source-file
               (assoc (ex-data error) :reason :payload-mismatch))
+
+             (store/checkpoint-conflict? error)
+             (record-conflict!
+              replica
+              session
+              source-file
+              (assoc (ex-data error) :reason :checkpoint-out-of-range))
+
+             :else
              (js/Promise.reject error)))))))
