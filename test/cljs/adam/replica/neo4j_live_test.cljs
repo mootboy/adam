@@ -1,5 +1,7 @@
 (ns adam.replica.neo4j-live-test
-  (:require [adam.knowledge.store :as knowledge-store]
+  (:require [adam.knowledge.evidence :as evidence]
+            [adam.knowledge.index :as knowledge-index]
+            [adam.knowledge.store :as knowledge-store]
             [adam.replica.identity :as identity]
             [adam.replica.neo4j :as adam-neo4j]
             [adam.replica.restore :as restore]
@@ -45,6 +47,13 @@
                                  :parentSession parent-path})
               child-entry "{\"type\":\"message\",\"id\":\"entry-live\",\"parentId\":null,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"call-live\",\"name\":\"read\",\"arguments\":{\"path\":\"src/live.cljs\"}}]}}"
               child-result "{\"type\":\"message\",\"id\":\"result-live\",\"parentId\":\"entry-live\",\"message\":{\"role\":\"toolResult\",\"toolCallId\":\"call-live\"}}"
+              child-observation "{\"type\":\"custom\",\"id\":\"memory-live\",\"parentId\":\"result-live\",\"customType\":\"om.observations.recorded\",\"data\":{\"observations\":[{\"id\":\"aaaaaaaaaaaa\",\"content\":\"Live file decision\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"relevance\":\"high\",\"sourceEntryIds\":[\"result-live\"],\"tokenCount\":4}],\"coversUpToId\":\"result-live\"}}"
+              child-reflection "{\"type\":\"custom\",\"id\":\"reflection-live\",\"parentId\":\"memory-live\",\"customType\":\"om.reflections.recorded\",\"data\":{\"reflections\":[{\"id\":\"bbbbbbbbbbbb\",\"content\":\"Preserve the live decision\",\"supportingObservationIds\":[\"aaaaaaaaaaaa\"],\"tokenCount\":3}],\"coversUpToId\":\"memory-live\"}}"
+              child-drop "{\"type\":\"custom\",\"id\":\"drop-live\",\"parentId\":\"reflection-live\",\"customType\":\"om.observations.dropped\",\"data\":{\"observationIds\":[\"aaaaaaaaaaaa\"],\"coversUpToId\":\"reflection-live\"}}"
+              repository (evidence/build-repository
+                          {:user-uuid user-uuid :root "/repo"
+                           :remote "git@github.com:AloiAI/adam.git"
+                           :commit "live-commit" :branch "live" :dirty? true})
               parent-first-header (js/JSON.stringify
                                    #js {:type "session" :version 3
                                         :id "parent-first-live" :cwd "/repo"})
@@ -81,7 +90,8 @@
                               (done))))))))]
           (writeFileSync parent-path (str parent-header "\n") "utf8")
           (writeFileSync child-path
-                         (str child-header "\n" child-entry "\n" child-result "\n")
+                         (str child-header "\n" child-entry "\n" child-result "\n"
+                              child-observation "\n" child-reflection "\n" child-drop "\n")
                          "utf8")
           (writeFileSync parent-first-path (str parent-first-header "\n") "utf8")
           (writeFileSync child-after-parent-path
@@ -93,7 +103,7 @@
                  (sync/sync-session-file!
                   {:path child-path
                    :user-uuid user-uuid
-                   :current-leaf-id "result-live"
+                   :current-leaf-id "drop-live"
                    :replica replica})))
               (.then
                (fn [child-result]
@@ -109,47 +119,49 @@
               (.then
                (fn [restored]
                  (is (= child-header (:header-json restored)))
-                 (is (= [child-entry child-result] (mapv :raw-json (:entries restored))))
-                 (is (= "result-live" (get-in restored [:session :current-leaf-id])))
+                 (is (= [child-entry child-result child-observation child-reflection child-drop]
+                        (mapv :raw-json (:entries restored))))
+                 (is (= "drop-live" (get-in restored [:session :current-leaf-id])))
                  (restore/materialize-session! replica child-session-id materialized-path)))
               (.then
                (fn [materialized]
                  (is (= materialized-path (:path materialized)))
-                 (is (= (str child-header "\n" child-entry "\n" child-result "\n")
+                 (is (= (str child-header "\n" child-entry "\n" child-result "\n"
+                             child-observation "\n" child-reflection "\n" child-drop "\n")
                         (readFileSync materialized-path "utf8")))
                  (knowledge-store/ensure-file-evidence-schema! replica)))
               (.then
                (fn [_]
-                 (knowledge-store/index-file-evidence!
-                  replica
-                  {:extractor-version 1
-                   :user-id user-id
-                   :session-id child-session-id
-                   :repository {:id (str "urn:adam:repository:" user-uuid ":live-hash")
-                                :root "/repo" :normalized-remote "github.com/AloiAI/adam"
-                                :commit "live-commit" :branch "live" :dirty? true}
-                   :files [{:id (str "urn:adam:file:" user-uuid "-live-file")
-                            :repository-id (str "urn:adam:repository:" user-uuid ":live-hash")
-                            :relative-path "src/live.cljs"}]
-                   :entry-file-evidence
-                   [{:entry-id "entry-live" :file-id (str "urn:adam:file:" user-uuid "-live-file")
-                     :commit "live-commit" :branch "live" :dirty? true}
-                    {:entry-id "result-live" :file-id (str "urn:adam:file:" user-uuid "-live-file")
-                     :commit "live-commit" :branch "live" :dirty? true}]})))
+                 (knowledge-index/index-session!
+                  {:store replica :path child-path :user-uuid user-uuid
+                   :repository repository :current-leaf-id "drop-live"})))
+              (.then
+               (fn [_]
+                 (knowledge-index/index-session!
+                  {:store replica :path child-path :user-uuid user-uuid
+                   :repository repository :current-leaf-id "drop-live"})))
               (.then
                (fn [_]
                  (.run query-session
-                       "MATCH (:AdamSession {id: $sessionId})-[:HAS_ENTRY]->(entry)-[touch:TOUCHES]->(file:AdamCodeFile)
-                        RETURN entry.entryId AS entryId, file.relativePath AS path,
-                               touch.commit AS commit, touch.branch AS branch, touch.dirty AS dirty
-                        ORDER BY entry.entryId"
+                       "MATCH (:AdamSession {id: $sessionId})-[:HAS_MEMORY]->(observation:AdamObservation)-[:ABOUT]->(file:AdamCodeFile)
+                        MATCH (reflection:AdamReflection)-[:SUPPORTED_BY]->(observation)
+                        OPTIONAL MATCH (observation)-[:SOURCED_FROM]->(source:AdamEntry)
+                        OPTIONAL MATCH (source)-[touch:TOUCHES]->(file)
+                        RETURN observation.memoryId AS observationId, observation.dropped AS dropped,
+                               reflection.memoryId AS reflectionId, file.relativePath AS path,
+                               source.entryId AS entryId, touch.commit AS commit,
+                               touch.branch AS branch, touch.dirty AS dirty"
                        #js {:sessionId child-session-id})))
               (.then
                (fn [^js result]
                  (let [records (array-seq (.-records result))
                        ^js first-record (first records)]
-                   (is (= 2 (count records)))
+                   (is (= 1 (count records)))
+                   (is (= "aaaaaaaaaaaa" (.get first-record "observationId")))
+                   (is (= true (.get first-record "dropped")))
+                   (is (= "bbbbbbbbbbbb" (.get first-record "reflectionId")))
                    (is (= "src/live.cljs" (.get first-record "path")))
+                   (is (= "result-live" (.get first-record "entryId")))
                    (is (= "live-commit" (.get first-record "commit")))
                    (is (= "live" (.get first-record "branch")))
                    (is (= true (.get first-record "dirty"))))

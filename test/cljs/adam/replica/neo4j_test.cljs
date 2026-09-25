@@ -206,9 +206,11 @@
           (.then
            (fn [_]
              (let [queries (mapv :query (filter :query @calls))]
-               (is (= 2 (count queries)))
-               (is (re-find #"AdamRepository" (first queries)))
-               (is (re-find #"AdamCodeFile" (second queries)))
+               (is (= 4 (count queries)))
+               (is (some #(re-find #"AdamRepository" %) queries))
+               (is (some #(re-find #"AdamCodeFile" %) queries))
+               (is (some #(re-find #"AdamObservation" %) queries))
+               (is (some #(re-find #"AdamReflection" %) queries))
                (is (= 1 @closes))
                (done))))
           (.catch
@@ -235,19 +237,41 @@
                                :relative-path "src/a.cljs"}]
                       :entry-file-evidence
                       [{:entry-id "entry-1" :file-id "urn:adam:file:file-hash"
-                        :commit "feature-head" :branch "feature/a" :dirty? true}]}]
+                        :commit "feature-head" :branch "feature/a" :dirty? true}]
+                      :observations
+                      [{:id "observation-id" :producer "pi-observational-memory"
+                        :adapter-version 1 :memory-id "aaaaaaaaaaaa"
+                        :content "remember this" :timestamp "2026-01-01T00:00:00.000Z"
+                        :relevance "high" :token-count 3 :recording-entry-id "memory-1"
+                        :source-entry-ids ["entry-1"]
+                        :file-ids ["urn:adam:file:file-hash"] :dropped? true}]
+                      :reflections
+                      [{:id "reflection-id" :producer "pi-observational-memory"
+                        :adapter-version 1 :memory-id "bbbbbbbbbbbb"
+                        :content "durable decision" :token-count 2
+                        :recording-entry-id "memory-2"
+                        :supporting-observation-ids ["aaaaaaaaaaaa"]}]}]
       (-> (knowledge-store/index-file-evidence! replica projection)
           (.then
            (fn [_]
              (let [queries (mapv :query @calls)
                    evidence-call (first (filter #(re-find #"UNWIND \$evidence" (:query %)) @calls))
-                   ^js evidence (first (array-seq (aget (:params evidence-call) "evidence")))]
+                   observation-call (first (filter #(re-find #"SOURCED_FROM" (:query %)) @calls))
+                   reflection-call (first (filter #(re-find #"SUPPORTED_BY" (:query %)) @calls))
+                   ^js evidence (first (array-seq (aget (:params evidence-call) "evidence")))
+                   ^js observation (first (array-seq (aget (:params observation-call) "observations")))
+                   ^js reflection (first (array-seq (aget (:params reflection-call) "reflections")))]
                (is (some #(re-find #"DELETE touch" %) queries))
                (is (some #(re-find #"WORKED_ON" %) queries))
                (is (some #(re-find #"AdamCodeFile" %) queries))
+               (is (some #(re-find #"DETACH DELETE memory" %) queries))
                (is (= "feature-head" (.-commit evidence)))
                (is (= "feature/a" (.-branch evidence)))
                (is (= true (.-dirty evidence)))
+               (is (= "aaaaaaaaaaaa" (.-memoryId observation)))
+               (is (= true (.-dropped observation)))
+               (is (= "memory-1" (.-recordingEntryId observation)))
+               (is (= "bbbbbbbbbbbb" (.-memoryId reflection)))
                (is (= 1 @closes))
                (done))))
           (.catch

@@ -61,7 +61,8 @@
 (defn- render-status [runtime-state]
   (let [{:keys [configured? connected? reason user-uuid git-email active-session-file
                 last-result last-mirrored-at last-error file-evidence-indexed-at
-                file-evidence-repository file-evidence-status file-evidence-error]} runtime-state]
+                file-evidence-repository file-evidence-status file-evidence-error
+                memory-adapter-status]} runtime-state]
     (string/join
      "\n"
      (remove nil?
@@ -82,7 +83,9 @@
               (when file-evidence-repository
                 (str "File evidence repository: " file-evidence-repository))
               (when file-evidence-status (str "File evidence: " file-evidence-status))
-              (when file-evidence-error (str "File evidence error: " file-evidence-error))]))))
+              (when file-evidence-error (str "File evidence error: " file-evidence-error))
+              (when memory-adapter-status
+                (str "Memory adapter: " memory-adapter-status))]))))
 
 (defn register!
   ([pi]
@@ -168,7 +171,16 @@
                    (cond-> {:store replica
                             :path path
                             :user-uuid user-uuid
-                            :resolve-repository #(resolve-repository! % user-uuid)}
+                            :resolve-repository #(resolve-repository! % user-uuid)
+                            :on-memory-diagnostics
+                            (fn [diagnostics]
+                              (swap! runtime-state assoc
+                                     :memory-adapter-status
+                                     (when (seq diagnostics)
+                                       (str (count diagnostics)
+                                            " producer entr"
+                                            (if (= 1 (count diagnostics)) "y" "ies")
+                                            " ignored"))))}
                      selection-known? (assoc :current-leaf-id selected-leaf-id))]
                (-> (or @file-evidence-schema-promise
                        (let [promise

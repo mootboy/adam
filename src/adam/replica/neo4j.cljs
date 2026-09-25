@@ -8,7 +8,7 @@
   ["AdamUser" "AdamIdentity" "AdamSession" "AdamEntry"])
 
 (def ^:private file-evidence-labels
-  ["AdamRepository" "AdamCodeFile"])
+  ["AdamRepository" "AdamCodeFile" "AdamObservation" "AdamReflection"])
 
 (defn- with-session! [^js driver database f]
   (let [^js session (.session driver #js {:database database})]
@@ -341,14 +341,47 @@
       (aset properties "branch" branch))
     properties))
 
+(defn- observation-properties [observation]
+  #js {:id (:id observation)
+       :producer (:producer observation)
+       :adapterVersion (:adapter-version observation)
+       :memoryId (:memory-id observation)
+       :content (:content observation)
+       :timestamp (:timestamp observation)
+       :relevance (:relevance observation)
+       :tokenCount (:token-count observation)
+       :recordingEntryId (:recording-entry-id observation)
+       :sourceEntryIds (clj->js (:source-entry-ids observation))
+       :fileIds (clj->js (:file-ids observation))
+       :dropped (= true (:dropped? observation))})
+
+(defn- reflection-properties [reflection]
+  #js {:id (:id reflection)
+       :producer (:producer reflection)
+       :adapterVersion (:adapter-version reflection)
+       :memoryId (:memory-id reflection)
+       :content (:content reflection)
+       :tokenCount (:token-count reflection)
+       :recordingEntryId (:recording-entry-id reflection)
+       :supportingObservationIds
+       (clj->js (:supporting-observation-ids reflection))})
+
 (defn- index-file-evidence-transaction! [^js tx projection]
   (let [repository (:repository projection)]
     (-> (.run
          tx
-         "MATCH (s:AdamSession {id: $sessionId})-[:HAS_ENTRY]->(entry)
-          OPTIONAL MATCH (entry)-[touch:TOUCHES]->()
-          DELETE touch"
+         "MATCH (s:AdamSession {id: $sessionId})
+          OPTIONAL MATCH (s)-[:HAS_MEMORY]->(memory)
+          DETACH DELETE memory"
          #js {:sessionId (:session-id projection)})
+        (.then
+         (fn [_]
+           (.run
+            tx
+            "MATCH (s:AdamSession {id: $sessionId})-[:HAS_ENTRY]->(entry)
+             OPTIONAL MATCH (entry)-[touch:TOUCHES]->()
+             DELETE touch"
+            #js {:sessionId (:session-id projection)})))
         (.then
          (fn [_]
            (.run
@@ -402,6 +435,72 @@
             #js {:sessionId (:session-id projection)
                  :evidence (clj->js (mapv evidence-properties
                                            (:entry-file-evidence projection)))
+                 :extractorVersion (:extractor-version projection)})))
+        (.then
+         (fn [_]
+           (.run
+            tx
+            "UNWIND $observations AS input
+             MATCH (s:AdamSession {id: $sessionId})
+             MERGE (observation:AdamObservation {id: input.id})
+             SET observation.producer = input.producer,
+                 observation.adapterVersion = input.adapterVersion,
+                 observation.memoryId = input.memoryId,
+                 observation.content = input.content,
+                 observation.timestamp = input.timestamp,
+                 observation.relevance = input.relevance,
+                 observation.tokenCount = input.tokenCount,
+                 observation.recordingEntryId = input.recordingEntryId,
+                 observation.sourceEntryIds = input.sourceEntryIds,
+                 observation.dropped = input.dropped,
+                 observation.extractorVersion = $extractorVersion
+             MERGE (s)-[:HAS_MEMORY]->(observation)
+             WITH observation, input
+             UNWIND input.sourceEntryIds AS sourceEntryId
+             MATCH (source:AdamEntry {sessionId: $sessionId, entryId: sourceEntryId})
+             MERGE (observation)-[:SOURCED_FROM]->(source)"
+            #js {:sessionId (:session-id projection)
+                 :observations (clj->js (mapv observation-properties
+                                              (:observations projection)))
+                 :extractorVersion (:extractor-version projection)})))
+        (.then
+         (fn [_]
+           (.run
+            tx
+            "UNWIND $observations AS input
+             MATCH (observation:AdamObservation {id: input.id})
+             UNWIND input.fileIds AS fileId
+             MATCH (file:AdamCodeFile {id: fileId})
+             MERGE (observation)-[about:ABOUT]->(file)
+             SET about.basis = 'source_tool_path',
+                 about.extractorVersion = $extractorVersion"
+            #js {:observations (clj->js (mapv observation-properties
+                                              (:observations projection)))
+                 :extractorVersion (:extractor-version projection)})))
+        (.then
+         (fn [_]
+           (.run
+            tx
+            "UNWIND $reflections AS input
+             MATCH (s:AdamSession {id: $sessionId})
+             MERGE (reflection:AdamReflection {id: input.id})
+             SET reflection.producer = input.producer,
+                 reflection.adapterVersion = input.adapterVersion,
+                 reflection.memoryId = input.memoryId,
+                 reflection.content = input.content,
+                 reflection.tokenCount = input.tokenCount,
+                 reflection.recordingEntryId = input.recordingEntryId,
+                 reflection.supportingObservationIds = input.supportingObservationIds,
+                 reflection.extractorVersion = $extractorVersion
+             MERGE (s)-[:HAS_MEMORY]->(reflection)
+             WITH reflection, input
+             UNWIND input.supportingObservationIds AS observationId
+             MATCH (observation:AdamObservation {memoryId: observationId})
+                   <-[:HAS_MEMORY]-(:AdamSession {id: $sessionId})
+             MERGE (reflection)-[:SUPPORTED_BY]->(observation)"
+            #js {:sessionId (:session-id projection)
+                 :reflections (clj->js (mapv reflection-properties
+                                             (:reflections projection)))
                  :extractorVersion (:extractor-version projection)}))))))
 
 (defn- session-summary [properties]

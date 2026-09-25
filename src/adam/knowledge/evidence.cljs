@@ -4,7 +4,7 @@
             ["node:crypto" :refer [createHash]]
             ["node:path" :as node-path]))
 
-(def extractor-version 1)
+(def extractor-version 2)
 (def ^:private supported-file-tools #{"read" "edit" "write"})
 
 (defn- sha256 [value]
@@ -112,6 +112,11 @@
               active)))]
     (filterv #(contains? active-ids (get-in % [:stored :entry-id])) parsed)))
 
+(defn selected-stored-entries
+  ([entries] (selected-stored-entries entries ::unspecified))
+  ([entries current-leaf-id]
+   (mapv :stored (selected-entries entries current-leaf-id))))
+
 (defn- tool-call-path [block]
   (when (and (map-object? block)
              (= "toolCall" (aget block "type"))
@@ -139,7 +144,7 @@
         vec)))
 
 (defn extract-projection
-  [{:keys [user-uuid pi-session-id session-id cwd repository entries]
+  [{:keys [user-uuid pi-session-id session-id cwd repository entries memory-projection]
     :as input}]
   (let [selected (selected-entries entries
                                    (if (contains? input :current-leaf-id)
@@ -175,12 +180,35 @@
                    (string? (aget message "toolCallId")))
           (when-let [resolved (get @paths-by-call (aget message "toolCallId"))]
             (add-evidence! (:entry-id stored) resolved)))))
-    {:extractor-version extractor-version
-     :user-id (identity/user-urn user-uuid)
-     :session-id session-id
-     :pi-session-id pi-session-id
-     :repository repository
-     :files (->> (vals @files) (sort-by :relative-path) vec)
-     :entry-file-evidence (->> (vals @evidence-by-entry)
-                               (sort-by (juxt :entry-id :file-id))
-                               vec)}))
+    (let [project-observation
+          (fn [memory]
+            (let [file-ids
+                  (->> (:source-entry-ids memory)
+                       (mapcat (fn [entry-id]
+                                 (keep (fn [[[evidence-entry-id file-id] _]]
+                                         (when (= entry-id evidence-entry-id) file-id))
+                                       @evidence-by-entry)))
+                       distinct
+                       sort
+                       vec)]
+              (assoc memory
+                     :id (str "urn:adam:observation:" user-uuid ":" pi-session-id
+                              ":" (:memory-id memory))
+                     :file-ids file-ids)))
+          project-reflection
+          (fn [memory]
+            (assoc memory
+                   :id (str "urn:adam:reflection:" user-uuid ":" pi-session-id
+                            ":" (:memory-id memory))))]
+      {:extractor-version extractor-version
+       :user-id (identity/user-urn user-uuid)
+       :session-id session-id
+       :pi-session-id pi-session-id
+       :repository repository
+       :files (->> (vals @files) (sort-by :relative-path) vec)
+       :entry-file-evidence (->> (vals @evidence-by-entry)
+                                 (sort-by (juxt :entry-id :file-id))
+                                 vec)
+       :observations (mapv project-observation (:observations memory-projection))
+       :reflections (mapv project-reflection (:reflections memory-projection))
+       :memory-diagnostics (vec (:diagnostics memory-projection))})))

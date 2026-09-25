@@ -1,6 +1,7 @@
 (ns adam.knowledge.index-test
   (:require [adam.knowledge.index :as index]
             [adam.knowledge.store :as store]
+            [adam.sources.pi-observational-memory.adapter :as memory-adapter]
             [cljs.test :refer [async deftest is]]
             ["node:fs" :refer [mkdtempSync rmSync writeFileSync]]
             ["node:os" :refer [tmpdir]]
@@ -18,6 +19,7 @@
     (let [directory (mkdtempSync (join (tmpdir) "adam-evidence-index-"))
           path (join directory "session.jsonl")
           projections (atom [])
+          diagnostics (atom nil)
           candidates (atom [])
           repository {:id "urn:adam:repository:user-1:hash"
                       :user-id "urn:adam:user:user-1"
@@ -44,7 +46,21 @@
             :path path
             :user-uuid "user-1"
             :resolve-repository resolve-repository
-            :current-leaf-id "assistant-1"})
+            :current-leaf-id "assistant-1"
+            :memory-adapter
+            (reify memory-adapter/MemorySourceAdapter
+              (extract-memories [_ selected]
+                {:observations [{:producer "fake" :adapter-version 1
+                                 :memory-id "aaaaaaaaaaaa" :content "fake memory"
+                                 :timestamp "2026-01-01T00:00:00.000Z"
+                                 :relevance "high" :token-count 2
+                                 :recording-entry-id "memory-1"
+                                 :source-entry-ids ["assistant-1"]
+                                 :dropped? false}]
+                 :reflections []
+                 :diagnostics [{:producer "fake" :entry-id (-> selected first :entry-id)
+                                :reason :test-diagnostic}]}))
+            :on-memory-diagnostics #(reset! diagnostics %)})
           (.then
            (fn [resolved]
              (is (= repository resolved))
@@ -54,6 +70,9 @@
              (is (= "feature-head"
                     (get-in (first @projections)
                             [:entry-file-evidence 0 :commit])))
+             (is (= [(get-in (first @projections) [:files 0 :id])]
+                    (get-in (first @projections) [:observations 0 :file-ids])))
+             (is (= :test-diagnostic (get-in @diagnostics [0 :reason])))
              (rmSync directory #js {:recursive true :force true})
              (done)))
           (.catch

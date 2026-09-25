@@ -218,13 +218,14 @@
                     :resolve-repository (fn [_cwd _user] (js/Promise.resolve repository))})
           ctx #js {:cwd "/repo"
                    :sessionManager #js {:getSessionFile (fn [] path)
-                                        :getLeafId (fn [] "result-1")}
+                                        :getLeafId (fn [] "memory-bad")}
                    :ui #js {:notify (fn [_ _] nil)}}]
       (writeFileSync
        path
        (str "{\"type\":\"session\",\"id\":\"session-1\",\"cwd\":\"/repo\"}\n"
             "{\"type\":\"message\",\"id\":\"assistant-1\",\"parentId\":null,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"call-1\",\"name\":\"read\",\"arguments\":{\"path\":\"src/a.cljs\"}}]}}\n"
-            "{\"type\":\"message\",\"id\":\"result-1\",\"parentId\":\"assistant-1\",\"message\":{\"role\":\"toolResult\",\"toolCallId\":\"call-1\"}}\n")
+            "{\"type\":\"message\",\"id\":\"result-1\",\"parentId\":\"assistant-1\",\"message\":{\"role\":\"toolResult\",\"toolCallId\":\"call-1\"}}\n"
+            "{\"type\":\"custom\",\"id\":\"memory-bad\",\"parentId\":\"result-1\",\"customType\":\"om.observations.recorded\",\"data\":{\"observations\":[],\"coversUpToId\":\"result-1\"}}\n")
        "utf8")
       (-> (js/Promise.resolve nil)
           (.then (fn [_] ((:synchronize! runtime) ctx)))
@@ -239,6 +240,8 @@
              (is (= true (:connected? ((:status runtime)))))
              (is (= "github.com/AloiAI/adam"
                     (:file-evidence-repository ((:status runtime)))))
+             (is (= "1 producer entry ignored"
+                    (:memory-adapter-status ((:status runtime)))))
              ((:shutdown! runtime))))
           (.then
            (fn [_]

@@ -97,6 +97,8 @@ The first adapter supports persisted `pi-observational-memory` entries. It recog
 
 Unknown custom entries are ignored. Malformed or unsupported producer entries produce an isolated projection diagnostic; their raw session entries remain mirrored losslessly.
 
+The first adapter is implemented structurally in `src/adam/sources/pi_observational_memory/` without importing the producer package. It preserves first-valid-record semantics, dropped-observation tombstones, source-entry provenance, and reflection support links. The resulting `AdamObservation` and `AdamReflection` nodes are rebuilt transactionally with the file-evidence projection; adapter diagnostics expose only producer, entry ID, and reason.
+
 ## Repository and file evidence
 
 Only explicit Pi tool calls named `read`, `edit`, or `write` with a non-empty `path` provide file evidence. Matching tool-result entries inherit evidence through `toolCallId`.

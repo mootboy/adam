@@ -103,3 +103,40 @@
            (mapv :entry-id (:entry-file-evidence projection))))
     (is (= ["../outside.cljs" "src/b.cljs"]
            (evidence/explicit-file-tool-paths entries "leaf-b")))))
+
+
+(deftest links-provider-neutral-memories-through-source-file-evidence
+  (let [memory-projection
+        {:observations [{:producer "pi-observational-memory" :adapter-version 1
+                         :memory-id "aaaaaaaaaaaa" :content "Uses the source result"
+                         :timestamp "2026-01-01T00:00:00.000Z" :relevance "high"
+                         :token-count 4 :recording-entry-id "memory-1"
+                         :source-entry-ids ["result-1"] :dropped? false}]
+         :reflections [{:producer "pi-observational-memory" :adapter-version 1
+                        :memory-id "bbbbbbbbbbbb" :content "Keep this decision"
+                        :token-count 3 :recording-entry-id "memory-2"
+                        :supporting-observation-ids ["aaaaaaaaaaaa"]}]
+         :diagnostics [{:producer "pi-observational-memory"
+                        :entry-id "bad-1" :reason :malformed-entry}]}
+        projection
+        (evidence/extract-projection
+         {:user-uuid user-uuid :pi-session-id "session-1"
+          :session-id "session-id" :cwd "/work/repo"
+          :repository repository
+          :entries
+          [(stored {:type "message" :id "assistant-1" :parentId nil
+                    :message {:role "assistant"
+                              :content [{:type "toolCall" :id "call-1" :name "read"
+                                         :arguments {:path "src/a.cljs"}}]}})
+           (stored {:type "message" :id "result-1" :parentId "assistant-1"
+                    :message {:role "toolResult" :toolCallId "call-1"}})
+           (stored {:type "custom" :id "memory-1" :parentId "result-1"})
+           (stored {:type "custom" :id "memory-2" :parentId "memory-1"})]
+          :memory-projection memory-projection})]
+    (is (= "urn:adam:observation:00000000-0000-4000-8000-000000000001:session-1:aaaaaaaaaaaa"
+           (get-in projection [:observations 0 :id])))
+    (is (= [(get-in projection [:files 0 :id])]
+           (get-in projection [:observations 0 :file-ids])))
+    (is (= "urn:adam:reflection:00000000-0000-4000-8000-000000000001:session-1:bbbbbbbbbbbb"
+           (get-in projection [:reflections 0 :id])))
+    (is (= (:diagnostics memory-projection) (:memory-diagnostics projection)))))
