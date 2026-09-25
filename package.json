@@ -36,7 +36,7 @@
     ]
   },
   "dependencies": {
-    "neo4j-driver": "^5.28.3"
+    "neo4j-driver": "^6.2.0"
   },
   "repository": {
     "type": "git",
