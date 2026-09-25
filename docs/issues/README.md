@@ -4,7 +4,7 @@ This directory is adam's repository-local issue tracker. Use one Markdown file p
 
 ## Issues
 
-- [`001`](001-long-working-pause-after-turns.md) — Long “Working” pause after turns (`proposed`, bug)
+- [`001`](001-long-working-pause-after-turns.md) — Long “Working” pause after turns (`done`, bug)
 
 ## Naming
 

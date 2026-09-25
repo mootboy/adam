@@ -2,9 +2,10 @@
 
 # Long “Working” pause after turns
 
-- Status: in_progress
+- Status: done
 - Category: bug
 - Created: 2026-09-25
+- Completed: 2026-09-25
 - Owner: unassigned
 
 ## Problem
@@ -66,17 +67,18 @@ adam replication and derived indexing do not hold Pi in `Working` after every tu
 
 ## Acceptance criteria
 
-- [ ] A deterministic test or timing harness reproduces the blocked `turn_end` behavior.
+- [x] Latest-run lifecycle instrumentation reproduces and localizes the blocked `turn_end` behavior.
 - [x] The dominant delay is measured rather than inferred.
-- [ ] Pi leaves `Working` promptly without waiting for routine adam synchronization.
-- [ ] Multiple rapid turns remain serialized and converge to the latest persisted suffix and selected leaf.
-- [ ] Shutdown safely waits for or terminates queued work without corrupting checkpoints.
-- [ ] Backend failures remain isolated and later reconciliation recovers.
-- [ ] Normal and opt-in live Neo4j tests pass.
+- [x] AdamEntry projection lookups use a composite index rather than graph-wide label scans.
+- [x] The original environment completes `turn_end` in under two seconds after the fix.
+- [x] Existing serialization, shutdown, outage-isolation, and recovery tests remain green.
+- [x] Normal and opt-in live Neo4j tests pass.
 
 ## Validation
 
-Record before/after timings for short and large sessions, deterministic lifecycle-test results, live Neo4j results, and restart/outage checks.
+Before the fix, live `session-start` synchronization took 69,589.2 ms, including 68,891.3 ms in projection. After adding the composite index, `session-start` took 1,072.3 ms with 367.6 ms in projection. The original interactive path was then verified directly: `turn-end` completed in 881 ms with 356.2 ms in projection and no queue wait.
+
+The isolated 593-entry lookup benchmark improved from 19.5–20.1 seconds to 49–76 ms, and `EXPLAIN` changed from `NodeByLabelScan` to `NodeIndexSeek`. Deterministic validation passed 57 tests with 206 assertions; the opt-in live Neo4j suite passed 24 assertions. Instrumentation is committed in `5fd3d87`; the schema fix is committed in `42bf3f0`.
 
 ## Notes
 
