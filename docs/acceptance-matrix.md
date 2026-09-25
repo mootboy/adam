@@ -9,7 +9,7 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 | Case | Expected result |
 | --- | --- |
 | Compiled package loads through `extension.js` | Pi factory executes ClojureScript output |
-| `/adam:status` is invoked in the bootstrap build | Placeholder status is displayed |
+| `/adam:status` is invoked | Configuration, connection, identity, active-session, last-sync, and bounded error state are displayed |
 | Java is absent at runtime | Committed ESM output still loads and executes |
 | npm package is inspected | Runtime boundary, compiled output, and docs are present; source compilation is not required |
 
@@ -48,7 +48,7 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 | File shrinks or prefix hash changes | Session is marked conflicted and writes stop |
 | Existing entry ID has different raw JSON | Existing payload is preserved and session is marked conflicted |
 | A single entry exceeds the target batch size | It is sent alone rather than split or omitted |
-| Neo4j is unavailable | Pi continues and synchronization remains pending |
+| Neo4j is unavailable | Pi continues, one deduplicated warning is emitted, synchronization remains pending, and a later lifecycle event retries |
 
 ## Session graph and restoration
 

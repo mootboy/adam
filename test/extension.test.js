@@ -4,9 +4,13 @@ import adam from "../extension.js";
 
 test("the compiled ClojureScript extension registers and serves adam:status", async () => {
   const commands = new Map();
+  const events = new Map();
   const pi = {
     registerCommand(name, definition) {
       commands.set(name, definition);
+    },
+    on(name, handler) {
+      events.set(name, handler);
     },
   };
 
@@ -25,5 +29,8 @@ test("the compiled ClojureScript extension registers and serves adam:status", as
     },
   });
 
-  assert.deepEqual(notifications, [["adam is running", "info"]]);
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0][1], "info");
+  assert.match(notifications[0][0], /adam session replica: (disabled|not connected)/);
+  assert.equal(events.size, 0, "disabled configuration must not register lifecycle synchronization");
 });

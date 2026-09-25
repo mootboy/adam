@@ -3,6 +3,7 @@
  {:extension
   {:target :esm
    :output-dir "dist"
+   :js-options {:js-provider :import}
    :modules
    {:adam
     {:entries [adam.extension]

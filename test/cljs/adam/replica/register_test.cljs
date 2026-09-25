@@ -1,0 +1,175 @@
+(ns adam.replica.register-test
+  (:require [adam.replica.register :as register]
+            [adam.replica.store :as store]
+            [cljs.test :refer [async deftest is]]
+            ["node:fs" :refer [mkdtempSync rmSync writeFileSync]]
+            ["node:os" :refer [tmpdir]]
+            ["node:path" :refer [join]]))
+
+(defrecord LifecycleReplica [checkpoint initializations writes completions closes]
+  store/SessionReplicaStore
+  (initialize! [_ user]
+    (swap! initializations conj user)
+    (js/Promise.resolve nil))
+  (get-checkpoint! [_ _session-id]
+    (js/Promise.resolve @checkpoint))
+  (write-batch! [_ request]
+    (swap! writes conj request)
+    (reset! checkpoint (:checkpoint request))
+    (js/Promise.resolve nil))
+  (complete-session! [_ request]
+    (swap! completions conj request)
+    (reset! checkpoint (:checkpoint request))
+    (js/Promise.resolve nil))
+  (mark-conflict! [_ _conflict]
+    (js/Promise.resolve nil))
+  (list-sessions! [_ _query]
+    (js/Promise.resolve []))
+  (read-session! [_ _session-id]
+    (js/Promise.resolve nil))
+  (close! [_]
+    (swap! closes inc)
+    (js/Promise.resolve nil)))
+
+(defn- fake-pi []
+  (let [commands (atom {})
+        events (atom {})]
+    {:pi #js {:registerCommand (fn [name definition]
+                                (swap! commands assoc name definition))
+              :on (fn [event handler]
+                    (swap! events assoc event handler))}
+     :commands commands
+     :events events}))
+
+(deftest disabled-registration-keeps-status-available
+  (let [{:keys [pi commands events]} (fake-pi)
+        notifications (atom [])]
+    (register/register!
+     pi
+     {:config {:enabled? false :reason "configuration missing"}})
+    (is (contains? @commands "adam:status"))
+    (is (empty? @events))
+    ((aget (get @commands "adam:status") "handler")
+     ""
+     #js {:ui #js {:notify (fn [message level]
+                            (swap! notifications conj [message level]))}})
+    (is (= "info" (second (first @notifications))))
+    (is (re-find #"disabled" (first (first @notifications))))
+    (is (re-find #"configuration missing" (first (first @notifications))))))
+
+(deftest retries-after-an-isolated-backend-outage
+  (async done
+    (let [directory (mkdtempSync (join (tmpdir) "adam-register-outage-"))
+          path (join directory "session.jsonl")
+          replica (->LifecycleReplica (atom nil) (atom []) (atom []) (atom []) (atom 0))
+          attempts (atom 0)
+          {:keys [pi]} (fake-pi)
+          notifications (atom [])
+          runtime (register/register!
+                   pi
+                   {:config {:enabled? true}
+                    :create-replica
+                    (fn []
+                      (if (= 1 (swap! attempts inc))
+                        (js/Promise.reject (js/Error. "neo4j unavailable"))
+                        replica))
+                    :load-user (fn [] {:user-uuid "user-1"})
+                    :resolve-git-identity (fn [_ctx] (js/Promise.resolve nil))})
+          ctx #js {:sessionManager
+                   #js {:getSessionFile (fn [] path)
+                        :getLeafId (fn [] nil)}
+                   :ui #js {:notify (fn [message level]
+                                      (swap! notifications conj [message level]))}}]
+      (writeFileSync path
+                     "{\"type\":\"session\",\"id\":\"session-1\",\"cwd\":\"/repo\"}\n"
+                     "utf8")
+      (-> (js/Promise.resolve nil)
+          (.then (fn [_] ((:synchronize! runtime) ctx)))
+          (.then
+           (fn [_]
+             (is (= false (:connected? ((:status runtime)))))
+             (is (= [["adam session replication unavailable; local JSONL remains authoritative"
+                      "warning"]]
+                    @notifications))
+             ((:synchronize! runtime) ctx)))
+          (.then
+           (fn [_]
+             (is (= true (:connected? ((:status runtime)))))
+             (is (= 2 @attempts))
+             (is (= "adam session replication recovered" (first (last @notifications))))
+             ((:shutdown! runtime))))
+          (.then
+           (fn [_]
+             (rmSync directory #js {:recursive true :force true})
+             (done)))
+          (.catch
+           (fn [error]
+             (rmSync directory #js {:recursive true :force true})
+             (is false (.-stack error))
+             (done)))))))
+
+(deftest lifecycle-syncs-a-persisted-session-and-reports-status
+  (async done
+    (let [directory (mkdtempSync (join (tmpdir) "adam-register-test-"))
+          path (join directory "session.jsonl")
+          checkpoint (atom nil)
+          initializations (atom [])
+          writes (atom [])
+          completions (atom [])
+          closes (atom 0)
+          replica (->LifecycleReplica checkpoint initializations writes completions closes)
+          {:keys [pi commands events]} (fake-pi)
+          notifications (atom [])
+          runtime (register/register!
+                   pi
+                   {:config {:enabled? true}
+                    :create-replica (fn [] replica)
+                    :load-user (fn [] {:user-uuid "user-1"})
+                    :resolve-git-identity
+                    (fn [_ctx]
+                      (js/Promise.resolve
+                       {:id "urn:adam:identity:git-email:hash"
+                        :kind "git-email"
+                        :value "Linus@Example.com"
+                        :normalized-value "linus@example.com"
+                        :display-value "Linus@Example.com"}))})
+          ctx #js {:cwd "/repo"
+                   :sessionManager
+                   #js {:getSessionFile (fn [] path)
+                        :getLeafId (fn [] "entry-1")}
+                   :ui #js {:notify (fn [message level]
+                                      (swap! notifications conj [message level]))}}]
+      (writeFileSync
+       path
+       (str "{\"type\":\"session\",\"id\":\"session-1\",\"cwd\":\"/repo\"}\n"
+            "{\"type\":\"message\",\"id\":\"entry-1\",\"parentId\":null}\n")
+       "utf8")
+      (is (contains? @events "session_start"))
+      (is (contains? @events "turn_end"))
+      (-> (js/Promise.resolve nil)
+          (.then (fn [_] ((:synchronize! runtime) ctx)))
+          (.then
+           (fn [_]
+             (is (= 2 (count @initializations)))
+             (is (= "urn:adam:identity:git-email:hash"
+                    (get-in (second @initializations) [:identity :id])))
+             (is (= 1 (count @writes)))
+             (is (= 1 (count @completions)))
+             (is (= "entry-1"
+                    (get-in (first @writes) [:session :current-leaf-id])))
+             (is (= :mirrored (get-in ((:status runtime)) [:last-result :status])))
+             ((aget (get @commands "adam:status") "handler") "" ctx)
+             (is (re-find #"connected" (first (last @notifications))))
+             (is (re-find #"l\*\*\*@example.com" (first (last @notifications))))
+             (is (not (re-find #"linus@example.com" (first (last @notifications)))))
+             ((:shutdown! runtime))))
+          (.then
+           (fn [_]
+             (is (= 1 @closes))
+             (rmSync directory #js {:recursive true :force true})
+             (done)))
+          (.catch
+           (fn [error]
+             (rmSync directory #js {:recursive true :force true})
+             (is false (.-stack error))
+             (done)))))))
