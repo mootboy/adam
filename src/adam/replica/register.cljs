@@ -1,5 +1,6 @@
 (ns adam.replica.register
-  (:require [adam.replica.config :as config]
+  (:require [adam.replica.commands :as commands]
+            [adam.replica.config :as config]
             [adam.replica.identity :as identity]
             [adam.replica.neo4j :as neo4j]
             [adam.replica.state :as global-state]
@@ -212,6 +213,23 @@
            (let [next-run (.then @queue (fn [_] (run-sync! ctx)))]
              (reset! queue next-run)
              next-run))
+         import-file!
+         (fn [path ctx]
+           (if-not (:enabled? resolved-config)
+             (js/Promise.reject (js/Error. (:reason resolved-config)))
+             (let [result
+                   (.then
+                    @queue
+                    (fn [_]
+                      (-> (js/Promise.all #js [(get-replica!) (get-user!)])
+                          (.then
+                           (fn [resolved]
+                             (sync/sync-session-file!
+                              {:path path
+                               :user-uuid (:user-uuid (aget resolved 1))
+                               :replica (aget resolved 0)}))))))]
+               (reset! queue (.then result (fn [_] nil) (fn [_] nil)))
+               result)))
          shutdown!
          (fn []
            (-> @queue
@@ -232,6 +250,13 @@
              #js {:description "Show adam status"
                   :handler (fn [_args ctx]
                              (notify! ctx (render-status @runtime-state) "info"))})
+     (commands/register!
+      pi
+      {:config resolved-config
+       :import-file! import-file!
+       :get-replica! get-replica!
+       :get-user! get-user!
+       :list-sessions! (:list-sessions options)})
      (when (:enabled? resolved-config)
        (doseq [event ["session_start"
                       "turn_end"
@@ -244,4 +269,5 @@
        (invoke pi "on" "session_shutdown" (fn [_event _ctx] (shutdown!))))
      {:status (fn [] @runtime-state)
       :synchronize! synchronize!
+      :import-file! import-file!
       :shutdown! shutdown!})))

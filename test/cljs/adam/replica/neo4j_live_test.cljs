@@ -1,12 +1,13 @@
 (ns adam.replica.neo4j-live-test
   (:require [adam.replica.identity :as identity]
             [adam.replica.neo4j :as adam-neo4j]
+            [adam.replica.restore :as restore]
             [adam.replica.store :as store]
             [adam.replica.sync :as sync]
             [cljs.test :refer [async deftest is]]
             ["neo4j-driver" :as neo4j]
             ["node:crypto" :refer [randomUUID]]
-            ["node:fs" :refer [mkdtempSync rmSync writeFileSync]]
+            ["node:fs" :refer [mkdtempSync readFileSync rmSync writeFileSync]]
             ["node:os" :refer [tmpdir]]
             ["node:path" :refer [join]]))
 
@@ -52,6 +53,7 @@
                     :parentSession parent-first-path})
               child-after-parent-entry "{\"type\":\"message\",\"id\":\"entry-after-parent\",\"parentId\":null}"
               child-session-id (identity/session-urn user-uuid "child-live")
+              materialized-path (join directory "materialized-child.jsonl")
               child-after-parent-session-id
               (identity/session-urn user-uuid "child-after-parent-live")
               finish!
@@ -99,6 +101,12 @@
                  (is (= child-header (:header-json restored)))
                  (is (= [child-entry] (mapv :raw-json (:entries restored))))
                  (is (= "entry-live" (get-in restored [:session :current-leaf-id])))
+                 (restore/materialize-session! replica child-session-id materialized-path)))
+              (.then
+               (fn [materialized]
+                 (is (= materialized-path (:path materialized)))
+                 (is (= (str child-header "\n" child-entry "\n")
+                        (readFileSync materialized-path "utf8")))
                  (.run query-session
                        "MATCH (:AdamSession {id: $childId})-[:FORKED_FROM]->(parent:AdamSession)
                         RETURN parent.piSessionId AS parentId"

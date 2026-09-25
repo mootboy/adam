@@ -2,7 +2,7 @@
 
 **Aloi Distributed Agent Memory** — a standalone memory and session-graph extension for [Pi](https://pi.dev).
 
-adam currently provides automatic, lossless Neo4j session replication with resumable checkpoints, complete entry trees, selected-leaf preservation, canonical fork lineage, and an operational `/adam:status`. Import, resume, and code-linked memory retrieval are being delivered incrementally under the documented contracts.
+adam currently provides automatic, lossless Neo4j session replication with resumable checkpoints, complete entry trees, selected-leaf preservation, canonical fork lineage, historical import, and local-first session restoration. Code-linked memory retrieval is being delivered incrementally under the documented contracts.
 
 ## Design documents
 
@@ -52,6 +52,11 @@ Then run:
 
 ```text
 /adam:status
+/adam:import
+/adam:import --all
+/adam:resume
 ```
+
+Import requires interactive confirmation. Resume lists the exact-cwd union of local and remote sessions, always prefers existing local JSONL, and only materializes complete, validated remote-only sessions without overwriting files.
 
 With valid configuration, adam lazily initializes the graph and reconciles persistent sessions at startup and persisted lifecycle boundaries. Missing configuration disables replication without preventing Pi from loading. Pi executes the committed JavaScript in `dist/`; Java is only required when rebuilding the ClojureScript source.
