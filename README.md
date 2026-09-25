@@ -9,6 +9,7 @@ adam currently provides automatic, lossless Neo4j session replication with resum
 - [`docs/architecture.md`](docs/architecture.md) — product boundary, internal layers, consistency, adapters, and query architecture.
 - [`docs/session-replica-contract.md`](docs/session-replica-contract.md) — authority, identity, graph schema, commands, restoration, privacy, and failure semantics.
 - [`docs/acceptance-matrix.md`](docs/acceptance-matrix.md) — deterministic and live acceptance cases for incremental delivery.
+- [`docs/issues/`](docs/issues/) — repository-local issue tracker and issue template.
 
 ## Development
 
