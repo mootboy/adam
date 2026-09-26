@@ -68,6 +68,48 @@
              (done)))
           (.catch (fn [error] (is false (.-stack error)) (done)))))))
 
+(deftest command-and-tool-support-checkout-independent-origin-lookup
+  (async done
+    (let [commands (atom {})
+          tools (atom {})
+          calls (atom [])
+          memory-store (->SurfaceStore calls (atom []))
+          pi #js {:registerCommand (fn [name definition]
+                                    (swap! commands assoc name definition))
+                  :registerTool (fn [definition]
+                                  (swap! tools assoc (aget definition "name") definition))}
+          dependencies {:get-store! #(js/Promise.resolve memory-store)
+                        :get-user! #(js/Promise.resolve {:user-uuid user-uuid})
+                        :resolve-repository! (fn [& _]
+                                               (throw (js/Error. "must not discover locally")))}
+          notifications (atom [])
+          ctx #js {:cwd "/unrelated/repository"
+                   :ui #js {:notify (fn [message level]
+                                      (swap! notifications conj [message level]))}}]
+      (surfaces/register-command! pi dependencies)
+      (surfaces/register-tool! pi dependencies)
+      (let [command (aget (get @commands "adam:context") "handler")
+            tool (get @tools "adam_file_context")
+            properties (aget (aget tool "parameters") "properties")]
+        (-> (command "--origin git@github.com:AloiAI/adam.git src/a.cljs" ctx)
+            (.then
+             (fn [_]
+               (is (= "No code-linked memories found for src/a.cljs"
+                      (ffirst @notifications)))
+               (is (some? (aget properties "origin")))
+               ((aget tool "execute")
+                "call-origin"
+                #js {:origin "https://github.com/AloiAI/adam.git"
+                     :path "src/a.cljs"}
+                nil nil #js {:cwd "/unrelated/repository"})))
+            (.then
+             (fn [result]
+               (is (= "src/a.cljs" (aget (aget result "details") "path")))
+               (is (= 2 (count @calls)))
+               (is (= (second (first @calls)) (second (second @calls))))
+               (done)))
+            (.catch (fn [error] (is false (.-stack error)) (done))))))))
+
 (deftest tool-bounds-items-output-and-recovers-after-failure
   (async done
     (let [memories (mapv (fn [index]
@@ -118,7 +160,8 @@
         (-> promise
             (.then
              (fn [result]
-               (is (= ["Usage: /adam:context <path>" "error"]
+               (is (= ["Usage: /adam:context <path> | /adam:context --origin <git-origin> <relative-path>"
+                        "error"]
                       (first @notifications)))
                (is (= "No code-linked memories found for src/empty.cljs"
                       (aget (aget (aget result "content") 0) "text")))

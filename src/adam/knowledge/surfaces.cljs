@@ -52,6 +52,14 @@
         {:content (str content "\n\n" notice)
          :truncated? true}))))
 
+(defn- command-request [arguments cwd]
+  (let [arguments (string/trim (or arguments ""))]
+    (if (string/starts-with? arguments "--origin")
+      (when-let [[_ origin path] (re-matches #"--origin\s+(\S+)\s+(.+)" arguments)]
+        {:cwd cwd :origin origin :path (string/trim path) :limit command-limit})
+      (when-not (string/blank? arguments)
+        {:cwd cwd :path arguments :limit command-limit}))))
+
 (defn register-command! [pi dependencies]
   (invoke
    pi
@@ -60,12 +68,10 @@
    #js {:description "Show observational memories linked to a repository file"
         :handler
         (fn [arguments ctx]
-          (let [path (string/trim (or arguments ""))]
-            (if (string/blank? path)
-              (notify! ctx "Usage: /adam:context <path>" "error")
+          (if-let [request (command-request arguments (aget ctx "cwd"))]
               (-> (query/query-file-memory!
                    dependencies
-                   {:cwd (aget ctx "cwd") :path path :limit command-limit})
+                   request)
                   (.then
                    (fn [{:keys [relative-path memories]}]
                      (if (empty? memories)
@@ -85,8 +91,15 @@
                         "adam context unavailable: path is not in a Git repository"
                         :path-outside-repository
                         "adam context path must identify a file inside the resolved Git repository"
+                        :invalid-origin
+                        "adam context origin must be a valid Git remote"
+                        :invalid-origin-path
+                        "adam context origin lookup requires a normalized repository-relative path"
                         (str "adam context query failed: " (error-message error)))
-                      "error")))))))}))
+                      "error"))))
+              (notify! ctx
+                       "Usage: /adam:context <path> | /adam:context --origin <git-origin> <relative-path>"
+                       "error")))}))
 
 (defn register-tool! [pi dependencies]
   (invoke
@@ -97,9 +110,10 @@
         :description
         (str "Retrieve observational memories deterministically linked to a repository file. "
              "Use this before changing a file when prior decisions or rationale may matter. "
-             "Accepts repository-relative, workspace-relative, or absolute paths; it is not semantic search.")
+             "Accepts local paths, or an optional Git origin with a repository-relative path; "
+             "it is not semantic search.")
         :promptSnippet
-        "Use adam_file_context({ path }) to retrieve prior observational memories linked to a known repository file."
+        "Use adam_file_context({ path, origin? }) to retrieve prior observational memories linked to a known repository file."
         :promptGuidelines
         #js ["Use adam_file_context when prior decisions or rationale associated with a specific file could materially affect the work."
              "Do not call it for every file or use it as semantic or global search; provide a specific path."]
@@ -111,14 +125,21 @@
              #js {:path #js {:type "string"
                              :minLength 1
                              :description
-                             "Repository-relative, workspace-relative, or absolute file path."}}}
+                             "Repository-relative, workspace-relative, or absolute file path."}
+                  :origin #js {:type "string"
+                               :minLength 1
+                               :description
+                               "Optional Git origin. When supplied, path must be normalized and repository-relative."}}}
         :execute
         (fn [_tool-call-id parameters _signal _on-update ctx]
+          (let [origin (aget parameters "origin")
+                request (cond-> {:cwd (aget ctx "cwd")
+                                 :path (aget parameters "path")
+                                 :limit tool-query-limit}
+                          (some? origin) (assoc :origin origin))]
           (-> (query/query-file-memory!
                dependencies
-               {:cwd (aget ctx "cwd")
-                :path (aget parameters "path")
-                :limit tool-query-limit})
+               request)
               (.then
                (fn [{:keys [repository relative-path memories]}]
                  (let [shown (vec (take tool-result-limit memories))
@@ -143,4 +164,4 @@
                        (when (:truncated? truncated)
                          (aset details "truncated" true))
                        #js {:content #js [#js {:type "text" :text (:content truncated)}]
-                            :details details})))))))}))
+                            :details details}))))))))}))
