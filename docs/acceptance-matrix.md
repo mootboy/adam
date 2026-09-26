@@ -77,6 +77,9 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 | Observation cites only the matching tool-result entry | Tool-call resolution still links it to the file |
 | Reflection supports a linked observation | Reflection is returned through its support relationship |
 | Relative and absolute paths identify the same file | One repository-scoped file identity |
+| Equivalent SSH, HTTPS, and credential-bearing origins are observed by different users | One canonical repository identity without credentials or user UUID |
+| The same origin-relative path is observed across users, sessions, machines, checkouts, and worktrees | One canonical file identity while queries remain user-isolated |
+| Repository has no normalizable origin | User-scoped local fallback remains isolated and is unavailable to origin lookup |
 | Main checkout and linked worktree paths identify the same relative file | One file identity; evidence retains each actual revision |
 | Session cwd is a non-Git workspace and explicit file evidence enters a repository | First selected-branch resolvable path discovers the repository |
 | Workspace has no resolvable file evidence | Replica remains healthy and projection reports a waiting state |
@@ -85,6 +88,7 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 | Same relative path exists in different repositories | Distinct file identities |
 | Abandoned branch contains memory | It remains mirrored but is excluded from the current projection |
 | Projection runs repeatedly | Results and relationships remain deterministic without duplicates |
+| Code-memory schema version is old or rebuild was interrupted | Rebuild resumes idempotently, removes obsolete derived identities, and never modifies lossless session entries |
 | Replica contains many sessions and entries | Evidence projection uses the composite session/entry lookup index rather than scanning all AdamEntry nodes |
 
 ## Memory-source adapter
@@ -104,6 +108,10 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 | --- | --- |
 | Known repository-relative file has linked memories | Command and tool return IDs, content, session/source provenance, and observed revisions |
 | Absolute or workspace-relative path identifies the same file | Query resolves to the same canonical result set |
+| Explicit normalized origin plus relative path is supplied without a checkout | Command and tool query the same canonical file directly |
+| Origin lookup is invoked from an unrelated repository | Current cwd does not constrain the result |
+| Origin mode receives an absolute path, traversal, empty path, or malformed origin | Typed validation failure before store access |
+| Shared canonical file has memories from multiple users | Query returns only memories reachable through the requesting user's sessions |
 | File has no linked memories | Successful explicit empty result |
 | Path is outside the resolved repository | Typed path failure before store access |
 | More memories exist than the tool bound | Extra probe detects omission and truncation is explicit |

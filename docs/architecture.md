@@ -33,7 +33,7 @@ The persisted log is the integration protocol. Separate extensions need no share
 ### adam owns
 
 - complete session, entry-tree, current-leaf, and fork-lineage replication;
-- user, identity, repository, worktree, file, and revision identity;
+- user and identity ownership plus canonical repository/file identity, worktree context, and revision provenance;
 - deterministic file-tool evidence;
 - adapters that interpret supported persisted memory formats;
 - Neo4j persistence and reconstruction reads;
@@ -105,6 +105,10 @@ Only explicit Pi tool calls named `read`, `edit`, or `write` with a non-empty `p
 
 Paths are canonicalized through the containing root reported by `git worktree list --porcelain -z`. Main-checkout and linked-worktree spellings of the same repository-relative path identify one file while evidence retains the actual worktree commit, branch, and dirty state.
 
+For repositories with a normalizable Git origin, repository identity is the credential-free normalized origin and is independent of adam user, session, checkout, machine, and worktree. File identity is the canonical repository identity plus normalized repository-relative path. Users own sessions and memories, not these shared code-identity nodes. Queries preserve user isolation by traversing from the requested user through owned sessions and their memories before reaching a canonical file.
+
+Originless repositories use a user-scoped local fallback derived from their resolved root. They cannot converge across machines or users and cannot be queried by origin.
+
 When a session cwd is a non-Git workspace, the selected branch is searched in session order for the first explicit file-tool path that resolves to a repository. Shell commands, prose, and path-looking memory text never establish evidence.
 
 The projection follows parent links from the recorded current leaf. Abandoned branches remain in the lossless replica but do not contribute current code-memory associations.
@@ -115,10 +119,11 @@ This file-evidence layer is implemented in `src/adam/knowledge/evidence.cljs`, `
 
 One shared service owns repository discovery, path validation, bounded lookup, content compaction, provenance rendering, and typed errors.
 
-- `/adam:context <path>` is the human-facing command.
-- `adam_file_context({ path })` is the smaller model-facing adapter.
+- `/adam:context <path>` is the local-path human-facing command.
+- `/adam:context --origin <git-origin> <repository-relative-path>` is its checkout-independent form.
+- `adam_file_context({ path, origin? })` is the smaller model-facing adapter.
 
-Both are explicit and read-only. The implemented shared service in `src/adam/knowledge/query.cljs` owns Git/worktree discovery, repository-bounded path validation, Neo4j lookup, content compaction, and provenance rendering. `src/adam/knowledge/surfaces.cljs` keeps the command at 20 results and probes 11 rows for the tool's 10-result bound, then applies independent 200-line and 12,000-byte output caps with explicit omission notices. Backend failures remain invocation-local so a later call can retry. adam does not inject retrieved memory automatically and does not provide semantic or global search in the first release.
+Both are explicit and read-only. Local mode retains Git/worktree discovery and repository-bounded path validation. Origin mode normalizes the supplied Git origin and queries canonical repository identity directly without requiring a local checkout; it rejects empty, absolute, or traversing paths before storage access. The shared service in `src/adam/knowledge/query.cljs` owns validation, Neo4j lookup, content compaction, provenance rendering, and typed errors. `src/adam/knowledge/surfaces.cljs` keeps the command at 20 results and probes 11 rows for the tool's 10-result bound, then applies independent 200-line and 12,000-byte output caps with explicit omission notices. Backend failures remain invocation-local so a later call can retry. adam does not inject retrieved memory automatically and does not provide semantic or global search.
 
 ## Failure isolation
 
@@ -141,7 +146,7 @@ Commands:
 
 Agent tool:
 
-- `adam_file_context({ path })`
+- `adam_file_context({ path, origin? })`
 
 Environment:
 
