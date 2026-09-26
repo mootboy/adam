@@ -15,6 +15,10 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 | Packed tarball is installed in a clean consumer | Extension loads and registers its public surface without ClojureScript source compilation |
 | Supported Node matrix runs in CI | Deterministic build, tests, package smoke, and committed `dist` verification pass on Node 22.19 and current Node 24 |
 | Ephemeral Neo4j CI job runs | The live integration suite passes without external service credentials |
+| Pull-request validation succeeds | No job has permission to create a release tag |
+| Protected-main validation sees an already-tagged package version | Tagging is a successful no-op |
+| Protected-main validation sees a new package version | After all required jobs pass, the exact tested merge commit receives the matching tag without pushing the branch |
+| A superseded protected-main run reaches the tagging job | It exits without tagging and leaves publication to the latest main run |
 | Release tag differs from package or lockfile version | Release is rejected before an artifact is created |
 | A valid `v*` tag passes all validation | One GitHub Release contains the tested tarball and its SHA-256 checksum |
 
