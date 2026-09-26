@@ -605,6 +605,57 @@
                   :limit ((.-int neo4j-driver) limit)})
             (.then (fn [result] (mapv file-memory-record (records result))))))))
 
+  knowledge-store/CodeMemoryMigrationStore
+  (code-memory-version! [_ user-id]
+    (with-session!
+      driver
+      database
+      (fn [session]
+        (-> (.run
+             session
+             "MATCH (u:AdamUser {id: $userId})
+              OPTIONAL MATCH (u)-[:OWNS]->(:AdamSession)-[worked:WORKED_ON]->(:AdamRepository)
+              WITH u, min(worked.extractorVersion) AS projectedVersion
+              RETURN coalesce(projectedVersion, u.codeMemoryVersion) AS version"
+             #js {:userId user-id})
+            (.then
+             (fn [result]
+               (when-let [record (first (records result))]
+                 (neo-integer (record-get record "version")))))))))
+
+  (complete-code-memory-rebuild! [_ user-id version]
+    (with-session!
+      driver
+      database
+      (fn [^js session]
+        (.executeWrite
+         session
+         (fn [tx]
+           (-> (.run
+                tx
+                "MATCH (:AdamUser {id: $userId})-[:OWNS]->(repository:AdamRepository)
+                 WHERE NOT EXISTS {
+                   MATCH (:AdamSession)-[:WORKED_ON]->(repository)
+                 }
+                 DETACH DELETE repository"
+                #js {:userId user-id})
+               (.then
+                (fn [_]
+                  (.run
+                   tx
+                   "MATCH (u:AdamUser {id: $userId})
+                    OPTIONAL MATCH (u)-[legacyOwnership:OWNS]->(:AdamRepository)
+                    DELETE legacyOwnership"
+                   #js {:userId user-id})))
+               (.then
+                (fn [_]
+                  (.run
+                   tx
+                   "MATCH (u:AdamUser {id: $userId})
+                    SET u.codeMemoryVersion = $version,
+                        u.codeMemoryRebuiltAt = datetime()"
+                   #js {:userId user-id :version version})))))))))
+
   store/SessionReplicaStore
   (initialize! [_ user]
     (initialize-schema! driver database user))

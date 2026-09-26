@@ -66,6 +66,37 @@
              (done)))
           (.catch (fn [error] (is false (.-stack error)) (done)))))))
 
+(deftest rejects-invalid-origin-paths-before-opening-store
+  (async done
+    (let [store-opened? (atom false)
+          dependencies {:get-store! (fn []
+                                      (reset! store-opened? true)
+                                      (js/Promise.resolve (->QueryStore (atom []) [])))
+                        :get-user! #(js/Promise.resolve {:user-uuid user-uuid})
+                        :resolve-repository! (fn [& _]
+                                               (throw (js/Error. "must not discover locally")))}]
+      (-> (js/Promise.all
+           (clj->js
+            (map
+             (fn [path]
+               (-> (query/query-file-memory!
+                    dependencies
+                    {:cwd "/workspace"
+                     :origin "git@github.com:AloiAI/adam.git"
+                     :path path
+                     :limit 10})
+                   (.then (fn [_] :unexpected))
+                   (.catch query/query-error-code)))
+             ["../secret" "/absolute/path" "C:/absolute/path" "src/./a.cljs"])))
+          (.then
+           (fn [codes]
+             (is (= [:invalid-origin-path :invalid-origin-path
+                     :invalid-origin-path :invalid-origin-path]
+                    (js->clj codes)))
+             (is (false? @store-opened?))
+             (done)))
+          (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
 (deftest rejects-outside-path-before-opening-store
   (async done
     (let [store-calls (atom 0)]

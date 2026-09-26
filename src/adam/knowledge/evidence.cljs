@@ -93,6 +93,7 @@
     (when (and (not (string/blank? path))
                (not (string/includes? path "\\"))
                (not (.isAbsolute posix-path path))
+               (not (re-find #"^[A-Za-z]:/" path))
                (= path (.normalize posix-path path))
                (not= "." path)
                (inside-relative-path? path))

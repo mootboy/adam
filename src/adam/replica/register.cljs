@@ -1,5 +1,6 @@
 (ns adam.replica.register
   (:require [adam.knowledge.index :as knowledge-index]
+            [adam.knowledge.migration :as knowledge-migration]
             [adam.knowledge.repository :as knowledge-repository]
             [adam.knowledge.store :as knowledge-store]
             [adam.knowledge.surfaces :as knowledge-surfaces]
@@ -66,7 +67,8 @@
   (let [{:keys [configured? connected? reason user-uuid git-email active-session-file
                 last-result last-mirrored-at last-error file-evidence-indexed-at
                 file-evidence-repository file-evidence-status file-evidence-error
-                memory-adapter-status last-timing]} runtime-state]
+                memory-adapter-status code-memory-version code-memory-rebuild-status
+                code-memory-rebuild-error last-timing]} runtime-state]
     (string/join
      "\n"
      (remove nil?
@@ -98,6 +100,12 @@
                 (str "File evidence repository: " file-evidence-repository))
               (when file-evidence-status (str "File evidence: " file-evidence-status))
               (when file-evidence-error (str "File evidence error: " file-evidence-error))
+              (when code-memory-version
+                (str "Code memory schema: v" code-memory-version))
+              (when code-memory-rebuild-status
+                (str "Code memory rebuild: " code-memory-rebuild-status))
+              (when code-memory-rebuild-error
+                (str "Code memory rebuild error: " code-memory-rebuild-error))
               (when memory-adapter-status
                 (str "Memory adapter: " memory-adapter-status))]))))
 
@@ -241,12 +249,13 @@
                                :file-evidence-status "waiting for a Git cwd or explicit file-tool path"
                                :file-evidence-error nil))
                       nil))
-                   (.catch
-                    (fn [error]
-                      (swap! runtime-state assoc
-                             :file-evidence-status nil
-                             :file-evidence-error (error-message error))
-                      nil))))))
+                   ))))
+         isolate-projection-error!
+         (fn [error]
+           (swap! runtime-state assoc
+                  :file-evidence-status nil
+                  :file-evidence-error (error-message error))
+           nil)
          synchronize-file!
          (fn [replica user path selected-leaf-id selection-known? timing]
            (let [sync-input (cond-> {:path path
@@ -263,7 +272,47 @@
                   (fn [result]
                     (-> (project-file-evidence!
                          replica path (:user-uuid user) selected-leaf-id selection-known? timing)
+                        (.catch isolate-projection-error!)
                         (.then (fn [_] result))))))))
+         code-memory-rebuild-promise (atom nil)
+         rebuild-code-memory!
+         (fn [replica user timing]
+           (if-not (satisfies? knowledge-store/CodeMemoryMigrationStore replica)
+             (js/Promise.resolve {:status :unsupported})
+             (or @code-memory-rebuild-promise
+                 (let [user-id (identity/user-urn (:user-uuid user))
+                       promise
+                       (-> (knowledge-migration/rebuild-if-needed!
+                            {:store replica
+                             :user-id user-id
+                             :session-files (or (:list-code-memory-session-files options)
+                                                commands/all-session-files)
+                             :rebuild-session!
+                             (fn [path]
+                               (-> (sync/sync-session-file!
+                                    {:path path
+                                     :user-uuid (:user-uuid user)
+                                     :replica replica})
+                                   (.then
+                                    (fn [_]
+                                      (project-file-evidence!
+                                       replica path (:user-uuid user) nil false timing)))))})
+                           (.then
+                            (fn [result]
+                              (swap! runtime-state assoc
+                                     :code-memory-version (:version result)
+                                     :code-memory-rebuild-status (name (:status result))
+                                     :code-memory-rebuild-error nil)
+                              result))
+                           (.catch
+                            (fn [error]
+                              (reset! code-memory-rebuild-promise nil)
+                              (swap! runtime-state assoc
+                                     :code-memory-rebuild-status "waiting to retry"
+                                     :code-memory-rebuild-error (error-message error))
+                              (js/Promise.reject error))))]
+                   (reset! code-memory-rebuild-promise promise)
+                   promise))))
          run-sync!
          (fn [ctx timing]
            (if-not (:enabled? resolved-config)
@@ -296,6 +345,9 @@
                             (swap! runtime-state assoc
                                    :git-email (:normalized-value git-identity)))
                           (-> initialize-identity
+                              (.then
+                               (fn [_]
+                                 (rebuild-code-memory! replica user timing)))
                               (.then
                                (fn [_]
                                  (record-duration! timing :initialization-ms

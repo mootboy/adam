@@ -7,11 +7,14 @@
 (defn- recording-driver []
   (let [calls (atom [])
         closes (atom 0)
-        session #js {:run (fn [query params]
-                            (swap! calls conj {:query query
-                                               :params (when params
-                                                         (js->clj params :keywordize-keys true))})
-                            (js/Promise.resolve #js {:records #js []}))
+        run! (fn [query params]
+               (swap! calls conj {:query query
+                                  :params (when params
+                                            (js->clj params :keywordize-keys true))})
+               (js/Promise.resolve #js {:records #js []}))
+        tx #js {:run run!}
+        session #js {:run run!
+                     :executeWrite (fn [work] (work tx))
                      :close (fn []
                               (swap! closes inc)
                               (js/Promise.resolve nil))}
@@ -276,6 +279,32 @@
                (is (= "memory-1" (.-recordingEntryId observation)))
                (is (= "bbbbbbbbbbbb" (.-memoryId reflection)))
                (is (= 1 @closes))
+               (done))))
+          (.catch
+           (fn [error]
+             (is false (.-stack error))
+             (done)))))))
+
+(deftest persists-code-memory-rebuild-version-after-removing-legacy-ownership
+  (async done
+    (let [{:keys [driver calls closes]} (recording-driver)
+          replica (neo4j/replica-with-driver driver "neo4j")]
+      (-> (knowledge-store/code-memory-version!
+           replica "urn:adam:user:user-1")
+          (.then
+           (fn [version]
+             (is (nil? version))
+             (knowledge-store/complete-code-memory-rebuild!
+              replica "urn:adam:user:user-1" 3)))
+          (.then
+           (fn [_]
+             (let [queries (mapv :query (filter :query @calls))]
+               (is (some #(re-find #"min\(worked.extractorVersion\)" %) queries))
+               (is (some #(re-find #"codeMemoryVersion" %) queries))
+               (is (some #(re-find #"legacyOwnership:OWNS" %) queries))
+               (is (some #(re-find #"DETACH DELETE repository" %) queries))
+               (is (some #(re-find #"u.codeMemoryVersion = \$version" %) queries))
+               (is (= 2 @closes))
                (done))))
           (.catch
            (fn [error]

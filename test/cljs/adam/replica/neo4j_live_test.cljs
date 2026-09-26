@@ -80,9 +80,15 @@
               finish!
               (fn [error]
                 (-> (.run query-session
-                          "MATCH (:AdamUser {id: $userId})-[:OWNS]->(:AdamRepository)-[:CONTAINS]->(file:AdamCodeFile)
+                          "MATCH (file:AdamCodeFile {repositoryId: $repositoryId})
                            DETACH DELETE file"
-                          #js {:userId user-id})
+                          #js {:repositoryId (:id repository)})
+                    (.then
+                     (fn [_]
+                       (.run query-session
+                             "MATCH (repository:AdamRepository {id: $repositoryId})
+                              DETACH DELETE repository"
+                             #js {:repositoryId (:id repository)})))
                     (.then
                      (fn [_]
                        (.run query-session
@@ -152,6 +158,14 @@
                    :repository repository :current-leaf-id "drop-live"})))
               (.then
                (fn [_]
+                 (knowledge-store/complete-code-memory-rebuild!
+                  replica user-id 3)))
+              (.then
+               (fn [_]
+                 (knowledge-store/code-memory-version! replica user-id)))
+              (.then
+               (fn [version]
+                 (is (= 3 version))
                  (knowledge-store/query-file-memory!
                   replica user-id (:id repository) "src/live.cljs" 20)))
               (.then
@@ -168,8 +182,10 @@
                             :branch "live" :dirty? true}]
                           (:source-contexts reflection))))
                  (.call (aget file-context-tool "execute") file-context-tool
-                        "call-live" #js {:path "src/live.cljs"}
-                        nil nil #js {:cwd "/repo"})))
+                        "call-live"
+                        #js {:origin "https://github.com/AloiAI/adam.git"
+                             :path "src/live.cljs"}
+                        nil nil #js {:cwd "/unrelated/repository"})))
               (.then
                (fn [tool-result]
                  (let [text (aget (aget (aget tool-result "content") 0) "text")]

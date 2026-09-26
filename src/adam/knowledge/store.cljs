@@ -6,3 +6,7 @@
 
 (defprotocol FileMemoryQueryStore
   (query-file-memory! [store user-id repository-id relative-path limit]))
+
+(defprotocol CodeMemoryMigrationStore
+  (code-memory-version! [store user-id])
+  (complete-code-memory-rebuild! [store user-id version]))
