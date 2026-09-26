@@ -2,6 +2,19 @@
 
 All notable changes to adam are documented here.
 
+## [Unreleased]
+
+### Added
+
+- Checkout-independent `/adam:context --origin <git-origin> <relative-path>` and `adam_file_context({ path, origin })` lookup.
+- Versioned, restart-safe rebuilding of derived code-memory state from authoritative local session logs.
+
+### Changed
+
+- Origin-backed repositories and files now use canonical identities shared across users, sessions, machines, checkouts, and worktrees.
+- File-memory retrieval remains user-isolated through user-owned session and memory provenance.
+- Originless repositories retain isolated user-scoped fallback identities.
+
 ## [0.1.1] - 2026-09-25
 
 ### Added
