@@ -223,18 +223,18 @@
   (async done
     (let [{:keys [driver calls closes]} (transactional-driver)
           replica (neo4j/replica-with-driver driver "neo4j")
-          projection {:extractor-version 1
+          projection {:extractor-version 3
                       :user-id "urn:adam:user:user-1"
                       :session-id "urn:adam:session:user-1:session-1"
                       :pi-session-id "session-1"
-                      :repository {:id "urn:adam:repository:user-1:hash"
+                      :repository {:id "urn:adam:repository:git:hash"
                                    :root "/repo"
                                    :normalized-remote "github.com/AloiAI/adam"
                                    :commit "feature-head"
                                    :branch "feature/a"
                                    :dirty? true}
                       :files [{:id "urn:adam:file:file-hash"
-                               :repository-id "urn:adam:repository:user-1:hash"
+                               :repository-id "urn:adam:repository:git:hash"
                                :relative-path "src/a.cljs"}]
                       :entry-file-evidence
                       [{:entry-id "entry-1" :file-id "urn:adam:file:file-hash"
@@ -264,6 +264,8 @@
                    ^js reflection (first (array-seq (aget (:params reflection-call) "reflections")))]
                (is (some #(re-find #"DELETE touch" %) queries))
                (is (some #(re-find #"WORKED_ON" %) queries))
+               (is (some #(re-find #"worked\.root = \$root" %) queries))
+               (is (not-any? #(re-find #"\(u\)-\[:OWNS\]->\(repository\)" %) queries))
                (is (some #(re-find #"AdamCodeFile" %) queries))
                (is (some #(re-find #"DETACH DELETE memory" %) queries))
                (is (= "feature-head" (.-commit evidence)))
@@ -273,6 +275,29 @@
                (is (= true (.-dropped observation)))
                (is (= "memory-1" (.-recordingEntryId observation)))
                (is (= "bbbbbbbbbbbb" (.-memoryId reflection)))
+               (is (= 1 @closes))
+               (done))))
+          (.catch
+           (fn [error]
+             (is false (.-stack error))
+             (done)))))))
+
+(deftest queries-shared-code-identity-through-requesting-user-sessions
+  (async done
+    (let [{:keys [driver calls closes]} (recording-driver)
+          replica (neo4j/replica-with-driver driver "neo4j")]
+      (-> (knowledge-store/query-file-memory!
+           replica
+           "urn:adam:user:user-1"
+           "urn:adam:repository:git:hash"
+           "src/a.cljs"
+           10)
+          (.then
+           (fn [_]
+             (let [query (:query (first (filter :query @calls)))]
+               (is (re-find #"AdamUser.*OWNS.*AdamSession.*HAS_MEMORY" query))
+               (is (not (re-find #"OWNS.*AdamRepository" query)))
+               (is (re-find #"AdamRepository.*CONTAINS.*AdamCodeFile" query))
                (is (= 1 @closes))
                (done))))
           (.catch
