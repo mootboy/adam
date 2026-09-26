@@ -239,3 +239,127 @@
                    (is (= "parent-first-live" (.get record "parentId"))))
                  (finish! nil)))
               (.catch finish!)))))))
+
+(deftest live-canonical-code-identity-is-shared-but-memory-is-user-isolated
+  (async done
+    (let [uri (environment "ADAM_TEST_NEO4J_URI")
+          username (environment "ADAM_TEST_NEO4J_USERNAME")
+          password (environment "ADAM_TEST_NEO4J_PASSWORD")
+          database (or (environment "ADAM_TEST_NEO4J_DATABASE") "neo4j")]
+      (if-not (and uri username password)
+        (do
+          (is false "ADAM_TEST_NEO4J_URI, USERNAME, and PASSWORD are required")
+          (done))
+        (let [first-user (randomUUID)
+              second-user (randomUUID)
+              first-user-id (identity/user-urn first-user)
+              second-user-id (identity/user-urn second-user)
+              auth-token (.basic (.-auth neo4j) username password)
+              ^js driver ((.-driver neo4j) uri auth-token)
+              replica (adam-neo4j/replica-with-driver driver database)
+              ^js query-session (.session driver #js {:database database})
+              directory (mkdtempSync (join (tmpdir) "adam-neo4j-identity-live-"))
+              first-path (join directory "first.jsonl")
+              second-path (join directory "second.jsonl")
+              first-repository (evidence/build-repository
+                                {:user-uuid first-user :root "/first-checkout"
+                                 :remote "git@github.com:AloiAI/adam.git"
+                                 :commit "first-commit" :branch "first" :dirty? false})
+              second-repository (evidence/build-repository
+                                 {:user-uuid second-user :root "/second-checkout"
+                                  :remote "https://github.com/AloiAI/adam.git"
+                                  :commit "second-commit" :branch "second" :dirty? false})
+              write-session!
+              (fn [path session-id memory-id content cwd]
+                (writeFileSync
+                 path
+                 (str (js/JSON.stringify #js {:type "session" :version 3
+                                              :id session-id :cwd cwd}) "\n"
+                      "{\"type\":\"message\",\"id\":\"call-entry\",\"parentId\":null,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"call\",\"name\":\"read\",\"arguments\":{\"path\":\"src/shared.cljs\"}}]}}\n"
+                      "{\"type\":\"message\",\"id\":\"result\",\"parentId\":\"call-entry\",\"message\":{\"role\":\"toolResult\",\"toolCallId\":\"call\"}}\n"
+                      (js/JSON.stringify
+                       #js {:type "custom" :id "memory" :parentId "result"
+                            :customType "om.observations.recorded"
+                            :data #js {:observations
+                                       #js [#js {:id memory-id :content content
+                                                :timestamp "2026-01-01T00:00:00.000Z"
+                                                :relevance "high"
+                                                :tokenCount 3
+                                                :sourceEntryIds #js ["result"]}]
+                                       :coversUpToId "result"}}) "\n")
+                 "utf8"))
+              finish!
+              (fn [error]
+                (-> (.run query-session
+                          "MATCH (file:AdamCodeFile {repositoryId: $repositoryId}) DETACH DELETE file"
+                          #js {:repositoryId (:id first-repository)})
+                    (.then (fn [_]
+                             (.run query-session
+                                   "MATCH (repository:AdamRepository {id: $repositoryId}) DETACH DELETE repository"
+                                   #js {:repositoryId (:id first-repository)})))
+                    (.then (fn [_]
+                             (.run query-session
+                                   "MATCH (n) WHERE n.id CONTAINS $firstUser OR n.id CONTAINS $secondUser DETACH DELETE n"
+                                   #js {:firstUser first-user :secondUser second-user})))
+                    (.catch (fn [_] nil))
+                    (.finally
+                     (fn []
+                       (rmSync directory #js {:recursive true :force true})
+                       (-> (.close query-session)
+                           (.then (fn [_] (store/close! replica)))
+                           (.finally
+                            (fn []
+                              (when error (is false (.-stack error)))
+                              (done))))))))]
+          (write-session! first-path "first-session" "111111111111"
+                          "First user memory" "/first-checkout")
+          (write-session! second-path "second-session" "222222222222"
+                          "Second user memory" "/second-checkout")
+          (is (= (:id first-repository) (:id second-repository)))
+          (-> (store/initialize! replica {:id first-user-id})
+              (.then (fn [_] (store/initialize! replica {:id second-user-id})))
+              (.then (fn [_] (knowledge-store/ensure-file-evidence-schema! replica)))
+              (.then (fn [_]
+                       (sync/sync-session-file!
+                        {:path first-path :user-uuid first-user :replica replica})))
+              (.then (fn [_]
+                       (sync/sync-session-file!
+                        {:path second-path :user-uuid second-user :replica replica})))
+              (.then (fn [_]
+                       (knowledge-index/index-session!
+                        {:store replica :path first-path :user-uuid first-user
+                         :repository first-repository})))
+              (.then (fn [_]
+                       (knowledge-index/index-session!
+                        {:store replica :path second-path :user-uuid second-user
+                         :repository second-repository})))
+              (.then (fn [_]
+                       (knowledge-store/query-file-memory!
+                        replica first-user-id (:id first-repository) "src/shared.cljs" 20)))
+              (.then
+               (fn [first-memories]
+                 (is (= ["First user memory"] (mapv :content first-memories)))
+                 (knowledge-store/query-file-memory!
+                  replica second-user-id (:id second-repository) "src/shared.cljs" 20)))
+              (.then
+               (fn [second-memories]
+                 (is (= ["Second user memory"] (mapv :content second-memories)))
+                 (.run query-session
+                       "MATCH (repository:AdamRepository {id: $repositoryId})-[:CONTAINS]->(file:AdamCodeFile {relativePath: $path})
+                        OPTIONAL MATCH (:AdamUser)-[ownership:OWNS]->(repository)
+                        RETURN count(DISTINCT repository) AS repositories,
+                               count(DISTINCT file) AS files,
+                               count(ownership) AS ownerships"
+                       #js {:repositoryId (:id first-repository)
+                            :path "src/shared.cljs"})))
+              (.then
+               (fn [^js result]
+                 (let [^js record (first (array-seq (.-records result)))
+                       ^js repositories (.get record "repositories")
+                       ^js files (.get record "files")
+                       ^js ownerships (.get record "ownerships")]
+                   (is (= 1 (.toNumber repositories)))
+                   (is (= 1 (.toNumber files)))
+                   (is (= 0 (.toNumber ownerships))))
+                 (finish! nil)))
+              (.catch finish!)))))))
