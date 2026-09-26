@@ -3,9 +3,9 @@
 [![CI](https://github.com/mootboy/adam/actions/workflows/ci.yml/badge.svg)](https://github.com/mootboy/adam/actions/workflows/ci.yml)
 [![Release](https://github.com/mootboy/adam/actions/workflows/release.yml/badge.svg)](https://github.com/mootboy/adam/actions/workflows/release.yml)
 
-**A Distributed Agent Memory** — a standalone memory and session-graph extension for [Pi](https://pi.dev).
+**A Distributed Agent Memory** — durable session replication and provenance-bearing memory retrieval for coding agents.
 
-adam currently provides automatic, lossless Neo4j session replication with resumable checkpoints, complete entry trees, selected-leaf preservation, canonical fork lineage, historical import, local-first session restoration, deterministic repository/file evidence across Git worktrees, structural adaptation of persisted `pi-observational-memory` entries, and bounded file-context retrieval for humans and agents.
+Adam provides a full [Pi](https://pi.dev) extension and a read-only [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin. Pi support includes automatic, lossless Neo4j session replication, resumable checkpoints, complete entry trees, selected-leaf preservation, canonical fork lineage, historical import, local-first restoration, deterministic repository/file evidence, structural adaptation of persisted `pi-observational-memory` entries, and bounded file-context retrieval. Claude Code can explicitly query those existing memories through a stdio MCP server; Claude transcript ingestion is not yet implemented.
 
 ## Design documents
 
@@ -26,7 +26,7 @@ npm install --ignore-scripts
 npm test
 ```
 
-`npm test` compiles ClojureScript to `dist/adam.js`, runs deterministic tests, packs the npm tarball, installs it into a temporary consumer, and exercises both the source and packaged JavaScript extension boundaries. `npm run ci` additionally verifies that the committed `dist/adam.js` matches the source build.
+`npm test` compiles ClojureScript to `dist/adam.js` and `dist/adam-mcp.js`, runs deterministic tests, packs the npm tarball, installs it into a temporary consumer, and exercises the source and packaged JavaScript boundaries. `npm run ci` additionally verifies that the committed generated runtime matches the source build.
 
 The opt-in live suite uses an isolated Neo4j database:
 
@@ -48,7 +48,7 @@ npm run watch
 Install a stable GitHub release tag:
 
 ```bash
-pi install git:github.com/mootboy/adam@v0.1.1
+pi install git:github.com/mootboy/adam@v0.2.1
 ```
 
 The repository is public and releases are distributed through GitHub. For local development, build and load the checkout directly:
@@ -81,6 +81,18 @@ Then run:
 Agents can call `adam_file_context({ path, origin? })` for explicit, provenance-bearing retrieval of memories linked to a known repository file. Local lookup accepts repository-relative, workspace-relative, or absolute paths. Supplying a Git origin enables checkout-independent lookup with a normalized repository-relative path. The command returns up to 20 memories; the agent tool returns up to 10 and applies fixed item, line, and byte bounds. Neither performs semantic or global search.
 
 Origin-backed repository and file identities are canonical across users, sessions, machines, checkouts, and worktrees. Retrieval remains isolated to memories reachable through the requesting user's sessions. Originless repositories retain isolated user-scoped fallback identities.
+
+## Use from Claude Code
+
+Build or unpack an Adam release, export the same `ADAM_NEO4J_*` variables, and load its plugin directory:
+
+```bash
+claude --plugin-dir /absolute/path/to/adam
+```
+
+The plugin starts the packaged stdio MCP server and exposes `adam_file_context` with the same origin lookup, user isolation, provenance rendering, and output bounds as Pi. Its bundled skill recommends explicit retrieval for a known file and does not inject memories automatically. Claude Code currently reads memories already indexed by Pi; it does not ingest Claude transcripts.
+
+Adam stores the permanent user UUID under `${XDG_CONFIG_HOME:-~/.config}/adam/config.json`. On first use it atomically adopts an existing Pi-scoped UUID from `${PI_CODING_AGENT_DIR:-~/.pi/agent}/adam/config.json`. Conflicting UUIDs fail visibly rather than silently splitting identity.
 
 Import requires interactive confirmation. Resume lists the exact-cwd union of local and remote sessions, always prefers existing local JSONL, and only materializes complete, validated remote-only sessions without overwriting files.
 

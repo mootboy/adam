@@ -3,27 +3,33 @@
   "version": "0.2.1",
   "private": true,
   "license": "GPL-3.0-only",
-  "description": "A Distributed Agent Memory for Pi",
+  "description": "Provenance-bearing distributed memory for coding agents",
   "type": "module",
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "claude-code-plugin",
+    "mcp"
   ],
   "files": [
+    ".claude-plugin/",
+    ".mcp.json",
     "dist/",
     "docs/",
+    "skills/",
     "extension.js",
+    "mcp.js",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "shadow-cljs release extension",
+    "build": "shadow-cljs release extension mcp",
     "clean": "rm -rf dist target .shadow-cljs",
     "test": "npm run build && npm run test:cljs && node --test test/*.test.js",
     "test:cljs": "shadow-cljs compile test",
     "test:neo4j": "shadow-cljs compile neo4j-test",
     "watch": "shadow-cljs watch extension test",
-    "check:dist": "git diff --exit-code -- dist/adam.js",
+    "check:dist": "git diff --exit-code -- dist/adam.js dist/adam-mcp.js",
     "ci": "npm run clean && npm test && npm run check:dist",
     "preversion": "npm run ci"
   },
@@ -39,7 +45,9 @@
     ]
   },
   "dependencies": {
-    "neo4j-driver": "^6.2.0"
+    "@modelcontextprotocol/sdk": "^1.30.1",
+    "neo4j-driver": "^6.2.0",
+    "zod": "^3.25.76"
   },
   "repository": {
     "type": "git",

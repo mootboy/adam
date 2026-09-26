@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "adam",
+  "version": "0.2.1",
+  "description": "Explicit, provenance-bearing retrieval from A Distributed Agent Memory",
+  "author": {
+    "name": "mootboy"
+  },
+  "homepage": "https://github.com/mootboy/adam",
+  "repository": "https://github.com/mootboy/adam",
+  "license": "GPL-3.0-only",
+  "mcpServers": "./.mcp.json",
+  "keywords": [
+    "memory",
+    "mcp",
+    "provenance"
+  ]
+}

@@ -4,6 +4,20 @@ All notable changes to adam are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- A read-only Claude Code plugin and compiled stdio MCP server exposing the existing bounded `adam_file_context` query.
+- A bundled Claude skill for selective, provenance-aware file-memory retrieval.
+
+### Changed
+
+- Adam's permanent user identity now lives in the host-neutral XDG config directory and atomically adopts an existing Pi identity.
+- Pi and MCP file-context tools share one host-neutral execution and output-bounding adapter.
+
+### Fixed
+
+- Code-memory migration version checks now detect stale `WORKED_ON` projections even when a newer session marker exists.
+
 ## [0.2.1] - 2026-09-26
 
 ### Changed

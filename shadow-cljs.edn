@@ -9,6 +9,15 @@
     {:entries [adam.extension]
      :exports {start adam.extension/start}}}}
 
+  :mcp
+  {:target :esm
+   :output-dir "dist"
+   :js-options {:js-provider :import}
+   :modules
+   {:adam-mcp
+    {:entries [adam.mcp]
+     :exports {start adam.mcp/start}}}}
+
   :test
   {:target :node-test
    :output-to "target/tests.cjs"

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { constants } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -66,7 +67,12 @@ test("the release tarball is complete and runs without source compilation", asyn
     for (const relativePath of [
       "package.json",
       "extension.js",
+      "mcp.js",
+      ".mcp.json",
+      ".claude-plugin/plugin.json",
+      "skills/adam-memory/SKILL.md",
       "dist/adam.js",
+      "dist/adam-mcp.js",
       "README.md",
       "CHANGELOG.md",
       "LICENSE",
@@ -85,10 +91,24 @@ test("the release tarball is complete and runs without source compilation", asyn
     assert.equal(manifest.engines.node, ">=22.19.0");
     assert.equal(manifest.repository.url, "git+https://github.com/mootboy/adam.git");
 
+    const pluginManifest = JSON.parse(
+      await readFile(path.join(packageRoot, ".claude-plugin", "plugin.json"), "utf8"),
+    );
+    assert.equal(pluginManifest.name, "adam");
+    assert.equal(pluginManifest.version, manifest.version);
+    assert.equal(pluginManifest.mcpServers, "./.mcp.json");
+    const mcpConfiguration = JSON.parse(
+      await readFile(path.join(packageRoot, ".mcp.json"), "utf8"),
+    );
+    assert.equal(mcpConfiguration.mcpServers.adam.command, "${CLAUDE_PLUGIN_ROOT:-.}/mcp.js");
+    await access(path.join(packageRoot, "mcp.js"), constants.X_OK);
+
     const savedEnvironment = new Map(neo4jEnvironment.map((key) => [key, process.env[key]]));
     try {
       for (const key of neo4jEnvironment) delete process.env[key];
       const { default: adam } = await import(pathToFileURL(path.join(packageRoot, "extension.js")));
+      const mcpModule = await import(pathToFileURL(path.join(packageRoot, "dist", "adam-mcp.js")));
+      assert.equal(typeof mcpModule.start, "function");
       const commands = new Map();
       await adam({
         registerCommand(name, definition) {

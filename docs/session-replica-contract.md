@@ -41,7 +41,7 @@ Unencrypted Neo4j schemes are accepted only for loopback hosts. Non-loopback end
 
 ## Identity
 
-A generated UUID is adam's stable local principal. The initial external identity source is the effective Git email for a session cwd. Absence of a Git email is allowed.
+A generated UUID is adam's stable local principal across hosts. Canonical non-secret state lives at `${XDG_CONFIG_HOME:-~/.config}/adam/config.json`. If it is absent, Adam atomically adopts an existing Pi-scoped UUID from `${PI_CODING_AGENT_DIR:-~/.pi/agent}/adam/config.json`. Matching dual states are accepted; differing UUIDs fail visibly rather than silently splitting identity. The initial external identity source is the effective Git email for a session cwd. Absence of a Git email is allowed.
 
 Git email normalization trims whitespace and lowercases the full address for hashing while retaining observed spelling as a display value. Distinct addresses are never automatically merged.
 
@@ -216,7 +216,9 @@ Normalizes the explicit origin and queries canonical repository/file identity wi
 
 `adam_file_context({ path, origin? })` uses the same query service as `/adam:context`, with a smaller model-facing result bound and explicit item, line, and byte truncation. Omitting `origin` selects existing local-path behavior; supplying it requires a normalized repository-relative path and does not require a checkout. Empty results are successful. Backend, origin, and path failures remain distinguishable. The tool is registered only when Neo4j configuration enables the subsystem.
 
-Its Pi prompt guidance recommends retrieval for a known file when prior decisions may materially affect work, while discouraging calls for every file or semantic/global search.
+Pi and the Claude Code stdio MCP adapter expose the same host-neutral execution contract. The Claude plugin starts the compiled `mcp.js` boundary, registers the tool as read-only, non-destructive, and idempotent, and uses the permanent canonical Adam user. Backend failures are returned as tool-local errors and the Neo4j driver closes when the MCP process ends.
+
+Pi prompt guidance and the bundled Claude skill recommend retrieval for a known file when prior decisions may materially affect work, while discouraging calls for every file or semantic/global search. Claude transcript ingestion and automatic prompt insertion are not part of this read-only stage.
 
 ## Logging and privacy
 

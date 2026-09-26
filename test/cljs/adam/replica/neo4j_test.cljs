@@ -320,7 +320,9 @@
           (.then
            (fn [_]
              (let [queries (mapv :query (filter :query @calls))]
-               (is (some #(re-find #"min\(coalesce\(s.codeMemoryVersion" %) queries))
+               (is (some #(re-find #"s.codeMemoryVersion < worked.extractorVersion" %)
+                         queries))
+               (is (some #(re-find #"min\(sessionVersion\)" %) queries))
                (is (some #(re-find #"codeMemoryVersion" %) queries))
                (is (some #(re-find #"legacyOwnership:OWNS" %) queries))
                (is (some #(re-find #"DETACH DELETE repository" %) queries))
