@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_call:
+    inputs:
+      tag:
+        description: Existing release tag to validate and publish
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -18,6 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     services:
       neo4j:
         image: neo4j:5.26-community
@@ -34,6 +42,8 @@ jobs:
     steps:
       - name: Check out tagged source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - name: Set up Java
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
@@ -53,8 +63,8 @@ jobs:
           const manifest = JSON.parse(readFileSync("package.json", "utf8"));
           const lockfile = JSON.parse(readFileSync("package-lock.json", "utf8"));
           const expected = `v${manifest.version}`;
-          if (process.env.GITHUB_REF_NAME !== expected) {
-            throw new Error(`tag ${process.env.GITHUB_REF_NAME} does not match package version ${expected}`);
+          if (process.env.RELEASE_TAG !== expected) {
+            throw new Error(`tag ${process.env.RELEASE_TAG} does not match package version ${expected}`);
           }
           if (lockfile.version !== manifest.version || lockfile.packages[""].version !== manifest.version) {
             throw new Error("package-lock.json version does not match package.json");
@@ -85,23 +95,23 @@ jobs:
           ADAM_PACKAGE_TARBALL: ${{ steps.package.outputs.tarball }}
       - name: Ensure release does not already exist
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            echo "release $GITHUB_REF_NAME already exists" >&2
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "release $RELEASE_TAG already exists" >&2
             exit 1
           fi
         env:
           GH_TOKEN: ${{ github.token }}
       - name: Create draft release with tested artifacts
         run: >-
-          gh release create "$GITHUB_REF_NAME"
+          gh release create "$RELEASE_TAG"
           release-assets/*
           --verify-tag
           --draft
           --generate-notes
-          --title "adam $GITHUB_REF_NAME"
+          --title "adam $RELEASE_TAG"
         env:
           GH_TOKEN: ${{ github.token }}
       - name: Publish release
-        run: gh release edit "$GITHUB_REF_NAME" --draft=false
+        run: gh release edit "$RELEASE_TAG" --draft=false
         env:
           GH_TOKEN: ${{ github.token }}

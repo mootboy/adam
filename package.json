@@ -1,6 +1,6 @@
 {
   "name": "@mootboy/adam",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "license": "GPL-3.0-only",
   "description": "A Distributed Agent Memory for Pi",
@@ -25,8 +25,7 @@
     "watch": "shadow-cljs watch extension test",
     "check:dist": "git diff --exit-code -- dist/adam.js",
     "ci": "npm run clean && npm test && npm run check:dist",
-    "preversion": "npm run ci",
-    "postversion": "git push --follow-tags"
+    "preversion": "npm run ci"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"

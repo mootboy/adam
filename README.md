@@ -88,13 +88,15 @@ With valid configuration, adam lazily initializes the graph and reconciles persi
 
 ## Releases
 
-Cut a release with npm, which runs the full deterministic check, commits the version bump, tags it, and pushes:
+A release version and its changelog entry are part of the regular implementation PR. After committing the implementation, prepare its version without creating a local commit or tag:
 
 ```bash
-npm version patch   # or minor / major
+npm version patch --no-git-tag-version   # or minor / major
 ```
 
-A `v*` tag must exactly match the versions in `package.json` and `package-lock.json`. The release workflow reruns deterministic and live Neo4j validation, verifies committed generated output, smoke-tests the exact package tarball, and publishes a GitHub Release containing that tarball and its SHA-256 checksum. Public npm publication remains disabled; GitHub is the distribution channel for now.
+Commit the resulting `package.json` and `package-lock.json` changes with the dated `CHANGELOG.md` entry on the same branch. Pull-request CI validates the source, committed runtime, package, and live Neo4j behavior as usual.
+
+After the PR is merged, the protected-main CI run repeats those checks. If the package version does not yet have a tag, a least-privilege post-merge job creates that tag at the exact tested merge commit and invokes the release workflow. An already-tagged version is a successful no-op. The release workflow validates the tag and package versions again, smoke-tests the exact tarball, and publishes a GitHub Release containing the tarball and its SHA-256 checksum. Public npm publication remains disabled; GitHub is the distribution channel for now.
 
 ## License
 

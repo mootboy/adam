@@ -4,6 +4,12 @@ All notable changes to adam are documented here.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-26
+
+### Changed
+
+- Release tagging now runs as a least-privilege post-merge CI step after protected-main validation, rather than partially pushing a version commit and tag from `npm version`.
+
 ## [0.2.0] - 2026-09-26
 
 ### Added
