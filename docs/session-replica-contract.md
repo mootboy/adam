@@ -45,20 +45,21 @@ A generated UUID is adam's stable local principal. The initial external identity
 
 Git email normalization trims whitespace and lowercases the full address for hashing while retaining observed spelling as a display value. Distinct addresses are never automatically merged.
 
-Canonical identifiers use a private, user-scoped namespace:
+User-owned identifiers use a private, user-scoped namespace. Code identity is canonical when a normalized origin exists:
 
 ```text
 urn:adam:user:<userUuid>
 urn:adam:identity:git-email:<sha256(normalizedEmail)>
 urn:adam:session:<userUuid>:<piSessionId>
 urn:adam:entry:<userUuid>:<piSessionId>:<entryId>
-urn:adam:repository:<userUuid>:<repositoryHash>
-urn:adam:file:<repositoryHash>
+urn:adam:repository:git:<sha256(normalizedOrigin)>
+urn:adam:repository:local:<userUuid>:<sha256(resolvedRoot)>
+urn:adam:file:<sha256(repositoryId + NUL + normalizedRelativePath)>
 urn:adam:observation:<userUuid>:<piSessionId>:<memoryId>
 urn:adam:reflection:<userUuid>:<piSessionId>:<memoryId>
 ```
 
-Session and entry IDs are user-scoped so copied files cannot create accidental cross-user ownership or lineage.
+Session and entry IDs are user-scoped so copied files cannot create accidental cross-user ownership or lineage. Repositories with equivalent credential-free SSH or HTTPS origins converge across users, sessions, machines, checkouts, and registered worktrees. Originless repositories retain isolated user-scoped local identities and cannot be queried by origin.
 
 ## JSONL validation
 
@@ -147,7 +148,7 @@ Relationships:
 
 ```text
 AdamRepository
-  id, normalizedRemote, root
+  id, normalizedOrigin
 
 AdamCodeFile
   id, repositoryId, relativePath
@@ -164,7 +165,6 @@ AdamReflection
 Relationships:
 
 ```text
-(AdamUser)-[:OWNS]->(AdamRepository)
 (AdamSession)-[:WORKED_ON]->(AdamRepository)
 (AdamRepository)-[:CONTAINS]->(AdamCodeFile)
 (AdamSession)-[:HAS_MEMORY]->(AdamObservation|AdamReflection)
@@ -174,7 +174,11 @@ Relationships:
 (AdamObservation)-[:ABOUT]->(AdamCodeFile)
 ```
 
-`TOUCHES` records evidence basis, extractor version, commit, optional branch, and dirty state. Derived knowledge may be deleted and rebuilt without affecting the lossless replica.
+`WORKED_ON` and `TOUCHES` retain checkout-specific root, commit, optional branch, and dirty state rather than placing mutable checkout state on canonical repository/file nodes. `TOUCHES` also records evidence basis and extractor version.
+
+Queries enforce user isolation through `(AdamUser)-[:OWNS]->(AdamSession)-[:HAS_MEMORY]->(...)-[:ABOUT]->(AdamCodeFile)`, never through ownership of shared repository/file nodes.
+
+Derived knowledge may be deleted and rebuilt without affecting the lossless replica. The 0.2 code-memory schema/extractor version performs a restart-safe rebuild that replaces user-scoped repository/file identities, removes obsolete derived relationships and orphaned code nodes, and can resume idempotently after interruption.
 
 ## Commands
 
@@ -202,11 +206,15 @@ Reports configuration, connection state, adam user UUID, masked Git email, activ
 
 ### `/adam:context <path>`
 
-Returns a bounded, provenance-bearing list of file-linked memories. It accepts repository-relative, workspace-relative, or absolute paths and rejects paths outside the resolved repository.
+Returns a bounded, provenance-bearing list of file-linked memories. Local mode accepts repository-relative, workspace-relative, or absolute paths and rejects paths outside the resolved repository.
+
+### `/adam:context --origin <git-origin> <repository-relative-path>`
+
+Normalizes the explicit origin and queries canonical repository/file identity without a local checkout. Origin mode rejects malformed origins and empty, absolute, or traversing paths before Neo4j access.
 
 ## Agent tool
 
-`adam_file_context({ path })` uses the same query service as `/adam:context`, with a smaller model-facing result bound and explicit item, line, and byte truncation. Empty results are successful. Backend and path failures remain distinguishable. The tool is registered only when Neo4j configuration enables the subsystem.
+`adam_file_context({ path, origin? })` uses the same query service as `/adam:context`, with a smaller model-facing result bound and explicit item, line, and byte truncation. Omitting `origin` selects existing local-path behavior; supplying it requires a normalized repository-relative path and does not require a checkout. Empty results are successful. Backend, origin, and path failures remain distinguishable. The tool is registered only when Neo4j configuration enables the subsystem.
 
 Its Pi prompt guidance recommends retrieval for a known file when prior decisions may materially affect work, while discouraging calls for every file or semantic/global search.
 

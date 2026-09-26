@@ -7,7 +7,8 @@
             ["node:os" :refer [tmpdir]]
             ["node:path" :refer [join]]))
 
-(defrecord LifecycleReplica [checkpoint initializations writes completions closes evidence-schemas projections]
+(defrecord LifecycleReplica [checkpoint initializations writes completions closes evidence-schemas projections
+                             migration-version rebuild-completions]
   knowledge-store/FileEvidenceStore
   (ensure-file-evidence-schema! [_]
     (swap! evidence-schemas inc)
@@ -18,6 +19,18 @@
       (do
         (swap! projections conj projection)
         (js/Promise.resolve nil))))
+  (clear-file-evidence! [_ _session-id _extractor-version]
+    (if (= :fail @projections)
+      (js/Promise.reject (js/Error. "evidence unavailable"))
+      (js/Promise.resolve nil)))
+
+  knowledge-store/CodeMemoryMigrationStore
+  (code-memory-version! [_ _user-id]
+    (js/Promise.resolve @migration-version))
+  (complete-code-memory-rebuild! [_ user-id version]
+    (reset! migration-version version)
+    (swap! rebuild-completions conj [user-id version])
+    (js/Promise.resolve nil))
 
   store/SessionReplicaStore
   (initialize! [_ user]
@@ -80,7 +93,7 @@
     (let [directory (mkdtempSync (join (tmpdir) "adam-register-outage-"))
           path (join directory "session.jsonl")
           replica (->LifecycleReplica (atom nil) (atom []) (atom []) (atom []) (atom 0)
-                                      (atom 0) (atom []))
+                                      (atom 0) (atom []) (atom 3) (atom []))
           attempts (atom 0)
           {:keys [pi]} (fake-pi)
           notifications (atom [])
@@ -137,7 +150,7 @@
           completions (atom [])
           closes (atom 0)
           replica (->LifecycleReplica checkpoint initializations writes completions closes
-                                      (atom 0) (atom []))
+                                      (atom 0) (atom []) (atom 3) (atom []))
           {:keys [pi commands tools events]} (fake-pi)
           notifications (atom [])
           clock (atom -10)
@@ -214,8 +227,10 @@
           path (join directory "session.jsonl")
           projections (atom [])
           schemas (atom 0)
+          migration-version (atom 2)
+          rebuild-completions (atom [])
           replica (->LifecycleReplica (atom nil) (atom []) (atom []) (atom []) (atom 0)
-                                      schemas projections)
+                                      schemas projections migration-version rebuild-completions)
           {:keys [pi]} (fake-pi)
           repository {:id "urn:adam:repository:user-1:hash"
                       :user-id "urn:adam:user:user-1"
@@ -231,6 +246,7 @@
                    {:config {:enabled? true}
                     :create-replica (fn [] replica)
                     :load-user (fn [] {:user-uuid "user-1"})
+                    :list-code-memory-session-files (fn [] [path])
                     :resolve-git-identity (fn [_] (js/Promise.resolve nil))
                     :resolve-repository (fn [_cwd _user] (js/Promise.resolve repository))})
           ctx #js {:cwd "/repo"
@@ -249,11 +265,14 @@
           (.then
            (fn [_]
              (is (= 1 @schemas))
-             (is (= 1 (count @projections)))
+             (is (= 2 (count @projections)))
              (is (= ["src/a.cljs"]
                     (mapv :relative-path (:files (first @projections)))))
              (is (= ["assistant-1" "result-1"]
                     (mapv :entry-id (:entry-file-evidence (first @projections)))))
+             (is (= 3 @migration-version))
+             (is (= [["urn:adam:user:user-1" 3]] @rebuild-completions))
+             (is (= "rebuilt" (:code-memory-rebuild-status ((:status runtime)))))
              (is (= true (:connected? ((:status runtime)))))
              (is (= "github.com/AloiAI/adam"
                     (:file-evidence-repository ((:status runtime)))))
@@ -275,7 +294,7 @@
     (let [directory (mkdtempSync (join (tmpdir) "adam-register-evidence-failure-"))
           path (join directory "session.jsonl")
           replica (->LifecycleReplica (atom nil) (atom []) (atom []) (atom []) (atom 0)
-                                      (atom 0) (atom :fail))
+                                      (atom 0) (atom :fail) (atom 3) (atom []))
           {:keys [pi]} (fake-pi)
           runtime (register/register!
                    pi

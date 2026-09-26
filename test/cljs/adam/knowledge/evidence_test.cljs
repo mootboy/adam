@@ -16,24 +16,37 @@
 (defn- stored [entry]
   {:entry-id (:id entry) :raw-json (js/JSON.stringify (clj->js entry))})
 
-(deftest normalizes-private-repository-identity-without-credentials
+(deftest normalizes-canonical-repository-identity-without-credentials-or-user-scope
   (let [ssh (evidence/build-repository
              {:user-uuid user-uuid :root "/one"
               :remote "git@github.com:AloiAI/adam.git"
               :commit "a" :dirty? false})
-        https (evidence/build-repository
-               {:user-uuid user-uuid :root "/two"
-                :remote "https://secret@example.com/AloiAI/adam.git"
-                :commit "b" :dirty? false})]
+        other-user (evidence/build-repository
+                    {:user-uuid "other-user" :root "/two"
+                     :remote "https://github.com/AloiAI/adam.git"
+                     :commit "b" :dirty? false})
+        credentialed (evidence/build-repository
+                      {:user-uuid user-uuid :root "/three"
+                       :remote "https://secret@example.com/AloiAI/adam.git"
+                       :commit "c" :dirty? false})]
     (is (= "github.com/AloiAI/adam" (:normalized-remote ssh)))
-    (is (= (:id repository) (:id ssh)))
-    (is (not= (:id ssh)
-              (:id (evidence/build-repository
-                    {:user-uuid "other-user" :root "/one"
-                     :remote "git@github.com:AloiAI/adam.git"
-                     :commit "a" :dirty? false}))))
-    (is (= "example.com/AloiAI/adam" (:normalized-remote https)))
-    (is (not (re-find #"secret" (pr-str https))))))
+    (is (= (:id repository) (:id ssh) (:id other-user)))
+    (is (= (:id (evidence/resolve-origin-file ssh "src/a.cljs"))
+           (:id (evidence/resolve-origin-file other-user "src/a.cljs"))))
+    (is (string? (:id ssh)))
+    (is (= "example.com/AloiAI/adam" (:normalized-remote credentialed)))
+    (is (not (re-find #"secret" (pr-str credentialed))))))
+
+(deftest keeps-originless-repositories-user-scoped-and-nonportable
+  (let [first-user (evidence/build-repository
+                    {:user-uuid "user-1" :root "/work/repo"
+                     :commit "a" :dirty? false})
+        second-user (evidence/build-repository
+                     {:user-uuid "user-2" :root "/work/repo"
+                      :commit "a" :dirty? false})]
+    (is (not= (:id first-user) (:id second-user)))
+    (is (re-find #"^urn:adam:repository:local:user-1:" (:id first-user)))
+    (is (nil? (:normalized-remote first-user)))))
 
 (deftest canonicalizes-worktree-paths-and-retains-the-actual-revision
   (let [with-worktree
@@ -61,6 +74,7 @@
                                          :arguments {:path "/work/trees/feature/src/a.cljs"}}]}})
            (stored {:type "message" :id "result-1" :parentId "assistant-1"
                     :message {:role "toolResult" :toolCallId "call-1"}})]})]
+    (is (= 3 (:extractor-version projection)))
     (is (= ["src/a.cljs"] (mapv :relative-path (:files projection))))
     (is (= (:id (evidence/resolve-repository-file with-worktree "/work/repo" "src/a.cljs"))
            (get-in projection [:files 0 :id])))

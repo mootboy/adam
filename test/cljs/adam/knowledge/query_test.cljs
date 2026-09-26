@@ -42,6 +42,61 @@
              (done)))
           (.catch (fn [error] (is false (.-stack error)) (done)))))))
 
+(deftest queries-canonical-origin-without-local-repository-discovery
+  (async done
+    (let [calls (atom [])
+          memory-store (->QueryStore calls [])]
+      (-> (query/query-file-memory!
+           {:get-store! #(js/Promise.resolve memory-store)
+            :get-user! #(js/Promise.resolve {:user-uuid user-uuid})
+            :resolve-repository! (fn [& _]
+                                   (throw (js/Error. "local discovery must not run")))}
+           {:cwd "/unrelated/repository"
+            :origin "https://github.com/AloiAI/adam.git"
+            :path "src/a.cljs"
+            :limit 11})
+          (.then
+           (fn [result]
+             (is (= "github.com/AloiAI/adam"
+                    (get-in result [:repository :normalized-remote])))
+             (is (= "src/a.cljs" (:relative-path result)))
+             (is (= [["urn:adam:user:00000000-0000-4000-8000-000000000001"
+                      (get-in result [:repository :id]) "src/a.cljs" 11]]
+                    @calls))
+             (done)))
+          (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
+(deftest rejects-invalid-origin-paths-before-opening-store
+  (async done
+    (let [store-opened? (atom false)
+          dependencies {:get-store! (fn []
+                                      (reset! store-opened? true)
+                                      (js/Promise.resolve (->QueryStore (atom []) [])))
+                        :get-user! #(js/Promise.resolve {:user-uuid user-uuid})
+                        :resolve-repository! (fn [& _]
+                                               (throw (js/Error. "must not discover locally")))}]
+      (-> (js/Promise.all
+           (clj->js
+            (map
+             (fn [path]
+               (-> (query/query-file-memory!
+                    dependencies
+                    {:cwd "/workspace"
+                     :origin "git@github.com:AloiAI/adam.git"
+                     :path path
+                     :limit 10})
+                   (.then (fn [_] :unexpected))
+                   (.catch query/query-error-code)))
+             ["../secret" "/absolute/path" "C:/absolute/path" "src/./a.cljs"])))
+          (.then
+           (fn [codes]
+             (is (= [:invalid-origin-path :invalid-origin-path
+                     :invalid-origin-path :invalid-origin-path]
+                    (js->clj codes)))
+             (is (false? @store-opened?))
+             (done)))
+          (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
 (deftest rejects-outside-path-before-opening-store
   (async done
     (let [store-calls (atom 0)]

@@ -7,11 +7,14 @@
 (defn- recording-driver []
   (let [calls (atom [])
         closes (atom 0)
-        session #js {:run (fn [query params]
-                            (swap! calls conj {:query query
-                                               :params (when params
-                                                         (js->clj params :keywordize-keys true))})
-                            (js/Promise.resolve #js {:records #js []}))
+        run! (fn [query params]
+               (swap! calls conj {:query query
+                                  :params (when params
+                                            (js->clj params :keywordize-keys true))})
+               (js/Promise.resolve #js {:records #js []}))
+        tx #js {:run run!}
+        session #js {:run run!
+                     :executeWrite (fn [work] (work tx))
                      :close (fn []
                               (swap! closes inc)
                               (js/Promise.resolve nil))}
@@ -223,18 +226,18 @@
   (async done
     (let [{:keys [driver calls closes]} (transactional-driver)
           replica (neo4j/replica-with-driver driver "neo4j")
-          projection {:extractor-version 1
+          projection {:extractor-version 3
                       :user-id "urn:adam:user:user-1"
                       :session-id "urn:adam:session:user-1:session-1"
                       :pi-session-id "session-1"
-                      :repository {:id "urn:adam:repository:user-1:hash"
+                      :repository {:id "urn:adam:repository:git:hash"
                                    :root "/repo"
                                    :normalized-remote "github.com/AloiAI/adam"
                                    :commit "feature-head"
                                    :branch "feature/a"
                                    :dirty? true}
                       :files [{:id "urn:adam:file:file-hash"
-                               :repository-id "urn:adam:repository:user-1:hash"
+                               :repository-id "urn:adam:repository:git:hash"
                                :relative-path "src/a.cljs"}]
                       :entry-file-evidence
                       [{:entry-id "entry-1" :file-id "urn:adam:file:file-hash"
@@ -264,6 +267,9 @@
                    ^js reflection (first (array-seq (aget (:params reflection-call) "reflections")))]
                (is (some #(re-find #"DELETE touch" %) queries))
                (is (some #(re-find #"WORKED_ON" %) queries))
+               (is (some #(re-find #"worked\.root = \$root" %) queries))
+               (is (some #(re-find #"s\.codeMemoryVersion = \$extractorVersion" %) queries))
+               (is (not-any? #(re-find #"\(u\)-\[:OWNS\]->\(repository\)" %) queries))
                (is (some #(re-find #"AdamCodeFile" %) queries))
                (is (some #(re-find #"DETACH DELETE memory" %) queries))
                (is (= "feature-head" (.-commit evidence)))
@@ -273,6 +279,75 @@
                (is (= true (.-dropped observation)))
                (is (= "memory-1" (.-recordingEntryId observation)))
                (is (= "bbbbbbbbbbbb" (.-memoryId reflection)))
+               (is (= 1 @closes))
+               (done))))
+          (.catch
+           (fn [error]
+             (is false (.-stack error))
+             (done)))))))
+
+(deftest clears-stale-file-evidence-and-marks-the-session-version
+  (async done
+    (let [{:keys [driver calls closes]} (recording-driver)
+          replica (neo4j/replica-with-driver driver "neo4j")]
+      (-> (knowledge-store/clear-file-evidence!
+           replica "urn:adam:session:user-1:session-1" 3)
+          (.then
+           (fn [_]
+             (let [queries (mapv :query (filter :query @calls))]
+               (is (some #(re-find #"HAS_MEMORY" %) queries))
+               (is (some #(re-find #"TOUCHES" %) queries))
+               (is (some #(re-find #"DELETE worked" %) queries))
+               (is (some #(re-find #"s.codeMemoryVersion = \$extractorVersion" %) queries))
+               (is (= 1 @closes))
+               (done))))
+          (.catch
+           (fn [error]
+             (is false (.-stack error))
+             (done)))))))
+
+(deftest persists-code-memory-rebuild-version-after-removing-legacy-ownership
+  (async done
+    (let [{:keys [driver calls closes]} (recording-driver)
+          replica (neo4j/replica-with-driver driver "neo4j")]
+      (-> (knowledge-store/code-memory-version!
+           replica "urn:adam:user:user-1")
+          (.then
+           (fn [version]
+             (is (nil? version))
+             (knowledge-store/complete-code-memory-rebuild!
+              replica "urn:adam:user:user-1" 3)))
+          (.then
+           (fn [_]
+             (let [queries (mapv :query (filter :query @calls))]
+               (is (some #(re-find #"min\(coalesce\(s.codeMemoryVersion" %) queries))
+               (is (some #(re-find #"codeMemoryVersion" %) queries))
+               (is (some #(re-find #"legacyOwnership:OWNS" %) queries))
+               (is (some #(re-find #"DETACH DELETE repository" %) queries))
+               (is (some #(re-find #"u.codeMemoryVersion = \$version" %) queries))
+               (is (= 2 @closes))
+               (done))))
+          (.catch
+           (fn [error]
+             (is false (.-stack error))
+             (done)))))))
+
+(deftest queries-shared-code-identity-through-requesting-user-sessions
+  (async done
+    (let [{:keys [driver calls closes]} (recording-driver)
+          replica (neo4j/replica-with-driver driver "neo4j")]
+      (-> (knowledge-store/query-file-memory!
+           replica
+           "urn:adam:user:user-1"
+           "urn:adam:repository:git:hash"
+           "src/a.cljs"
+           10)
+          (.then
+           (fn [_]
+             (let [query (:query (first (filter :query @calls)))]
+               (is (re-find #"AdamUser.*OWNS.*AdamSession.*HAS_MEMORY" query))
+               (is (not (re-find #"OWNS.*AdamRepository" query)))
+               (is (re-find #"AdamRepository.*CONTAINS.*AdamCodeFile" query))
                (is (= 1 @closes))
                (done))))
           (.catch

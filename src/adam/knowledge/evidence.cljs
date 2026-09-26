@@ -4,7 +4,7 @@
             ["node:crypto" :refer [createHash]]
             ["node:path" :as node-path]))
 
-(def extractor-version 2)
+(def extractor-version 3)
 (def ^:private supported-file-tools #{"read" "edit" "write"})
 
 (defn- sha256 [value]
@@ -30,11 +30,18 @@
               (str host "/" path)))
           (catch :default _ nil))))))
 
+(defn repository-from-origin [remote]
+  (when-let [normalized-remote (normalize-git-remote remote)]
+    {:id (str "urn:adam:repository:git:" (sha256 normalized-remote))
+     :normalized-remote normalized-remote}))
+
 (defn build-repository
   [{:keys [user-uuid root remote commit branch dirty? worktrees]}]
   (let [root (.resolve node-path root)
-        normalized-remote (normalize-git-remote remote)
-        repository-hash (sha256 (or normalized-remote root))
+        origin-repository (repository-from-origin remote)
+        normalized-remote (:normalized-remote origin-repository)
+        repository-id (or (:id origin-repository)
+                          (str "urn:adam:repository:local:" user-uuid ":" (sha256 root)))
         normalize-worktree
         (fn [worktree]
           (cond-> (assoc worktree :root (.resolve node-path (:root worktree)))
@@ -42,7 +49,7 @@
         worktrees (mapv normalize-worktree
                         (or worktrees
                             [{:root root :commit commit :branch branch :dirty? dirty?}]))]
-    (cond-> {:id (str "urn:adam:repository:" user-uuid ":" repository-hash)
+    (cond-> {:id repository-id
              :user-id (identity/user-urn user-uuid)
              :root root
              :commit commit
@@ -79,6 +86,21 @@
 
 (defn resolve-repository-file [repository cwd path]
   (:file (resolve-repository-file-with-worktree repository cwd path)))
+
+(defn resolve-origin-file [repository path]
+  (let [path (some-> path string/trim)
+        posix-path (.-posix node-path)]
+    (when (and (not (string/blank? path))
+               (not (string/includes? path "\\"))
+               (not (.isAbsolute posix-path path))
+               (not (re-find #"^[A-Za-z]:/" path))
+               (= path (.normalize posix-path path))
+               (not= "." path)
+               (inside-relative-path? path))
+      (let [file-hash (sha256 (str (:id repository) "\u0000" path))]
+        {:id (str "urn:adam:file:" file-hash)
+         :repository-id (:id repository)
+         :relative-path path}))))
 
 (defn- map-object? [value]
   (and (some? value)

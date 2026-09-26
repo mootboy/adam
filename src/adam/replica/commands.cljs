@@ -38,7 +38,7 @@
     (catch :default _
       [])))
 
-(defn- all-session-files []
+(defn all-session-files []
   (let [sessions-directory (join (configured-agent-dir) "sessions")]
     (try
       (->> (array-seq (readdirSync sessions-directory #js {:withFileTypes true}))

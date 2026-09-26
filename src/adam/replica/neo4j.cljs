@@ -336,10 +336,9 @@
            (update-current-leaf! tx session))))))
 
 (defn- repository-properties [repository]
-  (let [properties #js {:id (:id repository)
-                        :root (:root repository)}]
-    (when-let [remote (:normalized-remote repository)]
-      (aset properties "normalizedRemote" remote))
+  (let [properties #js {:id (:id repository)}]
+    (when-let [origin (:normalized-remote repository)]
+      (aset properties "normalizedOrigin" origin))
     properties))
 
 (defn- file-properties [file]
@@ -401,23 +400,28 @@
          (fn [_]
            (.run
             tx
-            "MATCH (u:AdamUser {id: $userId}), (s:AdamSession {id: $sessionId})
+            "MATCH (s:AdamSession {id: $sessionId})
              OPTIONAL MATCH (s)-[old:WORKED_ON]->()
              DELETE old
-             WITH u, s
+             SET s.codeMemoryVersion = $extractorVersion
+             WITH s
              MERGE (repository:AdamRepository {id: $repository.id})
-             SET repository.root = $repository.root,
-                 repository.normalizedRemote = $repository.normalizedRemote
-             MERGE (u)-[:OWNS]->(repository)
+             SET repository.normalizedOrigin = $repository.normalizedOrigin
+             REMOVE repository.root, repository.normalizedRemote
+             WITH s, repository
+             OPTIONAL MATCH (:AdamUser)-[legacyOwnership:OWNS]->(repository)
+             DELETE legacyOwnership
+             WITH s, repository
              MERGE (s)-[worked:WORKED_ON]->(repository)
-             SET worked.commit = $commit,
+             SET worked.root = $root,
+                 worked.commit = $commit,
                  worked.branch = $branch,
                  worked.dirty = $dirty,
                  worked.extractorVersion = $extractorVersion,
                  worked.indexedAt = datetime()"
-            #js {:userId (:user-id projection)
-                 :sessionId (:session-id projection)
+            #js {:sessionId (:session-id projection)
                  :repository (repository-properties repository)
+                 :root (:root repository)
                  :commit (:commit repository)
                  :branch (:branch repository)
                  :dirty (= true (:dirty? repository))
@@ -571,6 +575,39 @@
                        (fn [tx]
                          (index-file-evidence-transaction! tx projection))))))
 
+  (clear-file-evidence! [_ session-id extractor-version]
+    (with-session!
+      driver
+      database
+      (fn [^js session]
+        (.executeWrite
+         session
+         (fn [tx]
+           (-> (.run
+                tx
+                "MATCH (s:AdamSession {id: $sessionId})
+                 OPTIONAL MATCH (s)-[:HAS_MEMORY]->(memory)
+                 DETACH DELETE memory"
+                #js {:sessionId session-id})
+               (.then
+                (fn [_]
+                  (.run
+                   tx
+                   "MATCH (s:AdamSession {id: $sessionId})-[:HAS_ENTRY]->(entry)
+                    OPTIONAL MATCH (entry)-[touch:TOUCHES]->()
+                    DELETE touch"
+                   #js {:sessionId session-id})))
+               (.then
+                (fn [_]
+                  (.run
+                   tx
+                   "MATCH (s:AdamSession {id: $sessionId})
+                    OPTIONAL MATCH (s)-[worked:WORKED_ON]->()
+                    DELETE worked
+                    SET s.codeMemoryVersion = $extractorVersion"
+                   #js {:sessionId session-id
+                        :extractorVersion extractor-version})))))))))
+
   knowledge-store/FileMemoryQueryStore
   (query-file-memory! [_ user-id repository-id relative-path limit]
     (with-session!
@@ -579,18 +616,16 @@
       (fn [session]
         (-> (.run
              session
-             "MATCH (:AdamUser {id: $userId})-[:OWNS]->(repository:AdamRepository {id: $repositoryId})-[:CONTAINS]->(file:AdamCodeFile {relativePath: $relativePath})
-              MATCH (observation:AdamObservation)-[:ABOUT]->(file)
-              MATCH (s:AdamSession)-[:HAS_MEMORY]->(observation)
+             "MATCH (repository:AdamRepository {id: $repositoryId})-[:CONTAINS]->(file:AdamCodeFile {relativePath: $relativePath})
+              MATCH (:AdamUser {id: $userId})-[:OWNS]->(s:AdamSession)-[:HAS_MEMORY]->(observation:AdamObservation)-[:ABOUT]->(file)
               OPTIONAL MATCH (observation)-[:SOURCED_FROM]->(source:AdamEntry)
               OPTIONAL MATCH (source)-[touch:TOUCHES]->(file)
               WITH observation, s, collect(DISTINCT source.entryId) AS sourceEntryIds,
                    [context IN collect(DISTINCT CASE WHEN touch IS NULL THEN null ELSE {entryId: source.entryId, commit: touch.commit, branch: touch.branch, dirty: touch.dirty} END) WHERE context IS NOT NULL] AS sourceContexts
               RETURN 'observation' AS kind, observation AS memory, s, sourceEntryIds, sourceContexts
               UNION ALL
-              MATCH (:AdamUser {id: $userId})-[:OWNS]->(repository:AdamRepository {id: $repositoryId})-[:CONTAINS]->(file:AdamCodeFile {relativePath: $relativePath})
-              MATCH (reflection:AdamReflection)-[:SUPPORTED_BY]->(observation:AdamObservation)-[:ABOUT]->(file)
-              MATCH (s:AdamSession)-[:HAS_MEMORY]->(reflection)
+              MATCH (repository:AdamRepository {id: $repositoryId})-[:CONTAINS]->(file:AdamCodeFile {relativePath: $relativePath})
+              MATCH (:AdamUser {id: $userId})-[:OWNS]->(s:AdamSession)-[:HAS_MEMORY]->(reflection:AdamReflection)-[:SUPPORTED_BY]->(observation:AdamObservation)-[:ABOUT]->(file)
               OPTIONAL MATCH (observation)-[:SOURCED_FROM]->(source:AdamEntry)
               OPTIONAL MATCH (source)-[touch:TOUCHES]->(file)
               WITH reflection, s, collect(DISTINCT source.entryId) AS sourceEntryIds,
@@ -603,6 +638,62 @@
                   :relativePath relative-path
                   :limit ((.-int neo4j-driver) limit)})
             (.then (fn [result] (mapv file-memory-record (records result))))))))
+
+  knowledge-store/CodeMemoryMigrationStore
+  (code-memory-version! [_ user-id]
+    (with-session!
+      driver
+      database
+      (fn [session]
+        (-> (.run
+             session
+             "MATCH (u:AdamUser {id: $userId})
+              OPTIONAL MATCH (u)-[:OWNS]->(s:AdamSession)
+              OPTIONAL MATCH (s)-[worked:WORKED_ON]->(:AdamRepository)
+              WITH u, count(DISTINCT s) AS sessionCount,
+                   min(coalesce(s.codeMemoryVersion, worked.extractorVersion, 0)) AS projectedVersion
+              RETURN CASE WHEN sessionCount = 0
+                          THEN u.codeMemoryVersion
+                          ELSE projectedVersion
+                     END AS version"
+             #js {:userId user-id})
+            (.then
+             (fn [result]
+               (when-let [record (first (records result))]
+                 (neo-integer (record-get record "version")))))))))
+
+  (complete-code-memory-rebuild! [_ user-id version]
+    (with-session!
+      driver
+      database
+      (fn [^js session]
+        (.executeWrite
+         session
+         (fn [tx]
+           (-> (.run
+                tx
+                "MATCH (:AdamUser {id: $userId})-[:OWNS]->(repository:AdamRepository)
+                 WHERE NOT EXISTS {
+                   MATCH (:AdamSession)-[:WORKED_ON]->(repository)
+                 }
+                 DETACH DELETE repository"
+                #js {:userId user-id})
+               (.then
+                (fn [_]
+                  (.run
+                   tx
+                   "MATCH (u:AdamUser {id: $userId})
+                    OPTIONAL MATCH (u)-[legacyOwnership:OWNS]->(:AdamRepository)
+                    DELETE legacyOwnership"
+                   #js {:userId user-id})))
+               (.then
+                (fn [_]
+                  (.run
+                   tx
+                   "MATCH (u:AdamUser {id: $userId})
+                    SET u.codeMemoryVersion = $version,
+                        u.codeMemoryRebuiltAt = datetime()"
+                   #js {:userId user-id :version version})))))))))
 
   store/SessionReplicaStore
   (initialize! [_ user]

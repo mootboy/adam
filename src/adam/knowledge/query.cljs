@@ -14,47 +14,62 @@
   (when (= :file-memory-query (:type (ex-data error)))
     (:code (ex-data error))))
 
+(defn- query-resolved-file!
+  [get-store! user-uuid resolved file limit]
+  (-> (get-store!)
+      (.then
+       (fn [memory-store]
+         (when-not (satisfies? store/FileMemoryQueryStore memory-store)
+           (throw (js/Error. "file-memory queries are unavailable")))
+         (-> (store/query-file-memory!
+              memory-store
+              (identity/user-urn user-uuid)
+              (:id resolved)
+              (:relative-path file)
+              limit)
+             (.then
+              (fn [memories]
+                {:repository resolved
+                 :relative-path (:relative-path file)
+                 :memories memories})))))))
+
 (defn query-file-memory!
-  [{:keys [get-store! get-user! resolve-repository!]} {:keys [cwd path limit]}]
+  [{:keys [get-store! get-user! resolve-repository!]}
+   {:keys [cwd path origin limit] :as request}]
   (let [path (if (string? path) (string/trim path) "")]
     (if (string/blank? path)
       (js/Promise.reject (query-error :missing-path "path must not be empty"))
       (-> (get-user!)
           (.then
            (fn [user]
-             (let [user-uuid (:user-uuid user)
-                   resolve! #(resolve-repository! % user-uuid)]
-               (-> (resolve! cwd)
-                   (.then (fn [resolved]
-                            (if resolved
-                              resolved
-                              (repository/resolve-from-file-path! resolve! cwd path))))
-                   (.then
-                    (fn [resolved]
-                      (when-not resolved
-                        (throw (query-error :repository-not-found
-                                            "path is not in a Git repository")))
-                      (let [file (evidence/resolve-repository-file resolved cwd path)]
-                        (when-not file
-                          (throw (query-error
-                                  :path-outside-repository
-                                  "path must identify a file inside the resolved Git repository")))
-                        (-> (get-store!)
-                            (.then
-                             (fn [memory-store]
-                               (when-not (satisfies? store/FileMemoryQueryStore memory-store)
-                                 (throw (js/Error. "file-memory queries are unavailable")))
-                               (-> (store/query-file-memory!
-                                    memory-store
-                                    (identity/user-urn user-uuid)
-                                    (:id resolved)
-                                    (:relative-path file)
-                                    limit)
-                                   (.then
-                                    (fn [memories]
-                                      {:repository resolved
-                                       :relative-path (:relative-path file)
-                                       :memories memories})))))))))))))))))
+             (let [user-uuid (:user-uuid user)]
+               (if (contains? request :origin)
+                 (let [resolved (evidence/repository-from-origin origin)]
+                   (when-not resolved
+                     (throw (query-error :invalid-origin "origin must be a valid Git remote")))
+                   (let [file (evidence/resolve-origin-file resolved path)]
+                     (when-not file
+                       (throw (query-error
+                               :invalid-origin-path
+                               "origin lookup requires a normalized repository-relative path")))
+                     (query-resolved-file! get-store! user-uuid resolved file limit)))
+                 (let [resolve! #(resolve-repository! % user-uuid)]
+                   (-> (resolve! cwd)
+                       (.then (fn [resolved]
+                                (if resolved
+                                  resolved
+                                  (repository/resolve-from-file-path! resolve! cwd path))))
+                       (.then
+                        (fn [resolved]
+                          (when-not resolved
+                            (throw (query-error :repository-not-found
+                                                "path is not in a Git repository")))
+                          (let [file (evidence/resolve-repository-file resolved cwd path)]
+                            (when-not file
+                              (throw (query-error
+                                      :path-outside-repository
+                                      "path must identify a file inside the resolved Git repository")))
+                            (query-resolved-file! get-store! user-uuid resolved file limit))))))))))))))
 
 (defn- compact-content [content]
   (let [normalized (string/trim (string/replace (or content "") #"\s+" " "))]
