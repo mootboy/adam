@@ -4,6 +4,8 @@ All notable changes to adam are documented here.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-26
+
 ### Added
 
 - Checkout-independent `/adam:context --origin <git-origin> <relative-path>` and `adam_file_context({ path, origin })` lookup.
