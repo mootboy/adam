@@ -650,8 +650,18 @@
              "MATCH (u:AdamUser {id: $userId})
               OPTIONAL MATCH (u)-[:OWNS]->(s:AdamSession)
               OPTIONAL MATCH (s)-[worked:WORKED_ON]->(:AdamRepository)
+              WITH u, s,
+                   CASE
+                     WHEN worked.extractorVersion IS NULL
+                       THEN coalesce(s.codeMemoryVersion, 0)
+                     WHEN s.codeMemoryVersion IS NULL
+                       THEN worked.extractorVersion
+                     WHEN s.codeMemoryVersion < worked.extractorVersion
+                       THEN s.codeMemoryVersion
+                     ELSE worked.extractorVersion
+                   END AS sessionVersion
               WITH u, count(DISTINCT s) AS sessionCount,
-                   min(coalesce(s.codeMemoryVersion, worked.extractorVersion, 0)) AS projectedVersion
+                   min(sessionVersion) AS projectedVersion
               RETURN CASE WHEN sessionCount = 0
                           THEN u.codeMemoryVersion
                           ELSE projectedVersion

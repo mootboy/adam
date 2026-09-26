@@ -9,9 +9,11 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 | Case | Expected result |
 | --- | --- |
 | Compiled package loads through `extension.js` | Pi factory executes ClojureScript output |
+| Compiled package starts through `mcp.js` | A stdio MCP client can initialize and list the read-only `adam_file_context` tool |
+| Claude loads the packaged plugin | `.mcp.json` starts the packaged MCP executable and the bundled skill is available |
 | `/adam:status` is invoked | Configuration, connection, identity, active-session, last-sync, and bounded error state are displayed |
-| Java is absent at runtime | Committed ESM output still loads and executes |
-| npm package is inspected | Runtime boundary, compiled output, changelog, and docs are present; source compilation is not required |
+| Java is absent at runtime | Both committed ESM outputs still load and execute |
+| npm package is inspected | Pi and MCP runtime boundaries, compiled outputs, plugin metadata, skill, changelog, and docs are present; source compilation is not required |
 | Packed tarball is installed in a clean consumer | Extension loads and registers its public surface without ClojureScript source compilation |
 | Supported Node matrix runs in CI | Deterministic build, tests, package smoke, and committed `dist` verification pass on Node 22.19 and current Node 24 |
 | Ephemeral Neo4j CI job runs | The live integration suite passes without external service credentials |
@@ -32,6 +34,9 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 | Equivalent Git email spellings differ only by case/whitespace | One deterministic hashed identity; latest observed spelling may be displayed |
 | No Git email is configured | Mirroring continues under the generated user UUID |
 | State is initialized concurrently | One owner-only config wins atomically and remains valid |
+| Canonical host state is absent and Pi-scoped state exists | Existing Pi UUID is atomically adopted under the XDG config home |
+| Canonical and Pi-scoped state contain the same UUID | Pi and Claude continue under one principal |
+| Canonical and Pi-scoped state contain different UUIDs | Initialization fails visibly before a query or mirror can use split identity |
 
 ## JSONL and session identity
 
@@ -121,7 +126,10 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 | More memories exist than the tool bound | Extra probe detects omission and truncation is explicit |
 | Rendered provenance exceeds byte/line limits | Output is deterministically truncated and marked |
 | Neo4j query fails | Only that command/tool invocation fails; later retry can recover |
-| Tool is available to a model | Pi guidance explains when to use it and discourages indiscriminate/global use |
+| Tool is available to a model | Pi guidance and the Claude skill explain when to use it and discourage indiscriminate/global use |
+| Claude invokes `adam_file_context` through the plugin MCP server | Existing Pi-produced memory is returned with the same origin lookup, user isolation, bounds, and provenance |
+| MCP standard input closes or the host terminates it | Neo4j resources close and the MCP process exits cleanly |
+| MCP query fails | The invocation returns a bounded tool error without terminating Claude Code |
 
 ## Side-by-side proof
 

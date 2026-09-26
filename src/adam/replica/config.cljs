@@ -1,6 +1,12 @@
 (ns adam.replica.config
   (:require [clojure.string :as string]))
 
+(def environment-keys
+  ["ADAM_NEO4J_URI"
+   "ADAM_NEO4J_USERNAME"
+   "ADAM_NEO4J_PASSWORD"
+   "ADAM_NEO4J_DATABASE"])
+
 (def ^:private required-keys
   ["ADAM_NEO4J_URI" "ADAM_NEO4J_USERNAME" "ADAM_NEO4J_PASSWORD"])
 
@@ -39,6 +45,11 @@
     (catch :default _
       "ADAM_NEO4J_URI must be a valid bolt or neo4j URI")))
 
+(defn process-environment []
+  (into {}
+        (map (fn [key] [key (aget js/process.env key)]))
+        environment-keys))
+
 (defn resolve-config [environment]
   (if-not (every? #(present? (get environment %)) required-keys)
     {:enabled? false
@@ -53,3 +64,6 @@
         {:enabled? false
          :reason reason}
         config))))
+
+(defn resolve-process-config []
+  (resolve-config (process-environment)))

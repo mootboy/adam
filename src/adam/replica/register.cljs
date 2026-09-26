@@ -11,29 +11,7 @@
             [adam.replica.state :as global-state]
             [adam.replica.store :as store]
             [adam.replica.sync :as sync]
-            [clojure.string :as string]
-            ["node:os" :refer [homedir]]
-            ["node:path" :as node-path :refer [join]]))
-
-(def ^:private environment-keys
-  ["ADAM_NEO4J_URI"
-   "ADAM_NEO4J_USERNAME"
-   "ADAM_NEO4J_PASSWORD"
-   "ADAM_NEO4J_DATABASE"])
-
-(defn- agent-dir []
-  (let [configured (aget js/process.env "PI_CODING_AGENT_DIR")]
-    (cond
-      (and configured (string/starts-with? configured "~/"))
-      (.resolve node-path (homedir) (subs configured 2))
-
-      (and configured (not (string/blank? configured))) configured
-      :else (join (homedir) ".pi" "agent"))))
-
-(defn- process-environment []
-  (into {}
-        (map (fn [key] [key (aget js/process.env key)]))
-        environment-keys))
+            [clojure.string :as string]))
 
 (defn- error-message [error]
   (or (.-message error) (str error)))
@@ -114,7 +92,7 @@
    (register! pi {}))
   ([pi options]
    (let [resolved-config (or (:config options)
-                             (config/resolve-config (process-environment)))
+                             (config/resolve-process-config))
          now-ms (or (:now-ms options) #(.now js/performance))
          record-duration!
          (fn [timing key started-at]
@@ -132,7 +110,7 @@
          create-replica (or (:create-replica options)
                             #(neo4j/create-replica resolved-config))
          load-user (or (:load-user options)
-                       #(global-state/load-or-create! (agent-dir)))
+                       global-state/load-or-create-host!)
          resolve-git-identity!
          (or (:resolve-git-identity options)
              (fn [ctx]

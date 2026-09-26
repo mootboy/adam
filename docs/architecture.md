@@ -2,7 +2,7 @@
 
 Status: approved design; implementation is incremental.
 
-`adam` is a standalone Pi extension for durable session replication and provenance-bearing memory retrieval. It runs alongside memory producers such as `pi-observational-memory`; it does not execute or import their runtime.
+`adam` provides host-neutral durable memory infrastructure with a full Pi adapter and a read-only Claude Code adapter. In Pi it runs alongside memory producers such as `pi-observational-memory`; it does not execute or import their runtime. Claude Code currently queries memories already indexed through Pi and does not yet contribute transcript data.
 
 ## Authority and boundaries
 
@@ -42,26 +42,24 @@ The persisted log is the integration protocol. Separate extensions need no share
 ## Internal layers
 
 ```text
-extension boundary
-  └── lifecycle and command registration
-       ├── session scanner
-       ├── synchronization service
-       │    └── session replica store
-       ├── repository/file projector
-       │    ├── Git resolver
-       │    └── memory-source adapters
-       └── file-memory query service
-            ├── /adam:context
-            └── adam_file_context
+host-neutral core
+  ├── identity and Neo4j configuration
+  ├── session replica and knowledge projection
+  └── file-memory query and bounded tool adapter
+       ├── Pi extension boundary
+       │    ├── lifecycle, commands, and session scanner
+       │    └── adam_file_context
+       └── Claude Code plugin boundary
+            └── stdio MCP adam_file_context
 ```
 
 The session replica and derived knowledge projection are separate failure domains. A projection or adapter failure must never invalidate a successfully mirrored session.
 
 ## ClojureScript boundary
 
-Application behavior is implemented in ClojureScript and compiled ahead of time to ESM JavaScript. `extension.js` is a minimal Pi factory shim. The committed `dist/adam.js` is the runtime artifact, so Pi does not require Java or a ClojureScript compiler.
+Application behavior is implemented in ClojureScript and compiled ahead of time to ESM JavaScript. `extension.js` is the minimal Pi factory shim and `mcp.js` is the executable stdio MCP boundary. The committed `dist/adam.js` and `dist/adam-mcp.js` artifacts let Pi and Claude Code run without Java or a ClojureScript compiler.
 
-Pi and Node objects remain JavaScript values at the boundary. Lifecycle handlers and tools return native promises for asynchronous work. Storage and domain logic should expose narrow ClojureScript protocols rather than depend directly on Pi contexts.
+Pi, MCP, and Node objects remain JavaScript values at their boundaries. Lifecycle handlers and tools return native promises for asynchronous work. Storage and domain logic expose narrow ClojureScript protocols rather than depend directly on a host API.
 
 ## Eventual consistency
 
@@ -123,7 +121,7 @@ One shared service owns repository discovery, path validation, bounded lookup, c
 - `/adam:context --origin <git-origin> <repository-relative-path>` is its checkout-independent form.
 - `adam_file_context({ path, origin? })` is the smaller model-facing adapter.
 
-Both are explicit and read-only. Local mode retains Git/worktree discovery and repository-bounded path validation. Origin mode normalizes the supplied Git origin and queries canonical repository identity directly without requiring a local checkout; it rejects empty, absolute, or traversing paths before storage access. The shared service in `src/adam/knowledge/query.cljs` owns validation, Neo4j lookup, content compaction, provenance rendering, and typed errors. `src/adam/knowledge/surfaces.cljs` keeps the command at 20 results and probes 11 rows for the tool's 10-result bound, then applies independent 200-line and 12,000-byte output caps with explicit omission notices. Backend failures remain invocation-local so a later call can retry. adam does not inject retrieved memory automatically and does not provide semantic or global search.
+Both are explicit and read-only. Local mode retains Git/worktree discovery and repository-bounded path validation. Origin mode normalizes the supplied Git origin and queries canonical repository identity directly without requiring a local checkout; it rejects empty, absolute, or traversing paths before storage access. The shared service in `src/adam/knowledge/query.cljs` owns validation, Neo4j lookup, content compaction, provenance rendering, and typed errors. The host-neutral adapter in `src/adam/knowledge/tool.cljs` probes 11 rows for the tool's 10-result bound and applies independent 200-line and 12,000-byte output caps with explicit omission notices. Pi registration in `surfaces.cljs` and the Claude stdio server in `mcp.cljs` adapt that same result. Backend failures remain invocation-local so a later call can retry. adam does not inject retrieved memory automatically and does not provide semantic or global search.
 
 ## Failure isolation
 
@@ -144,9 +142,11 @@ Commands:
 - `/adam:resume`
 - `/adam:context <path>`
 
-Agent tool:
+Agent tool in Pi and Claude Code:
 
 - `adam_file_context({ path, origin? })`
+
+The Claude Code plugin launches a read-only stdio MCP server from `mcp.js`. It shares query semantics and identity with Pi but does not ingest Claude transcripts in this stage.
 
 Environment:
 
@@ -155,4 +155,4 @@ Environment:
 - `ADAM_NEO4J_PASSWORD`
 - optional `ADAM_NEO4J_DATABASE`, default `neo4j`
 
-Non-secret global state lives at `join(getAgentDir(), "adam/config.json")`. Credentials remain environment-only.
+Non-secret global state lives at `${XDG_CONFIG_HOME:-~/.config}/adam/config.json`. When canonical state is absent, Adam atomically adopts the existing UUID from `${PI_CODING_AGENT_DIR:-~/.pi/agent}/adam/config.json`; differing dual identities are a visible error. Credentials remain environment-only.
