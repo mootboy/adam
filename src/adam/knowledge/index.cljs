@@ -64,7 +64,7 @@
                (measure! :repository-discovery-ms repository-started-at)))
             (.then
              (fn [resolved]
-               (when resolved
+               (if resolved
                  (let [projection-started-at (now-ms)
                        projection
                        (evidence/extract-projection
@@ -84,5 +84,9 @@
                          (.finally
                           (fn []
                             (measure! :neo4j-projection-ms projection-write-started-at)))
-                         (.then (fn [_] resolved))))))))
+                         (.then (fn [_] resolved)))))
+                 (knowledge-store/clear-file-evidence!
+                  store
+                  (identity/session-urn user-uuid (:pi-session-id summary))
+                  evidence/extractor-version))))
             (.finally (fn [] (when on-timing (on-timing @timings)))))))))

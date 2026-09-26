@@ -403,6 +403,7 @@
             "MATCH (s:AdamSession {id: $sessionId})
              OPTIONAL MATCH (s)-[old:WORKED_ON]->()
              DELETE old
+             SET s.codeMemoryVersion = $extractorVersion
              WITH s
              MERGE (repository:AdamRepository {id: $repository.id})
              SET repository.normalizedOrigin = $repository.normalizedOrigin
@@ -574,6 +575,39 @@
                        (fn [tx]
                          (index-file-evidence-transaction! tx projection))))))
 
+  (clear-file-evidence! [_ session-id extractor-version]
+    (with-session!
+      driver
+      database
+      (fn [^js session]
+        (.executeWrite
+         session
+         (fn [tx]
+           (-> (.run
+                tx
+                "MATCH (s:AdamSession {id: $sessionId})
+                 OPTIONAL MATCH (s)-[:HAS_MEMORY]->(memory)
+                 DETACH DELETE memory"
+                #js {:sessionId session-id})
+               (.then
+                (fn [_]
+                  (.run
+                   tx
+                   "MATCH (s:AdamSession {id: $sessionId})-[:HAS_ENTRY]->(entry)
+                    OPTIONAL MATCH (entry)-[touch:TOUCHES]->()
+                    DELETE touch"
+                   #js {:sessionId session-id})))
+               (.then
+                (fn [_]
+                  (.run
+                   tx
+                   "MATCH (s:AdamSession {id: $sessionId})
+                    OPTIONAL MATCH (s)-[worked:WORKED_ON]->()
+                    DELETE worked
+                    SET s.codeMemoryVersion = $extractorVersion"
+                   #js {:sessionId session-id
+                        :extractorVersion extractor-version})))))))))
+
   knowledge-store/FileMemoryQueryStore
   (query-file-memory! [_ user-id repository-id relative-path limit]
     (with-session!
@@ -614,9 +648,14 @@
         (-> (.run
              session
              "MATCH (u:AdamUser {id: $userId})
-              OPTIONAL MATCH (u)-[:OWNS]->(:AdamSession)-[worked:WORKED_ON]->(:AdamRepository)
-              WITH u, min(worked.extractorVersion) AS projectedVersion
-              RETURN coalesce(projectedVersion, u.codeMemoryVersion) AS version"
+              OPTIONAL MATCH (u)-[:OWNS]->(s:AdamSession)
+              OPTIONAL MATCH (s)-[worked:WORKED_ON]->(:AdamRepository)
+              WITH u, count(DISTINCT s) AS sessionCount,
+                   min(coalesce(s.codeMemoryVersion, worked.extractorVersion, 0)) AS projectedVersion
+              RETURN CASE WHEN sessionCount = 0
+                          THEN u.codeMemoryVersion
+                          ELSE projectedVersion
+                     END AS version"
              #js {:userId user-id})
             (.then
              (fn [result]

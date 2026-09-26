@@ -2,7 +2,8 @@
 
 (defprotocol FileEvidenceStore
   (ensure-file-evidence-schema! [store])
-  (index-file-evidence! [store projection]))
+  (index-file-evidence! [store projection])
+  (clear-file-evidence! [store session-id extractor-version]))
 
 (defprotocol FileMemoryQueryStore
   (query-file-memory! [store user-id repository-id relative-path limit]))

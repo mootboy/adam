@@ -74,6 +74,7 @@
                     :parentSession parent-first-path})
               child-after-parent-entry "{\"type\":\"message\",\"id\":\"entry-after-parent\",\"parentId\":null}"
               child-session-id (identity/session-urn user-uuid "child-live")
+              parent-session-id (identity/session-urn user-uuid "parent-live")
               materialized-path (join directory "materialized-child.jsonl")
               child-after-parent-session-id
               (identity/session-urn user-uuid "child-after-parent-live")
@@ -160,6 +161,14 @@
                (fn [_]
                  (knowledge-store/complete-code-memory-rebuild!
                   replica user-id 3)))
+              (.then
+               (fn [_]
+                 (knowledge-store/code-memory-version! replica user-id)))
+              (.then
+               (fn [version]
+                 (is (= 0 version))
+                 (knowledge-store/clear-file-evidence!
+                  replica parent-session-id 3)))
               (.then
                (fn [_]
                  (knowledge-store/code-memory-version! replica user-id)))

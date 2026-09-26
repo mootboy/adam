@@ -268,6 +268,7 @@
                (is (some #(re-find #"DELETE touch" %) queries))
                (is (some #(re-find #"WORKED_ON" %) queries))
                (is (some #(re-find #"worked\.root = \$root" %) queries))
+               (is (some #(re-find #"s\.codeMemoryVersion = \$extractorVersion" %) queries))
                (is (not-any? #(re-find #"\(u\)-\[:OWNS\]->\(repository\)" %) queries))
                (is (some #(re-find #"AdamCodeFile" %) queries))
                (is (some #(re-find #"DETACH DELETE memory" %) queries))
@@ -278,6 +279,26 @@
                (is (= true (.-dropped observation)))
                (is (= "memory-1" (.-recordingEntryId observation)))
                (is (= "bbbbbbbbbbbb" (.-memoryId reflection)))
+               (is (= 1 @closes))
+               (done))))
+          (.catch
+           (fn [error]
+             (is false (.-stack error))
+             (done)))))))
+
+(deftest clears-stale-file-evidence-and-marks-the-session-version
+  (async done
+    (let [{:keys [driver calls closes]} (recording-driver)
+          replica (neo4j/replica-with-driver driver "neo4j")]
+      (-> (knowledge-store/clear-file-evidence!
+           replica "urn:adam:session:user-1:session-1" 3)
+          (.then
+           (fn [_]
+             (let [queries (mapv :query (filter :query @calls))]
+               (is (some #(re-find #"HAS_MEMORY" %) queries))
+               (is (some #(re-find #"TOUCHES" %) queries))
+               (is (some #(re-find #"DELETE worked" %) queries))
+               (is (some #(re-find #"s.codeMemoryVersion = \$extractorVersion" %) queries))
                (is (= 1 @closes))
                (done))))
           (.catch
@@ -299,7 +320,7 @@
           (.then
            (fn [_]
              (let [queries (mapv :query (filter :query @calls))]
-               (is (some #(re-find #"min\(worked.extractorVersion\)" %) queries))
+               (is (some #(re-find #"min\(coalesce\(s.codeMemoryVersion" %) queries))
                (is (some #(re-find #"codeMemoryVersion" %) queries))
                (is (some #(re-find #"legacyOwnership:OWNS" %) queries))
                (is (some #(re-find #"DETACH DELETE repository" %) queries))
