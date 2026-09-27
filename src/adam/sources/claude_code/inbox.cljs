@@ -47,6 +47,9 @@
 (defn worker-lock-path [options]
   (join (config-home options) "adam" "worker.lock"))
 
+(defn worker-log-path [options]
+  (join (config-home options) "adam" "worker.log"))
+
 (defn- sync-directory! [path]
   (let [fd (openSync path "r")]
     (try

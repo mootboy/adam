@@ -68,12 +68,16 @@
 (defn- default-sleep! [milliseconds]
   (js/Promise. (fn [resolve _] (js/setTimeout resolve milliseconds))))
 
+(defn- default-log! [message]
+  (js/console.error (str (.toISOString (js/Date.)) " adam worker: " message)))
+
 (defn run-worker!
-  [{:keys [inbox-options sleep! initial-backoff-ms max-backoff-ms max-attempts]
+  [{:keys [inbox-options sleep! log! initial-backoff-ms max-backoff-ms max-attempts]
     :or {initial-backoff-ms 1000 max-backoff-ms 60000}
     :as options}]
   (if-let [lease-path (acquire-lease! inbox-options)]
-    (let [sleep! (or sleep! default-sleep!)]
+    (let [sleep! (or sleep! default-sleep!)
+          log! (or log! default-log!)]
       (letfn [(attempt [attempt-number]
                 (-> (drain-once! options)
                     (.then
@@ -88,6 +92,8 @@
                          (let [delay (min max-backoff-ms
                                           (* initial-backoff-ms
                                              (js/Math.pow 2 (dec attempt-number))))]
+                           (log! (str "attempt " attempt-number " failed, retrying in "
+                                      delay " ms: " (.-message error)))
                            (-> (sleep! delay)
                                (.then (fn [_] (attempt (inc attempt-number)))))))))))]
         (-> (attempt 1)
@@ -110,22 +116,39 @@
     (js/Promise.resolve {:status :busy})))
 
 (defn drain-once!
-  [{:keys [inbox-options process!]}]
-  (let [notifications (inbox/pending inbox-options)
-        groups (coalesced-groups notifications)]
+  [{:keys [inbox-options process! log!]}]
+  (let [log! (or log! default-log!)
+        notifications (inbox/pending inbox-options)
+        groups (coalesced-groups notifications)
+        failures (atom [])]
+    ;; One stream's failure keeps its notifications for retry but must not
+    ;; block the streams queued behind it.
     (-> (reduce
          (fn [promise group]
            (.then promise
                   (fn [processed]
-                    (-> (process! (last group))
-                        (.then
-                         (fn [_]
-                           (doseq [notification group]
-                             (inbox/acknowledge! inbox-options notification))
-                           (+ processed (count group))))))))
+                    (let [notification (last group)]
+                      (-> (process! notification)
+                          (.then
+                           (fn [result]
+                             (when (= :missing-transcript (:status result))
+                               (log! (str "acknowledged " (:event notification)
+                                          " for a missing transcript: "
+                                          (:transcript-path result))))
+                             (doseq [notification group]
+                               (inbox/acknowledge! inbox-options notification))
+                             (+ processed (count group))))
+                          (.catch
+                           (fn [error]
+                             (log! (str "reconciliation of " (:transcript-path notification)
+                                        " failed: " (.-message error)))
+                             (swap! failures conj error)
+                             processed)))))))
          (js/Promise.resolve 0)
          groups)
         (.then
          (fn [processed]
-           {:processed processed
-            :pending (count (inbox/pending inbox-options))})))))
+           (if-let [error (first @failures)]
+             (js/Promise.reject error)
+             {:processed processed
+              :pending (count (inbox/pending inbox-options))}))))))

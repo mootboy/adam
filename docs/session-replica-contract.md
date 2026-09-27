@@ -199,7 +199,7 @@ Relationships:
 
 Queries enforce user isolation through `(AdamUser)-[:OWNS]->(AdamSession)-[:HAS_MEMORY]->(...)-[:ABOUT]->(AdamCodeFile)`, never through ownership of shared repository/file nodes.
 
-Derived knowledge may be deleted and rebuilt without affecting the lossless replica. The 0.2 code-memory schema/extractor version performs a restart-safe rebuild that replaces user-scoped repository/file identities, removes obsolete derived relationships and orphaned code nodes, and can resume idempotently after interruption.
+Derived knowledge may be deleted and rebuilt without affecting the lossless replica. A session's file evidence is always rebuilt as a whole from one projection; when a source stream's file no longer exists, the projection reads that stream's mirrored raw entries from the replica so its evidence survives the rebuild. The 0.2 code-memory schema/extractor version performs a restart-safe rebuild that replaces user-scoped repository/file identities, removes obsolete derived relationships and orphaned code nodes, and can resume idempotently after interruption.
 
 ## Commands
 

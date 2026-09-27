@@ -3,7 +3,7 @@
             [clojure.set :as set]
             [clojure.string :as string]
             ["node:crypto" :refer [createHash]]
-            ["node:fs" :refer [closeSync openSync readSync statSync]]))
+            ["node:fs" :refer [closeSync existsSync openSync readSync statSync]]))
 
 (def ^:private chunk-bytes (* 64 1024))
 
@@ -271,17 +271,27 @@
   (let [parent (scan-stream {:session-id session-id
                              :transcript-path transcript-path
                              :stream-id "main"})
-        children (->> subagents
-                      (sort-by :agent-id)
-                      (mapv (fn [{:keys [agent-id transcript-path]}]
-                              (scan-stream {:session-id session-id
-                                            :transcript-path transcript-path
-                                            :stream-id (str "agent:" agent-id)
-                                            :agent-id agent-id}))))]
+        ;; Claude removes finished subagent transcripts. The absent file is
+        ;; still the authority; its lossless retained replica in the graph lets
+        ;; the reconciler rebuild the stream's evidence, so it is reported as a
+        ;; missing stream rather than scanned.
+        {present true missing false}
+        (group-by #(existsSync (:transcript-path %)) (sort-by :agent-id subagents))
+        children (mapv (fn [{:keys [agent-id transcript-path]}]
+                         (scan-stream {:session-id session-id
+                                       :transcript-path transcript-path
+                                       :stream-id (str "agent:" agent-id)
+                                       :agent-id agent-id}))
+                       present)]
     {:source-kind identity/claude-source-kind
      :source-session-id session-id
      :current-leaf-id (:current-leaf-id parent)
      :streams (into [parent] children)
+     :missing-streams (mapv (fn [{:keys [agent-id transcript-path]}]
+                              {:stream-id (str "agent:" agent-id)
+                               :agent-id agent-id
+                               :transcript-path transcript-path})
+                            missing)
      :entries (into [] (mapcat :entries) (into [parent] children))}))
 
 (defn selected-entries [session-scan]

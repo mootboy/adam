@@ -31,6 +31,20 @@
     (is (re-matches #"urn:adam:claude-record:[a-f0-9]{64}"
                     (:entry-id (nth (:entries parent) 6))))))
 
+(deftest skips-a-subagent-stream-whose-transcript-was-removed
+  (let [scan (scanner/scan-session
+              {:session-id "claude-session-1"
+               :transcript-path main-fixture
+               :subagents [{:agent-id "agent-gone"
+                            :transcript-path (.join node-path (tmpdir) "adam-missing-subagent.jsonl")}
+                           {:agent-id "agent-1"
+                            :transcript-path subagent-fixture}]})]
+    (is (= ["main" "agent:agent-1"] (mapv :stream-id (:streams scan))))
+    (is (= [{:stream-id "agent:agent-gone"
+             :agent-id "agent-gone"
+             :transcript-path (.join node-path (tmpdir) "adam-missing-subagent.jsonl")}]
+           (:missing-streams scan)))))
+
 (deftest reconstructs-compacted-parallel-current-context
   (let [scan (scanner/scan-session
               {:session-id "claude-session-1"
