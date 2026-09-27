@@ -9,6 +9,7 @@ This directory is adam's repository-local issue tracker. Use one Markdown file p
 - [`003`](003-migrate-source-scoped-session-identities.md) — Migrate session identities to source-scoped URNs (`done`)
 - [`004`](004-scan-claude-transcripts.md) — Scan Claude transcripts and derive native file evidence (`done`)
 - [`005`](005-reconcile-claude-transcripts.md) — Reconcile Claude transcripts without blocking Claude (`done`)
+- [`006`](006-release-and-cut-over-0.3.0.md) — Release and cut over Adam 0.3.0 (`in-progress`)
 
 ## Naming
 

@@ -4,6 +4,8 @@ All notable changes to adam are documented here.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-27
+
 ### Added
 
 - A read-only Claude Code plugin and compiled stdio MCP server exposing the existing bounded `adam_file_context` query.
