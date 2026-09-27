@@ -53,4 +53,6 @@ Release preparation passed a clean four-target build, 100 deterministic ClojureS
 
 ## Notes
 
+The released 0.3.0 plugin did not start its MCP server in interactive Claude Code sessions; [`007`](007-load-plugin-mcp-server-from-released-checkout.md) fixes that in 0.3.1, so the Claude cutover criteria above are validated against 0.3.1.
+
 The release is intentionally required before final cutover validation so both hosts exercise one immutable, checksummed artifact. The existing post-merge pipeline tags only the exact protected-main commit after Node and Neo4j gates pass.

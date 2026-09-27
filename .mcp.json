@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "adam": {
-      "command": "${CLAUDE_PLUGIN_ROOT:-.}/mcp.js"
+      "command": "${CLAUDE_PLUGIN_ROOT}/mcp.js"
     }
   }
 }

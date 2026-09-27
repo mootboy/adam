@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import readline from "node:readline";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 
@@ -27,6 +28,61 @@ async function exists(file) {
   } catch {
     return false;
   }
+}
+
+// Emulates the documented Claude Code plugin contract for stdio MCP servers:
+// only the literal ${CLAUDE_PLUGIN_ROOT} placeholder is substituted, each
+// field is substituted as a plain string, and the command is spawned directly
+// (no shell) with CLAUDE_PLUGIN_ROOT exported, from the user's cwd rather than
+// the plugin directory.
+async function probePluginMcpServer(pluginRoot, cwd) {
+  const { mcpServers } = JSON.parse(await readFile(path.join(pluginRoot, ".mcp.json"), "utf8"));
+  const substitute = (value) => value.replaceAll("${CLAUDE_PLUGIN_ROOT}", pluginRoot);
+  const server = mcpServers.adam;
+  const command = substitute(server.command);
+  const args = (server.args ?? []).map(substitute);
+  for (const value of [command, ...args, ...Object.values(server.env ?? {}).map(substitute)]) {
+    assert.doesNotMatch(value, /\$\{/, `unsupported placeholder left for Claude to expand: ${value}`);
+  }
+  const child = spawn(command, args, {
+    cwd,
+    env: {
+      ...cleanEnvironment(),
+      // Placeholder Neo4j settings: the server initializes lazily and lists tools without connecting.
+      ADAM_NEO4J_URI: "bolt://localhost:7687",
+      ADAM_NEO4J_USERNAME: "neo4j",
+      ADAM_NEO4J_PASSWORD: "test-password",
+      CLAUDE_PLUGIN_ROOT: pluginRoot,
+      ...server.env,
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const responses = [];
+  const errors = [];
+  readline.createInterface({ input: child.stdout }).on("line", (line) => responses.push(JSON.parse(line)));
+  readline.createInterface({ input: child.stderr }).on("line", (line) => errors.push(line));
+  const exited = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("plugin MCP server did not exit after stdin closed"));
+    }, 10000);
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      clearTimeout(timeout);
+      resolve({ code, signal });
+    });
+  });
+  for (const message of [
+    { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "adam-test", version: "1" } } },
+    { jsonrpc: "2.0", method: "notifications/initialized" },
+    { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
+  ]) child.stdin.write(`${JSON.stringify(message)}\n`);
+  child.stdin.end();
+  const exit = await exited;
+  assert.deepEqual(errors, []);
+  assert.deepEqual(exit, { code: 0, signal: null });
+  assert.equal(responses.find(({ id }) => id === 1).result.serverInfo.name, "adam");
+  return responses.find(({ id }) => id === 2).result.tools;
 }
 
 test("the release tarball is complete and runs without source compilation", async () => {
@@ -110,7 +166,9 @@ test("the release tarball is complete and runs without source compilation", asyn
     const mcpConfiguration = JSON.parse(
       await readFile(path.join(packageRoot, ".mcp.json"), "utf8"),
     );
-    assert.equal(mcpConfiguration.mcpServers.adam.command, "${CLAUDE_PLUGIN_ROOT:-.}/mcp.js");
+    assert.deepEqual(Object.keys(mcpConfiguration.mcpServers), ["adam"]);
+    const tools = await probePluginMcpServer(packageRoot, temporaryDirectory);
+    assert.deepEqual(tools.map(({ name }) => name), ["adam_file_context"]);
     await access(path.join(packageRoot, "mcp.js"), constants.X_OK);
     await access(path.join(packageRoot, "hook.js"), constants.X_OK);
     await access(path.join(packageRoot, "worker.js"), constants.X_OK);

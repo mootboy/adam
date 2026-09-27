@@ -38,6 +38,12 @@ ADAM_TEST_NEO4J_PASSWORD='your-password' \
 npm run test:neo4j
 ```
 
+The opt-in Claude Code probe starts a real interactive session under a pseudo-terminal with the installed tarball as `--plugin-dir` and requires a logged-in `claude` on `PATH`:
+
+```bash
+ADAM_TEST_CLAUDE=1 npm run test:claude
+```
+
 For incremental development:
 
 ```bash
@@ -85,11 +91,13 @@ Origin-backed repository and file identities are canonical across users, session
 
 ## Use from Claude Code
 
-Build or unpack an Adam release, export the same `ADAM_NEO4J_*` variables, and load its plugin directory:
+Install an Adam release with its dependencies, export the same `ADAM_NEO4J_*` variables, and load the installed directory as a plugin from any trusted workspace. The Pi checkout is such a directory:
 
 ```bash
-claude --plugin-dir /absolute/path/to/adam
+claude --plugin-dir "$HOME/.pi/agent/git/github.com/mootboy/adam"
 ```
+
+No `--mcp-config` or manual `CLAUDE_PLUGIN_ROOT` is needed; Claude substitutes `${CLAUDE_PLUGIN_ROOT}` in the bundled `.mcp.json` and registers the server as `plugin:adam:adam`.
 
 The plugin starts the packaged stdio MCP server and exposes `adam_file_context` with the same origin lookup, user isolation, provenance rendering, and output bounds as Pi. Its bundled skill recommends explicit retrieval for a known file and does not inject memories automatically.
 
