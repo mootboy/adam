@@ -1,6 +1,6 @@
 {
   "name": "@mootboy/adam",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "license": "GPL-3.0-only",
   "description": "Provenance-bearing distributed memory for coding agents",

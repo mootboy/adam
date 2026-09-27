@@ -4,6 +4,16 @@ All notable changes to adam are documented here.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-28
+
+### Fixed
+
+- The Claude reconciliation worker no longer stalls the whole inbox behind a notification whose transcript was deleted or not yet written. Such notifications are acknowledged, removed subagent transcripts are rebuilt from their mirrored entries instead of scanned, and a failing stream no longer blocks the streams queued behind it.
+
+### Added
+
+- The detached worker logs failed reconciliations, retries, and missing-transcript acknowledgements to `${XDG_CONFIG_HOME:-~/.config}/adam/worker.log`.
+
 ## [0.3.1] - 2026-09-28
 
 ### Fixed
