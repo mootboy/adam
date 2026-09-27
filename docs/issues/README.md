@@ -5,6 +5,7 @@ This directory is adam's repository-local issue tracker. Use one Markdown file p
 ## Issues
 
 - [`001`](001-long-working-pause-after-turns.md) — Long “Working” pause after turns (`done`, bug)
+- [`002`](002-characterize-claude-transcripts.md) — Characterize Claude Code transcripts for ingestion (`done`)
 
 ## Naming
 

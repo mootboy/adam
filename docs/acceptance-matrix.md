@@ -51,6 +51,23 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 | Entry type or nested fields are unknown | Complete raw JSON is preserved |
 | Entry contains inline base64 data | Bytes round-trip unchanged |
 
+## Claude transcript ingestion
+
+These cases define the approved 0.3 scanner contract; transcript ingestion is not yet implemented.
+
+| Case | Expected result |
+| --- | --- |
+| Hook supplies a Claude `transcript_path` | That stream is read as authoritative without scanning undocumented storage directories |
+| Parent transcript contains unknown or UUID-less records | Every complete physical record is preserved losslessly |
+| Claude session resumes normally | Existing committed prefix remains unchanged and only the appended suffix is synchronized |
+| Transcript contains a manual compact boundary | Continuity follows `logicalParentUuid`; compact-summary prose creates no file evidence |
+| Latest `last-prompt` names a valid leaf | Parent-stream current context begins from its `leafUuid` |
+| One active model request emits parallel tool fragments | Active fragments sharing `requestId` and their structurally matched results remain in current context |
+| Claude calls native `Read`, `Edit`, or `Write` | Non-empty `input.file_path` creates deterministic file evidence using that record's cwd |
+| Claude uses Bash, MCP, prose, a compact summary, or handback text containing a path | No file evidence is created |
+| Explicitly located subagent stream shares the parent session ID | It remains a child stream of that Claude session, retains `agentId`/sidechain provenance, and its native file tools may create evidence |
+| Subagent completion is copied into parent handback records | Records are preserved but handback prose creates no evidence |
+
 ## Checkpoints and synchronization
 
 | Case | Expected result |
