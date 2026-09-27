@@ -92,6 +92,8 @@ The parent `Agent` result identifies the launched `agentId`. Completion later ap
 
 When a subagent transcript is explicitly located, its native Read/Edit/Write calls contribute evidence to the owning Claude session. Revision and repository resolution use the subagent tool record's cwd.
 
+Claude deletes finished subagent transcripts. A retained subagent locator whose file is gone is no longer scanned or checkpointed. The transcript stays the authority for that stream even when absent; its mirrored raw records are the lossless retained replica, and every derived-evidence rebuild of the session reads them back from that replica so the removed stream's evidence is re-created alongside the present streams rather than dropped. If the file reappears, normal checkpoint and conflict handling against the transcript resumes.
+
 ## Memory boundary
 
 Initial Claude ingestion creates sessions, lossless entries, structural stream/tree relationships, explicit file evidence, and revision provenance. It does not create observations or reflections and does not infer memory from Claude prose.
@@ -102,7 +104,7 @@ Claude can therefore retrieve Pi-produced memories associated with files it touc
 
 `SessionStart`, `Stop`, `SubagentStop`, and `SessionEnd` hooks accept at most 64 KiB of JSON input, validate bounded session/cwd/absolute transcript locators, atomically write owner-only notifications under `${XDG_CONFIG_HOME:-~/.config}/adam/inbox/`, and wake a detached worker without waiting for Neo4j. Notifications contain no transcript content, prompts, tool payloads, credentials, or memories.
 
-A single filesystem lease serializes workers. Repeated notifications for the same stream locator coalesce to the latest event, while successful reconciliation acknowledges every covered notification. Parent and subagent locators are retained in an owner-only per-session manifest so later rebuilds remain tree-complete. Failed initialization, scanning, synchronization, repository discovery, or projection leaves notifications durable and retries with bounded exponential backoff. Dead process locks and old incomplete locks are recoverable; a fresh competing worker exits without performing duplicate writes.
+A single filesystem lease serializes workers. Repeated notifications for the same stream locator coalesce to the latest event, while successful reconciliation acknowledges every covered notification. Parent and subagent locators are retained in an owner-only per-session manifest so later rebuilds remain tree-complete. Failed initialization, scanning, synchronization, repository discovery, or projection leaves that stream's notifications durable and retries with bounded exponential backoff, while other streams in the same pass are still reconciled and acknowledged. A notification whose transcript does not exist is acknowledged without graph writes, because a `SessionStart` can precede the first record and Claude deletes finished subagent transcripts; recorded subagent locators whose files are gone are not scanned, and their evidence is rebuilt from their mirrored records. The detached worker appends its diagnostics to `${XDG_CONFIG_HOME:-~/.config}/adam/worker.log`. Dead process locks and old incomplete locks are recoverable; a fresh competing worker exits without performing duplicate writes.
 
 ## Deferred validation
 

@@ -153,24 +153,55 @@
              (rmSync root #js {:recursive true :force true})
              (done)))))))
 
-(deftest worker-retains-failed-and-later-notifications-for-retry
+(deftest worker-retains-a-failed-notification-without-blocking-later-streams
   (async done
     (let [root (mkdtempSync (join (tmpdir) "adam-worker-test-"))
           next-id (atom 0)
           options {:config-home root
                    :now-ms #(swap! next-id inc)
-                   :uuid-fn #(str "notification-" @next-id)}]
+                   :uuid-fn #(str "notification-" @next-id)}
+          logged (atom [])]
       (inbox/enqueue! options (input "session-1"))
       (inbox/enqueue! options (input "session-2"))
       (-> (worker/drain-once!
            {:inbox-options options
-            :process! (fn [_] (js/Promise.reject (js/Error. "Neo4j unavailable")))})
+            :log! #(swap! logged conj %)
+            :process! (fn [{:keys [session-id]}]
+                        (if (= "session-1" session-id)
+                          (js/Promise.reject (js/Error. "transcript is malformed"))
+                          (js/Promise.resolve nil)))})
           (.then (fn [_] (is false "worker should reject a failed reconciliation")))
           (.catch
            (fn [error]
-             (is (= "Neo4j unavailable" (.-message error)))
-             (is (= ["session-1" "session-2"]
-                    (mapv :session-id (inbox/pending options))))))
+             (is (= "transcript is malformed" (.-message error)))
+             (is (= ["session-1"] (mapv :session-id (inbox/pending options))))
+             (is (= 1 (count @logged)))
+             (is (re-find #"session-1.*failed: transcript is malformed" (first @logged)))))
+          (.finally
+           (fn []
+             (rmSync root #js {:recursive true :force true})
+             (done)))))))
+
+(deftest worker-acknowledges-a-notification-whose-transcript-is-gone
+  (async done
+    (let [root (mkdtempSync (join (tmpdir) "adam-worker-test-"))
+          options {:config-home root
+                   :now-ms (constantly 1)
+                   :uuid-fn (constantly "notification-1")}
+          logged (atom [])]
+      (inbox/enqueue! options (input "session-1"))
+      (-> (worker/drain-once!
+           {:inbox-options options
+            :log! #(swap! logged conj %)
+            :process! (fn [_] (js/Promise.resolve {:status :missing-transcript
+                                                   :transcript-path "/gone/session-1.jsonl"}))})
+          (.then
+           (fn [result]
+             (is (= {:processed 1 :pending 0} result))
+             (is (empty? (inbox/pending options)))
+             (is (= ["acknowledged Stop for a missing transcript: /gone/session-1.jsonl"]
+                    @logged))))
+          (.catch #(is false (str %)))
           (.finally
            (fn []
              (rmSync root #js {:recursive true :force true})

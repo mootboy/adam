@@ -76,6 +76,10 @@ These cases define the implemented 0.3 scanner, graph-storage, file-evidence, an
 | Two workers wake concurrently | One filesystem lease owner processes notifications; the other exits without duplicate writes |
 | Worker crashes while holding its lease | A later worker recovers a dead or old incomplete lease and resumes durable notifications |
 | Neo4j is unavailable after enqueue | Claude remains unblocked; the notification survives and retries with bounded backoff |
+| A queued transcript no longer exists | The notification is acknowledged and logged; no locator or graph write occurs |
+| One stream fails while others are queued | Later streams are reconciled and acknowledged in the same pass; only the failed stream's notifications remain |
+| A recorded subagent transcript was removed | The parent scan skips the file; the stream's evidence is rebuilt from its mirrored entries and survives while present streams are rebuilt from their transcripts (**live**) |
+| The hook spawns the detached worker | Worker diagnostics append to `adam/worker.log` |
 | Parent transcript contains unknown or UUID-less records | Every complete physical record is preserved losslessly and UUID-less identity is deterministic within the stream |
 | Transcript ends with incomplete non-newline JSON | The tail remains uncommitted and is retried after a later append |
 | Transcript contains malformed completed JSON, duplicate UUIDs, or unresolved structural references | The stream is rejected without repairing the source |

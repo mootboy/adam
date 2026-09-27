@@ -5,11 +5,12 @@ This directory is adam's repository-local issue tracker. Use one Markdown file p
 ## Issues
 
 - [`001`](001-long-working-pause-after-turns.md) — Long “Working” pause after turns (`done`, bug)
+- [`008`](008-worker-stalls-on-missing-transcripts.md) — Worker stalls on missing transcripts (`done`, bug)
 - [`002`](002-characterize-claude-transcripts.md) — Characterize Claude Code transcripts for ingestion (`done`)
 - [`003`](003-migrate-source-scoped-session-identities.md) — Migrate session identities to source-scoped URNs (`done`)
 - [`004`](004-scan-claude-transcripts.md) — Scan Claude transcripts and derive native file evidence (`done`)
 - [`005`](005-reconcile-claude-transcripts.md) — Reconcile Claude transcripts without blocking Claude (`done`)
-- [`006`](006-release-and-cut-over-0.3.0.md) — Release and cut over Adam 0.3.0 (`in-progress`)
+- [`006`](006-release-and-cut-over-0.3.0.md) — Release and cut over Adam 0.3.0 (`done`)
 - [`007`](007-load-plugin-mcp-server-from-released-checkout.md) — Load the plugin MCP server from a released checkout (`done`, bug)
 
 ## Naming

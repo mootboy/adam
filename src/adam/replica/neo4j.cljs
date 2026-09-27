@@ -911,6 +911,33 @@
   (ensure-claude-schema! [_]
     (ensure-label-constraints! driver database ["AdamTranscriptStream"]))
 
+  (read-stream-entries! [_ stream-id]
+    ;; Mirrored raw records of one stream, in the shape the scanner produces,
+    ;; so evidence can be rebuilt after the source transcript is gone.
+    (with-session!
+      driver
+      database
+      (fn [^js session]
+        (-> (.run session
+                  "MATCH (:AdamTranscriptStream {id: $streamId})-[:HAS_ENTRY]->(e:AdamEntry)
+                   RETURN e ORDER BY e.ordinal"
+                  #js {:streamId stream-id})
+            (.then
+             (fn [result]
+               (mapv
+                (fn [record]
+                  (let [properties (.-properties (record-get record "e"))
+                        optional (fn [key] (when (some? (aget properties key))
+                                             (str (aget properties key))))]
+                    (cond-> {:entry-id (str (aget properties "entryId"))
+                             :stream-id (str (aget properties "streamId"))
+                             :ordinal (neo-integer (aget properties "ordinal"))
+                             :raw-json (str (aget properties "rawJson"))}
+                      (optional "recordUuid") (assoc :record-uuid (optional "recordUuid"))
+                      (optional "agentId") (assoc :agent-id (optional "agentId"))
+                      (optional "cwd") (assoc :cwd (optional "cwd")))))
+                (records result))))))))
+
   (get-stream-checkpoint! [_ stream-id]
     (with-session!
       driver database

@@ -59,6 +59,16 @@ test("the compiled Claude hook durably queues a locator and returns without Neo4
       Object.keys(JSON.parse(notification)).sort(),
       ["cwd", "event", "id", "queued-at", "session-id", "transcript-path", "version"],
     );
+
+    // The detached worker cannot reach Neo4j here; its refusal must land in the worker log.
+    const workerLog = path.join(root, "adam", "worker.log");
+    const deadline = Date.now() + 5000;
+    let logged = "";
+    while (!logged.includes("adam worker unavailable") && Date.now() < deadline) {
+      logged = await readFile(workerLog, "utf8").catch(() => "");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.match(logged, /adam worker unavailable: ADAM_NEO4J_URI/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

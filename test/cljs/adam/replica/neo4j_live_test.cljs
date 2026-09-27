@@ -10,12 +10,13 @@
             [adam.replica.store :as store]
             [adam.replica.sync :as sync]
             [adam.sources.claude-code.evidence :as claude-evidence]
+            [adam.sources.claude-code.reconcile :as claude-reconcile]
             [adam.sources.claude-code.scanner :as claude-scanner]
             [adam.sources.claude-code.sync :as claude-sync]
             [cljs.test :refer [async deftest is]]
             ["neo4j-driver" :as neo4j]
             ["node:crypto" :refer [randomUUID]]
-            ["node:fs" :refer [mkdtempSync readFileSync rmSync writeFileSync]]
+            ["node:fs" :refer [appendFileSync copyFileSync mkdtempSync readFileSync rmSync writeFileSync]]
             ["node:os" :refer [tmpdir]]
             ["node:path" :refer [join]]))
 
@@ -621,5 +622,126 @@
                           (into {} (map (fn [^js item]
                                          [(aget item "id") (aget item "raw")])
                                        (array-seq (.get record "rawEntries")))))))
+                 (finish! nil)))
+              (.catch finish!)))))))
+
+(deftest live-claude-evidence-survives-a-removed-subagent-transcript
+  (async done
+    (let [uri (environment "ADAM_TEST_NEO4J_URI")
+          username (environment "ADAM_TEST_NEO4J_USERNAME")
+          password (environment "ADAM_TEST_NEO4J_PASSWORD")
+          database (or (environment "ADAM_TEST_NEO4J_DATABASE") "neo4j")]
+      (if-not (and uri username password)
+        (do
+          (is false "ADAM_TEST_NEO4J_URI, USERNAME, and PASSWORD are required")
+          (done))
+        (let [user-uuid (randomUUID)
+              user-id (identity/user-urn user-uuid)
+              auth-token (.basic (.-auth neo4j) username password)
+              ^js driver ((.-driver neo4j) uri auth-token)
+              replica (adam-neo4j/replica-with-driver driver database)
+              ^js query-session (.session driver #js {:database database})
+              root (mkdtempSync (join (tmpdir) "adam-live-claude-"))
+              main-path (join root "main.jsonl")
+              subagent-path (join root "subagent.jsonl")
+              repository (evidence/build-repository
+                          {:user-uuid user-uuid :root "/work/repo"
+                           :remote (str "git@example.com:" user-uuid "/repo.git")
+                           :commit "main-head" :branch "main" :dirty? false
+                           :worktrees [{:root "/work/repo" :commit "main-head"
+                                        :branch "main" :dirty? false}
+                                       {:root "/work/tree" :commit "feature-head"
+                                        :branch "feature" :dirty? true}]})
+              session-id (identity/session-urn user-uuid "claude-code" "claude-session-1")
+              reconcile!
+              (fn [notification]
+                (claude-reconcile/reconcile!
+                 {:locator-options {:config-home root}
+                  :notification notification
+                  :user-uuid user-uuid
+                  :store replica
+                  :resolve-repository! (fn [_ _] (js/Promise.resolve repository))}))
+              touches-by-stream!
+              (fn []
+                (-> (.run query-session
+                          "MATCH (s:AdamSession {id: $sessionId})-[:HAS_ENTRY]->(e:AdamEntry)
+                           MATCH (e)-[t:TOUCHES]->(f:AdamCodeFile {repositoryId: $repositoryId})
+                           RETURN e.streamId AS stream, count(t) AS touches, count(DISTINCT f) AS files
+                           ORDER BY stream"
+                          #js {:sessionId session-id :repositoryId (:id repository)})
+                    (.then (fn [^js result]
+                             (into {}
+                                   (map (fn [^js record]
+                                          [(.get record "stream")
+                                           [(.toNumber (.get record "touches"))
+                                            (.toNumber (.get record "files"))]])
+                                        (array-seq (.-records result))))))))
+              finish!
+              (fn [error]
+                (-> (.run query-session
+                          "MATCH (file:AdamCodeFile {repositoryId: $repositoryId}) DETACH DELETE file"
+                          #js {:repositoryId (:id repository)})
+                    (.then (fn [_]
+                             (.run query-session
+                                   "MATCH (repository:AdamRepository {id: $repositoryId}) DETACH DELETE repository"
+                                   #js {:repositoryId (:id repository)})))
+                    (.then (fn [_]
+                             (.run query-session
+                                   "MATCH (n) WHERE n.id CONTAINS $userUuid DETACH DELETE n"
+                                   #js {:userUuid user-uuid})))
+                    (.catch (fn [_] nil))
+                    (.finally
+                     (fn []
+                       (rmSync root #js {:recursive true :force true})
+                       (-> (.close query-session)
+                           (.then (fn [_] (store/close! replica)))
+                           (.finally
+                            (fn []
+                              (when error (is false (.-stack error)))
+                              (done))))))))]
+          (copyFileSync (join (.cwd js/process) "test/fixtures/claude/main.jsonl") main-path)
+          (copyFileSync (join (.cwd js/process) "test/fixtures/claude/subagent.jsonl") subagent-path)
+          (-> (store/initialize! replica {:id user-id})
+              (.then (fn [_]
+                       (reconcile! {:event "SubagentStop"
+                                    :session-id "claude-session-1"
+                                    :transcript-path subagent-path
+                                    :parent-transcript-path main-path
+                                    :agent-id "agent-1"
+                                    :cwd "/work/repo"})))
+              (.then (fn [result]
+                       (is (= :projected (:projection-status result)))
+                       (touches-by-stream!)))
+              (.then
+               (fn [before]
+                 (is (= 8 (reduce + (map first (vals before)))))
+                 (is (pos? (first (get before "agent:agent-1"))))
+                 ;; Claude removes the finished subagent transcript; the parent
+                 ;; then gains one more native Read on the selected branch.
+                 (rmSync subagent-path)
+                 (appendFileSync
+                  main-path
+                  (str "{\"type\":\"assistant\",\"uuid\":\"a-read-2\",\"parentUuid\":\"r-write\","
+                       "\"sessionId\":\"claude-session-1\",\"cwd\":\"/work/repo\",\"requestId\":\"request-9\","
+                       "\"timestamp\":\"2026-01-01T00:00:09.000Z\",\"message\":{\"role\":\"assistant\","
+                       "\"content\":[{\"type\":\"tool_use\",\"id\":\"tool-read-2\",\"name\":\"Read\","
+                       "\"input\":{\"file_path\":\"/work/repo/src/later.cljs\"}}]}}\n"
+                       "{\"type\":\"last-prompt\",\"sessionId\":\"claude-session-1\",\"leafUuid\":\"a-read-2\"}\n")
+                  "utf8")
+                 (-> (reconcile! {:event "Stop"
+                                  :session-id "claude-session-1"
+                                  :transcript-path main-path
+                                  :cwd "/work/repo"})
+                     (.then (fn [result]
+                              (is (= :projected (:projection-status result)))
+                              (touches-by-stream!)))
+                     (.then (fn [after] [before after])))))
+              (.then
+               (fn [[before after]]
+                 (is (= (get before "agent:agent-1") (get after "agent:agent-1"))
+                     "evidence of the removed subagent stream is rebuilt from its mirrored entries")
+                 (is (= (inc (first (get before "main"))) (first (get after "main")))
+                     "the present parent stream is rebuilt from its transcript")
+                 (is (= (inc (second (get before "main"))) (second (get after "main"))))
                  (finish! nil)))
               (.catch finish!)))))))
