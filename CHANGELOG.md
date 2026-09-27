@@ -4,6 +4,16 @@ All notable changes to adam are documented here.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-28
+
+### Fixed
+
+- The bundled Claude plugin MCP server now starts in interactive Claude Code sessions launched with `--plugin-dir` from any workspace. The 0.3.0 configuration used a shell-style `${CLAUDE_PLUGIN_ROOT:-.}` default that the plugin loader does not substitute.
+
+### Added
+
+- A package-boundary regression test that resolves `.mcp.json` exactly as the Claude plugin contract does, and an opt-in `npm run test:claude` probe that starts a real interactive Claude Code session.
+
 ## [0.3.0] - 2026-09-27
 
 ### Added
