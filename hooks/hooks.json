@@ -1,0 +1,57 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hook.js\"",
+            "commandWindows": "node \"$env:CLAUDE_PLUGIN_ROOT\\hook.js\"",
+            "timeout": 5,
+            "statusMessage": "Queuing Adam reconciliation..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hook.js\"",
+            "commandWindows": "node \"$env:CLAUDE_PLUGIN_ROOT\\hook.js\"",
+            "timeout": 5,
+            "statusMessage": "Queuing Adam reconciliation..."
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hook.js\"",
+            "commandWindows": "node \"$env:CLAUDE_PLUGIN_ROOT\\hook.js\"",
+            "timeout": 5,
+            "statusMessage": "Queuing Adam reconciliation..."
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hook.js\"",
+            "commandWindows": "node \"$env:CLAUDE_PLUGIN_ROOT\\hook.js\"",
+            "timeout": 5,
+            "statusMessage": "Queuing Adam reconciliation..."
+          }
+        ]
+      }
+    ]
+  }
+}

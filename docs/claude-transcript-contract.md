@@ -1,6 +1,6 @@
 # Claude Code transcript ingestion contract
 
-Status: scanner, graph storage, and file-evidence adapter implemented; lifecycle reconciliation pending.
+Status: implemented, including durable non-blocking lifecycle reconciliation.
 
 This contract records behavior observed with Claude Code 2.1.283 and defines the initial Adam ingestion boundary. Claude transcripts remain authoritative; Adam is a read-only replica and deterministic file-evidence index.
 
@@ -12,7 +12,7 @@ This contract records behavior observed with Claude Code 2.1.283 and defines the
 - Every complete physical JSONL record is retained exactly, including unknown record types and records without UUIDs.
 - The parent transcript and any explicitly located subagent transcript are separate streams owned by one Claude session.
 
-The initial implementation may defer a stream until a supported hook supplies its locator. Observed filesystem placement is characterization evidence, not a discovery API.
+A stream is deferred until a supported hook supplies its locator. `SubagentStop` supplies both `transcript_path` and `agent_transcript_path`; Adam records the explicit child locator without scanning Claude's storage directories. Observed filesystem placement remains characterization evidence, not a discovery API.
 
 ## Source identity
 
@@ -97,6 +97,12 @@ When a subagent transcript is explicitly located, its native Read/Edit/Write cal
 Initial Claude ingestion creates sessions, lossless entries, structural stream/tree relationships, explicit file evidence, and revision provenance. It does not create observations or reflections and does not infer memory from Claude prose.
 
 Claude can therefore retrieve Pi-produced memories associated with files it touches, while its own conversation does not become an Adam memory without a separate compatible producer.
+
+## Lifecycle reconciliation
+
+`SessionStart`, `Stop`, `SubagentStop`, and `SessionEnd` hooks accept at most 64 KiB of JSON input, validate bounded session/cwd/absolute transcript locators, atomically write owner-only notifications under `${XDG_CONFIG_HOME:-~/.config}/adam/inbox/`, and wake a detached worker without waiting for Neo4j. Notifications contain no transcript content, prompts, tool payloads, credentials, or memories.
+
+A single filesystem lease serializes workers. Repeated notifications for the same stream locator coalesce to the latest event, while successful reconciliation acknowledges every covered notification. Parent and subagent locators are retained in an owner-only per-session manifest so later rebuilds remain tree-complete. Failed initialization, scanning, synchronization, repository discovery, or projection leaves notifications durable and retries with bounded exponential backoff. Dead process locks and old incomplete locks are recoverable; a fresh competing worker exits without performing duplicate writes.
 
 ## Deferred validation
 

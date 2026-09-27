@@ -68,11 +68,16 @@ test("the release tarball is complete and runs without source compilation", asyn
       "package.json",
       "extension.js",
       "mcp.js",
+      "hook.js",
+      "worker.js",
+      "hooks/hooks.json",
       ".mcp.json",
       ".claude-plugin/plugin.json",
       "skills/adam-memory/SKILL.md",
       "dist/adam.js",
       "dist/adam-mcp.js",
+      "dist/adam-hook.js",
+      "dist/adam-worker.js",
       "README.md",
       "CHANGELOG.md",
       "LICENSE",
@@ -97,18 +102,29 @@ test("the release tarball is complete and runs without source compilation", asyn
     assert.equal(pluginManifest.name, "adam");
     assert.equal(pluginManifest.version, manifest.version);
     assert.equal(pluginManifest.mcpServers, "./.mcp.json");
+    const hooksConfiguration = JSON.parse(
+      await readFile(path.join(packageRoot, "hooks", "hooks.json"), "utf8"),
+    );
+    assert.deepEqual(Object.keys(hooksConfiguration.hooks).sort(),
+      ["SessionEnd", "SessionStart", "Stop", "SubagentStop"]);
     const mcpConfiguration = JSON.parse(
       await readFile(path.join(packageRoot, ".mcp.json"), "utf8"),
     );
     assert.equal(mcpConfiguration.mcpServers.adam.command, "${CLAUDE_PLUGIN_ROOT:-.}/mcp.js");
     await access(path.join(packageRoot, "mcp.js"), constants.X_OK);
+    await access(path.join(packageRoot, "hook.js"), constants.X_OK);
+    await access(path.join(packageRoot, "worker.js"), constants.X_OK);
 
     const savedEnvironment = new Map(neo4jEnvironment.map((key) => [key, process.env[key]]));
     try {
       for (const key of neo4jEnvironment) delete process.env[key];
       const { default: adam } = await import(pathToFileURL(path.join(packageRoot, "extension.js")));
       const mcpModule = await import(pathToFileURL(path.join(packageRoot, "dist", "adam-mcp.js")));
+      const hookModule = await import(pathToFileURL(path.join(packageRoot, "dist", "adam-hook.js")));
+      const workerModule = await import(pathToFileURL(path.join(packageRoot, "dist", "adam-worker.js")));
       assert.equal(typeof mcpModule.start, "function");
+      assert.equal(typeof hookModule.start, "function");
+      assert.equal(typeof workerModule.start, "function");
       const commands = new Map();
       await adam({
         registerCommand(name, definition) {

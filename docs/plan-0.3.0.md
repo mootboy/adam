@@ -1,6 +1,6 @@
 # Adam 0.3.0 plan: Claude Code support
 
-Status: Stage 1, source-scoped identity migration, and Stage 2 scanning/storage implemented; Stage 3 remains unimplemented
+Status: Stages 1–3 implemented
 
 Adam 0.3.0 introduces Claude Code as a second host while keeping Adam outside observation production and preserving explicit, auditable memory retrieval. This plan is intentionally contract-first; transcript behavior must be characterized before ingestion semantics are finalized.
 
@@ -230,4 +230,8 @@ The compiled stdio server initializes and advertises the bounded, read-only `ada
 
 ## Stage 2 characterization evidence
 
-Controlled sessions proved native file-tool extraction, append-only resume and compaction in the tested lifecycle, compact-boundary continuity, active parallel tool grouping, and subagent sidechain ownership. The restart-safe source-scoped identity migration, lossless stream scanner, stream-checkpointed Neo4j storage, context reconstruction, and native file-evidence adapter are implemented. The next implementation increment is the durable notification inbox and serialized non-blocking worker.
+Controlled sessions proved native file-tool extraction, append-only resume and compaction in the tested lifecycle, compact-boundary continuity, active parallel tool grouping, and subagent sidechain ownership. The restart-safe source-scoped identity migration, lossless stream scanner, stream-checkpointed Neo4j storage, context reconstruction, and native file-evidence adapter are implemented.
+
+## Stage 3 reconciliation evidence
+
+Claude Code 2.1.283 characterization confirmed that `SubagentStop` supplies the parent `transcript_path`, explicit `agent_transcript_path`, and `agent_id`. Packaged hooks now atomically enqueue bounded locator-only notifications and return independently of Neo4j. A single-lease worker retains parent/subagent locators, coalesces repeated notifications, retries failures with backoff, synchronizes every known stream, and projects native file evidence. Automated live validation covers an enqueue during simulated configuration outage followed by successful worker repair into source-scoped Neo4j session, stream, entry, and `TOUCHES` state.
