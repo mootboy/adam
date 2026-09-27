@@ -227,6 +227,8 @@ Reports configuration, connection state, adam user UUID, masked Git email, activ
 
 ### `/adam:context <path>`
 
+Returns active observations plus relevant reflections for the file, up to 20. A dropped observation (`dropped = true`) stays in the graph with its `HAS_MEMORY`, `ABOUT`, and `SOURCED_FROM` provenance but is excluded inside the storage query before results are ordered and limited; an absent `dropped` property counts as active. Reflections are not excluded because their supporting observations were dropped.
+
 Returns a bounded, provenance-bearing list of file-linked memories. Local mode accepts repository-relative, workspace-relative, or absolute paths and rejects paths outside the resolved repository.
 
 ### `/adam:context --origin <git-origin> <repository-relative-path>`

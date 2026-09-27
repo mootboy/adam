@@ -3,6 +3,7 @@
             [adam.knowledge.index :as knowledge-index]
             [adam.knowledge.store :as knowledge-store]
             [adam.knowledge.surfaces :as knowledge-surfaces]
+            [adam.knowledge.tool :as knowledge-tool]
             [adam.replica.identity :as identity]
             [adam.replica.migration :as replica-migration]
             [adam.replica.neo4j :as adam-neo4j]
@@ -184,17 +185,26 @@
                   replica user-id (:id repository) "src/live.cljs" 20)))
               (.then
                (fn [memories]
-                 (let [[observation reflection] memories]
-                   (is (= 2 (count memories)))
-                   (is (= :observation (:kind observation)))
-                   (is (= "aaaaaaaaaaaa" (:memory-id observation)))
-                   (is (= true (:dropped? observation)))
+                 ;; The dropped observation is tombstoned in the graph but no
+                 ;; longer occupies a result; the reflection it supports remains.
+                 (let [[reflection] memories]
+                   (is (= 1 (count memories)))
                    (is (= :reflection (:kind reflection)))
                    (is (= "bbbbbbbbbbbb" (:memory-id reflection)))
-                   (is (= ["result-live"] (:source-entry-ids observation)))
+                   (is (= ["result-live"] (:source-entry-ids reflection)))
                    (is (= [{:entry-id "result-live" :commit "live-commit"
                             :branch "live" :dirty? true}]
                           (:source-contexts reflection))))
+                 (.run query-session
+                       "MATCH (o:AdamObservation {memoryId: 'aaaaaaaaaaaa'})-[:SOURCED_FROM]->(source:AdamEntry {entryId: 'result-live'})
+                        WHERE o.id CONTAINS $userUuid
+                        RETURN o.dropped AS dropped, count(source) AS sources"
+                       #js {:userUuid user-uuid})))
+              (.then
+               (fn [^js result]
+                 (let [^js record (first (array-seq (.-records result)))]
+                   (is (= true (.get record "dropped")))
+                   (is (= 1 (.toNumber (.get record "sources")))))
                  (.call (aget file-context-tool "execute") file-context-tool
                         "call-live"
                         #js {:origin "https://github.com/AloiAI/adam.git"
@@ -204,7 +214,7 @@
                (fn [tool-result]
                  (let [text (aget (aget (aget tool-result "content") 0) "text")]
                    (is (= "ok" (aget (aget tool-result "details") "status")))
-                   (is (re-find #"Live file decision" text))
+                   (is (not (re-find #"Live file decision" text)))
                    (is (re-find #"Preserve the live decision" text))
                    (is (re-find #"live @ live-co \(dirty\)" text)))
                  (.run query-session
@@ -743,5 +753,138 @@
                  (is (= (inc (first (get before "main"))) (first (get after "main")))
                      "the present parent stream is rebuilt from its transcript")
                  (is (= (inc (second (get before "main"))) (second (get after "main"))))
+                 (finish! nil)))
+              (.catch finish!)))))))
+
+(deftest live-file-memory-retrieval-omits-dropped-observations-before-the-bound
+  (async done
+    (let [uri (environment "ADAM_TEST_NEO4J_URI")
+          username (environment "ADAM_TEST_NEO4J_USERNAME")
+          password (environment "ADAM_TEST_NEO4J_PASSWORD")
+          database (or (environment "ADAM_TEST_NEO4J_DATABASE") "neo4j")]
+      (if-not (and uri username password)
+        (do
+          (is false "ADAM_TEST_NEO4J_URI, USERNAME, and PASSWORD are required")
+          (done))
+        (let [user-uuid (randomUUID)
+              user-id (identity/user-urn user-uuid)
+              remote (str "git@example.com:" user-uuid "/memories.git")
+              auth-token (.basic (.-auth neo4j) username password)
+              ^js driver ((.-driver neo4j) uri auth-token)
+              replica (adam-neo4j/replica-with-driver driver database)
+              ^js query-session (.session driver #js {:database database})
+              directory (mkdtempSync (join (tmpdir) "adam-neo4j-dropped-live-"))
+              path (join directory "session.jsonl")
+              repository (evidence/build-repository
+                          {:user-uuid user-uuid :root "/checkout" :remote remote
+                           :commit "head" :branch "main" :dirty? false})
+              observation (fn [id content]
+                            #js {:id id :content content
+                                 :timestamp "2026-01-01T00:00:00.000Z"
+                                 :relevance "high" :tokenCount 3
+                                 :sourceEntryIds #js ["result"]})
+              custom (fn [id parent custom-type data]
+                       (str (js/JSON.stringify #js {:type "custom" :id id :parentId parent
+                                                    :customType custom-type :data data})
+                            "\n"))
+              rows (fn [memories] (mapv (juxt :kind :content) memories))
+              finish!
+              (fn [error]
+                (-> (.run query-session
+                          "MATCH (file:AdamCodeFile {repositoryId: $repositoryId}) DETACH DELETE file"
+                          #js {:repositoryId (:id repository)})
+                    (.then (fn [_]
+                             (.run query-session
+                                   "MATCH (repository:AdamRepository {id: $repositoryId}) DETACH DELETE repository"
+                                   #js {:repositoryId (:id repository)})))
+                    (.then (fn [_]
+                             (.run query-session
+                                   "MATCH (n) WHERE n.id CONTAINS $userUuid DETACH DELETE n"
+                                   #js {:userUuid user-uuid})))
+                    (.catch (fn [_] nil))
+                    (.finally
+                     (fn []
+                       (rmSync directory #js {:recursive true :force true})
+                       (-> (.close query-session)
+                           (.then (fn [_] (store/close! replica)))
+                           (.finally
+                            (fn []
+                              (when error (is false (.-stack error)))
+                              (done))))))))]
+          ;; Three tombstoned observations sort lowest by memory id, ahead of the
+          ;; legacy (no dropped property) and active observations; a reflection is
+          ;; supported only by a dropped observation.
+          (writeFileSync
+           path
+           (str (js/JSON.stringify #js {:type "session" :version 3 :id "dropped-session" :cwd "/checkout"}) "\n"
+                "{\"type\":\"message\",\"id\":\"call-entry\",\"parentId\":null,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"call\",\"name\":\"read\",\"arguments\":{\"path\":\"src/shared.cljs\"}}]}}\n"
+                "{\"type\":\"message\",\"id\":\"result\",\"parentId\":\"call-entry\",\"message\":{\"role\":\"toolResult\",\"toolCallId\":\"call\"}}\n"
+                (custom "memory-1" "result" "om.observations.recorded"
+                        #js {:observations #js [(observation "000000000001" "Dropped memory 1")
+                                                (observation "000000000002" "Dropped memory 2")
+                                                (observation "000000000003" "Dropped memory 3")
+                                                (observation "eeeeeeeeeeee" "Legacy memory")
+                                                (observation "ffffffffffff" "Active memory")]
+                             :coversUpToId "result"})
+                (custom "memory-2" "memory-1" "om.reflections.recorded"
+                        #js {:reflections #js [#js {:id "dddddddddddd"
+                                                    :content "Reflection over dropped support"
+                                                    :supportingObservationIds #js ["000000000001"]
+                                                    :tokenCount 4}]
+                             :coversUpToId "memory-1"})
+                (custom "drop-1" "memory-2" "om.observations.dropped"
+                        #js {:observationIds #js ["000000000001" "000000000002" "000000000003"]
+                             :coversUpToId "memory-2"}))
+           "utf8")
+          (-> (store/initialize! replica {:id user-id})
+              (.then (fn [_] (knowledge-store/ensure-file-evidence-schema! replica)))
+              (.then (fn [_] (sync/sync-session-file! {:path path :user-uuid user-uuid :replica replica})))
+              (.then (fn [_] (knowledge-index/index-session!
+                              {:store replica :path path :user-uuid user-uuid :repository repository})))
+              (.then (fn [_]
+                       ;; A legacy projection recorded no dropped property at all.
+                       (.run query-session
+                             "MATCH (o:AdamObservation {memoryId: 'eeeeeeeeeeee'}) WHERE o.id CONTAINS $userUuid REMOVE o.dropped"
+                             #js {:userUuid user-uuid})))
+              (.then (fn [_] (knowledge-store/query-file-memory!
+                              replica user-id (:id repository) "src/shared.cljs" 20)))
+              (.then
+               (fn [memories]
+                 (is (= [[:observation "Legacy memory"]
+                         [:observation "Active memory"]
+                         [:reflection "Reflection over dropped support"]]
+                        (rows memories)))
+                 (knowledge-store/query-file-memory!
+                  replica user-id (:id repository) "src/shared.cljs" 2)))
+              (.then
+               (fn [memories]
+                 (is (= [[:observation "Legacy memory"] [:observation "Active memory"]]
+                        (rows memories))
+                     "dropped observations do not consume result slots at a small bound")
+                 (.run query-session
+                       "MATCH (:AdamUser {id: $userId})-[:OWNS]->(:AdamSession)-[:HAS_MEMORY]->(o:AdamObservation {dropped: true})
+                        MATCH (o)-[:ABOUT]->(file:AdamCodeFile {repositoryId: $repositoryId})
+                        MATCH (o)-[:SOURCED_FROM]->(source:AdamEntry)
+                        RETURN count(DISTINCT o) AS dropped, count(DISTINCT file) AS files, count(DISTINCT source) AS sources"
+                       #js {:userId user-id :repositoryId (:id repository)})))
+              (.then
+               (fn [^js result]
+                 (let [^js record (first (array-seq (.-records result)))]
+                   (is (= 3 (.toNumber (.get record "dropped"))))
+                   (is (= 1 (.toNumber (.get record "files"))))
+                   (is (= 1 (.toNumber (.get record "sources")))))
+                 (knowledge-tool/execute!
+                  {:get-store! (fn [] (js/Promise.resolve replica))
+                   :get-user! (fn [] (js/Promise.resolve {:user-uuid user-uuid}))
+                   :resolve-repository! (fn [_ _] (js/Promise.resolve nil))}
+                  {:cwd "/elsewhere" :origin remote :path "src/shared.cljs"})))
+              (.then
+               (fn [{:keys [content details]}]
+                 (is (= 3 (:result-count details)))
+                 (is (false? (:truncated? details)))
+                 (is (re-find #"Legacy memory" content))
+                 (is (re-find #"Active memory" content))
+                 (is (re-find #"Reflection over dropped support" content))
+                 (is (not (re-find #"Dropped memory" content)))
                  (finish! nil)))
               (.catch finish!)))))))

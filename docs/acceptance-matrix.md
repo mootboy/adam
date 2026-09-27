@@ -165,6 +165,10 @@ These cases define the implemented 0.3 scanner, graph-storage, file-evidence, an
 | Origin mode receives an absolute path, traversal, empty path, or malformed origin | Typed validation failure before store access |
 | Shared canonical file has memories from multiple users | Query returns only memories reachable through the requesting user's sessions |
 | File has no linked memories | Successful explicit empty result |
+| A linked observation was dropped by its producer | Command and tool omit it; its node and provenance relationships remain in the graph (**live**) |
+| A linked observation has no `dropped` property | It is treated as active and returned |
+| A reflection is supported only by dropped observations | The reflection is still returned for the file |
+| Dropped observations sort ahead of active ones at a small bound | They are excluded before the limit, so active rows still fill the bound and tool truncation reflects active rows only (**live**) |
 | Path is outside the resolved repository | Typed path failure before store access |
 | More memories exist than the tool bound | Extra probe detects omission and truncation is explicit |
 | Rendered provenance exceeds byte/line limits | Output is deterministically truncated and marked |
