@@ -419,10 +419,24 @@
            10)
           (.then
            (fn [_]
-             (let [query (:query (first (filter :query @calls)))]
+             (let [query (:query (first (filter :query @calls)))
+                   [observation-branch reflection-branch] (.split query "UNION ALL")]
                (is (re-find #"AdamUser.*OWNS.*AdamSession.*HAS_MEMORY" query))
                (is (not (re-find #"OWNS.*AdamRepository" query)))
                (is (re-find #"AdamRepository.*CONTAINS.*AdamCodeFile" query))
+               ;; Dropped observations leave the observation branch inside storage,
+               ;; before the combined result is ordered and limited, and a missing
+               ;; property still counts as active.
+               (is (re-find #"\(observation:AdamObservation\)-\[:ABOUT\]->\(file\)\s+WHERE coalesce\(observation\.dropped, false\) = false"
+                            observation-branch))
+               (is (re-find #"WHERE coalesce\(observation\.dropped, false\) = false[\s\S]*ORDER BY kind[\s\S]*LIMIT \$limit"
+                            query))
+               ;; The bound applies to the combined result: both branches sit in a
+               ;; CALL subquery and ordering/limiting happen after it.
+               (is (re-find #"CALL \{[\s\S]*UNION ALL[\s\S]*\}\s+RETURN kind, memory, s, sourceEntryIds, sourceContexts\s+ORDER BY kind, memory\.memoryId, s\.piSessionId\s+LIMIT \$limit" query))
+               ;; A reflection stays retrievable even when its support was dropped.
+               (is (re-find #"AdamReflection\)-\[:SUPPORTED_BY\]->\(observation:AdamObservation\)" reflection-branch))
+               (is (not (re-find #"dropped" reflection-branch)))
                (is (= 1 @closes))
                (done))))
           (.catch

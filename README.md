@@ -12,6 +12,7 @@ Adam provides a full [Pi](https://pi.dev) extension and a [Claude Code](https://
 - [`docs/architecture.md`](docs/architecture.md) — product boundary, internal layers, consistency, adapters, and query architecture.
 - [`docs/session-replica-contract.md`](docs/session-replica-contract.md) — authority, identity, graph schema, commands, restoration, privacy, and failure semantics.
 - [`docs/claude-transcript-contract.md`](docs/claude-transcript-contract.md) — observed Claude transcript authority, continuity, file evidence, and subagent semantics.
+- [`docs/plan-0.3.3.md`](docs/plan-0.3.3.md) — active file-memory retrieval.
 - [`docs/acceptance-matrix.md`](docs/acceptance-matrix.md) — deterministic and live acceptance cases for incremental delivery.
 - [`docs/issues/`](docs/issues/) — repository-local issue tracker and issue template.
 
@@ -85,7 +86,7 @@ Then run:
 /adam:context --origin git@github.com:mootboy/adam.git src/adam/knowledge/query.cljs
 ```
 
-Agents can call `adam_file_context({ path, origin? })` for explicit, provenance-bearing retrieval of memories linked to a known repository file. Local lookup accepts repository-relative, workspace-relative, or absolute paths. Supplying a Git origin enables checkout-independent lookup with a normalized repository-relative path. The command returns up to 20 memories; the agent tool returns up to 10 and applies fixed item, line, and byte bounds. Neither performs semantic or global search.
+Agents can call `adam_file_context({ path, origin? })` for explicit, provenance-bearing retrieval of memories linked to a known repository file. Local lookup accepts repository-relative, workspace-relative, or absolute paths. Supplying a Git origin enables checkout-independent lookup with a normalized repository-relative path. The command returns up to 20 memories; the agent tool returns up to 10 and applies fixed item, line, and byte bounds. Both return active observations plus relevant reflections: observations tombstoned by their producer stay in the graph with their provenance but are filtered out before the bound is applied, and a reflection remains retrievable even when the observations it supersedes were dropped. Neither performs semantic or global search.
 
 Origin-backed repository and file identities are canonical across users, sessions, machines, checkouts, and worktrees. Retrieval remains isolated to memories reachable through the requesting user's sessions. Originless repositories retain isolated user-scoped fallback identities.
 

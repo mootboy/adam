@@ -1049,21 +1049,25 @@
       (fn [session]
         (-> (.run
              session
-             "MATCH (repository:AdamRepository {id: $repositoryId})-[:CONTAINS]->(file:AdamCodeFile {relativePath: $relativePath})
-              MATCH (:AdamUser {id: $userId})-[:OWNS]->(s:AdamSession)-[:HAS_MEMORY]->(observation:AdamObservation)-[:ABOUT]->(file)
-              OPTIONAL MATCH (observation)-[:SOURCED_FROM]->(source:AdamEntry)
-              OPTIONAL MATCH (source)-[touch:TOUCHES]->(file)
-              WITH observation, s, collect(DISTINCT source.entryId) AS sourceEntryIds,
-                   [context IN collect(DISTINCT CASE WHEN touch IS NULL THEN null ELSE {entryId: source.entryId, commit: touch.commit, branch: touch.branch, dirty: touch.dirty} END) WHERE context IS NOT NULL] AS sourceContexts
-              RETURN 'observation' AS kind, observation AS memory, s, sourceEntryIds, sourceContexts
-              UNION ALL
-              MATCH (repository:AdamRepository {id: $repositoryId})-[:CONTAINS]->(file:AdamCodeFile {relativePath: $relativePath})
-              MATCH (:AdamUser {id: $userId})-[:OWNS]->(s:AdamSession)-[:HAS_MEMORY]->(reflection:AdamReflection)-[:SUPPORTED_BY]->(observation:AdamObservation)-[:ABOUT]->(file)
-              OPTIONAL MATCH (observation)-[:SOURCED_FROM]->(source:AdamEntry)
-              OPTIONAL MATCH (source)-[touch:TOUCHES]->(file)
-              WITH reflection, s, collect(DISTINCT source.entryId) AS sourceEntryIds,
-                   [context IN collect(DISTINCT CASE WHEN touch IS NULL THEN null ELSE {entryId: source.entryId, commit: touch.commit, branch: touch.branch, dirty: touch.dirty} END) WHERE context IS NOT NULL] AS sourceContexts
-              RETURN 'reflection' AS kind, reflection AS memory, s, sourceEntryIds, sourceContexts
+             "CALL {
+                MATCH (repository:AdamRepository {id: $repositoryId})-[:CONTAINS]->(file:AdamCodeFile {relativePath: $relativePath})
+                MATCH (:AdamUser {id: $userId})-[:OWNS]->(s:AdamSession)-[:HAS_MEMORY]->(observation:AdamObservation)-[:ABOUT]->(file)
+                WHERE coalesce(observation.dropped, false) = false
+                OPTIONAL MATCH (observation)-[:SOURCED_FROM]->(source:AdamEntry)
+                OPTIONAL MATCH (source)-[touch:TOUCHES]->(file)
+                WITH observation, s, collect(DISTINCT source.entryId) AS sourceEntryIds,
+                     [context IN collect(DISTINCT CASE WHEN touch IS NULL THEN null ELSE {entryId: source.entryId, commit: touch.commit, branch: touch.branch, dirty: touch.dirty} END) WHERE context IS NOT NULL] AS sourceContexts
+                RETURN 'observation' AS kind, observation AS memory, s, sourceEntryIds, sourceContexts
+                UNION ALL
+                MATCH (repository:AdamRepository {id: $repositoryId})-[:CONTAINS]->(file:AdamCodeFile {relativePath: $relativePath})
+                MATCH (:AdamUser {id: $userId})-[:OWNS]->(s:AdamSession)-[:HAS_MEMORY]->(reflection:AdamReflection)-[:SUPPORTED_BY]->(observation:AdamObservation)-[:ABOUT]->(file)
+                OPTIONAL MATCH (observation)-[:SOURCED_FROM]->(source:AdamEntry)
+                OPTIONAL MATCH (source)-[touch:TOUCHES]->(file)
+                WITH reflection, s, collect(DISTINCT source.entryId) AS sourceEntryIds,
+                     [context IN collect(DISTINCT CASE WHEN touch IS NULL THEN null ELSE {entryId: source.entryId, commit: touch.commit, branch: touch.branch, dirty: touch.dirty} END) WHERE context IS NOT NULL] AS sourceContexts
+                RETURN 'reflection' AS kind, reflection AS memory, s, sourceEntryIds, sourceContexts
+              }
+              RETURN kind, memory, s, sourceEntryIds, sourceContexts
               ORDER BY kind, memory.memoryId, s.piSessionId
               LIMIT $limit"
              #js {:userId user-id
