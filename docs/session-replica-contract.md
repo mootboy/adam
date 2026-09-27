@@ -60,7 +60,7 @@ urn:adam:observation:<userUuid>:pi:<piSessionId>:<memoryId>
 urn:adam:reflection:<userUuid>:pi:<piSessionId>:<memoryId>
 ```
 
-Session and entry IDs are user- and source-scoped so copied files or equal host-local IDs cannot create accidental cross-user or cross-host ownership and lineage. The current Pi-only graph uses the earlier unqualified session IDs until the versioned 0.3 migration rewrites all dependent identities and relationships while preserving raw payloads and remote-only sessions. Repositories with equivalent credential-free SSH or HTTPS origins converge across users, sessions, machines, checkouts, and registered worktrees. Originless repositories retain isolated user-scoped local identities and cannot be queried by origin.
+Session and entry IDs are user- and source-scoped so copied files or equal host-local IDs cannot create accidental cross-user or cross-host ownership and lineage. Before normal synchronization, the versioned 0.3 migration transactionally rewrites earlier unqualified Pi session, entry, observation, reflection, parent, and denormalized session identities while preserving raw payloads, relationships, checkpoints, and remote-only sessions. Its user marker is written last in the same transaction, and effective-version checks reject stale dependent identity even when a newer marker exists. Repositories with equivalent credential-free SSH or HTTPS origins converge across users, sessions, machines, checkouts, and registered worktrees. Originless repositories retain isolated user-scoped local identities and cannot be queried by origin.
 
 ## JSONL validation
 
@@ -130,7 +130,7 @@ AdamSession
   conflicted, lastMirroredAt, writerVersion
 
 AdamEntry
-  id, entryId, type, role, parentId, timestamp, ordinal
+  id, sessionId, sourceKind, sourceSessionId, entryId, type, role, parentId, timestamp, ordinal
   rawJson, payloadHash, payloadBytes
 ```
 
@@ -155,11 +155,11 @@ AdamCodeFile
   id, repositoryId, relativePath
 
 AdamObservation
-  id, producer, memoryId, content, timestamp, relevance
+  id, sourceKind, sourceSessionId, producer, memoryId, content, timestamp, relevance
   tokenCount, recordingEntryId, sourceEntryIds, dropped, extractorVersion
 
 AdamReflection
-  id, producer, memoryId, content, tokenCount
+  id, sourceKind, sourceSessionId, producer, memoryId, content, tokenCount
   recordingEntryId, supportingObservationIds, extractorVersion
 ```
 

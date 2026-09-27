@@ -12,6 +12,8 @@
                         (:last-entry-id summary))]
     (cond-> {:id (identity/session-urn user-uuid pi-session-id)
              :user-id (identity/user-urn user-uuid)
+             :source-kind identity/pi-source-kind
+             :source-session-id pi-session-id
              :pi-session-id pi-session-id
              :header-json (:header-json summary)
              :current-leaf-id selected-leaf

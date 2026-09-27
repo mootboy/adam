@@ -8,6 +8,7 @@ All notable changes to adam are documented here.
 
 - A read-only Claude Code plugin and compiled stdio MCP server exposing the existing bounded `adam_file_context` query.
 - A bundled Claude skill for selective, provenance-aware file-memory retrieval.
+- Transactional, restart-safe migration from Pi-only graph identities to source-scoped session, entry, observation, and reflection identities.
 
 ### Changed
 

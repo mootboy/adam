@@ -43,7 +43,7 @@ The persisted log is the integration protocol. Separate extensions need no share
 
 ```text
 host-neutral core
-  ├── identity and Neo4j configuration
+  ├── identity, source-scoped graph migration, and Neo4j configuration
   ├── session replica and knowledge projection
   └── file-memory query and bounded tool adapter
        ├── Pi extension boundary
@@ -53,7 +53,7 @@ host-neutral core
             └── stdio MCP adam_file_context
 ```
 
-The session replica and derived knowledge projection are separate failure domains. A projection or adapter failure must never invalidate a successfully mirrored session.
+The session replica and derived knowledge projection are separate failure domains. A projection or adapter failure must never invalidate a successfully mirrored session. Before either runs, a transactionally atomic migration source-scopes existing Pi session, entry, observation, and reflection identities; remote-only graph state is migrated in place rather than rebuilt from local files.
 
 ## ClojureScript boundary
 

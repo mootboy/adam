@@ -1,6 +1,6 @@
 # Adam 0.3.0 plan: Claude Code support
 
-Status: Stage 1 implemented; Stage 2 transcript contract approved; ingestion and Stage 3 remain unimplemented
+Status: Stage 1 and source-scoped identity migration implemented; Stage 2 scanning and Stage 3 remain unimplemented
 
 Adam 0.3.0 introduces Claude Code as a second host while keeping Adam outside observation production and preserving explicit, auditable memory retrieval. This plan is intentionally contract-first; transcript behavior must be characterized before ingestion semantics are finalized.
 
@@ -189,9 +189,9 @@ Adam remains a memory transport and index, not an observation generator.
 
 ## Graph migration
 
-Version 0.3.0 needs a versioned migration for source-scoped session identity.
+Version 0.3.0 implements a versioned, transactionally atomic migration for source-scoped session identity.
 
-It must update, transactionally or restart-safely:
+It updates:
 
 - `AdamSession.id`;
 - `AdamEntry.id` and `sessionId`;
@@ -200,7 +200,7 @@ It must update, transactionally or restart-safely:
 - derived session relationships; and
 - any stored session-ID properties.
 
-Raw JSONL and raw entry payloads remain unchanged. Remote-only sessions must survive the migration; this cannot be implemented as deleting the graph and rebuilding only from local files.
+Raw JSONL and raw entry payloads remain unchanged. Remote-only sessions survive because migration updates the existing graph in place rather than deleting it and rebuilding only from local files. The user marker advances in the same transaction after all dependent identities; effective-version checks also detect stale dependent nodes hidden by a newer marker.
 
 ## Deferred
 
@@ -230,4 +230,4 @@ The compiled stdio server initializes and advertises the bounded, read-only `ada
 
 ## Stage 2 characterization evidence
 
-Controlled sessions proved native file-tool extraction, append-only resume and compaction in the tested lifecycle, compact-boundary continuity, active parallel tool grouping, and subagent sidechain ownership. The contract is approved; the next implementation increment is the restart-safe source-scoped identity migration, followed by the Claude scanner.
+Controlled sessions proved native file-tool extraction, append-only resume and compaction in the tested lifecycle, compact-boundary continuity, active parallel tool grouping, and subagent sidechain ownership. The contract is approved and the restart-safe source-scoped identity migration is implemented. The next implementation increment is the lossless Claude scanner and file-evidence adapter.

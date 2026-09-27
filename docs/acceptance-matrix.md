@@ -51,6 +51,17 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 | Entry type or nested fields are unknown | Complete raw JSON is preserved |
 | Entry contains inline base64 data | Bytes round-trip unchanged |
 
+## Source-scoped session identity migration
+
+| Case | Expected result |
+| --- | --- |
+| Existing Pi-only graph starts under 0.3 | Session, entry, observation, reflection, parent, and denormalized session identities gain the `pi` source kind before normal synchronization |
+| Graph contains a remote-only Pi session | It migrates in place without local JSONL |
+| Migration succeeds | Raw payloads, checkpoints, current leaf, fork lineage, and file-memory relationships remain unchanged |
+| Migration transaction fails | All identity changes and the version marker roll back and retry later |
+| Marker is current but a dependent node is stale | Effective version is outdated and migration runs again |
+| User graph is already current | Migration is an idempotent no-op |
+
 ## Claude transcript ingestion
 
 These cases define the approved 0.3 scanner contract; transcript ingestion is not yet implemented.

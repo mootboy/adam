@@ -12,7 +12,7 @@
                  :name "work"
                  :last-entry-id "entry-1"}
         parent {:pi-session-id "parent-1"
-                :session-id "urn:adam:session:user-1:parent-1"}
+                :session-id "urn:adam:session:user-1:pi:parent-1"}
         session (model/session-from-summary
                  summary
                  {:user-uuid "user-1"
@@ -30,12 +30,14 @@
                 :raw-json "{\"id\":\"entry-1\"}"
                 :payload-hash "payload-hash"
                 :payload-bytes 22})]
-    (is (= "urn:adam:session:user-1:session-1" (:id session)))
+    (is (= "urn:adam:session:user-1:pi:session-1" (:id session)))
     (is (= "urn:adam:user:user-1" (:user-id session)))
+    (is (= "pi" (:source-kind session)))
+    (is (= "session-1" (:source-session-id session)))
     (is (= "entry-1" (:current-leaf-id session)))
-    (is (= "urn:adam:session:user-1:parent-1" (:parent-session-id session)))
+    (is (= "urn:adam:session:user-1:pi:parent-1" (:parent-session-id session)))
     (is (= "adam-v1" (:writer-version session)))
-    (is (= {:id "urn:adam:entry:user-1:session-1:entry-1"
+    (is (= {:id "urn:adam:entry:user-1:pi:session-1:entry-1"
             :entry-id "entry-1"
             :type "message"
             :role "assistant"

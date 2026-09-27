@@ -10,6 +10,10 @@
   (read-session! [store session-id])
   (close! [store]))
 
+(defprotocol SessionIdentityMigrationStore
+  (session-identity-version! [store user-id])
+  (migrate-pi-session-identities! [store user-id target-version]))
+
 (defn immutable-entry-conflict [existing incoming]
   (ex-info
    (str "immutable entry payload mismatch for " (:entry-id incoming))

@@ -86,6 +86,35 @@
              (is false (.-stack error))
              (done)))))))
 
+(deftest migrates-pi-session-identities-in-one-transaction
+  (async done
+    (let [{:keys [driver calls closes]} (recording-driver)
+          replica (neo4j/replica-with-driver driver "neo4j")
+          user-id "urn:adam:user:user-1"]
+      (-> (store/session-identity-version! replica user-id)
+          (.then
+           (fn [version]
+             (is (nil? version))
+             (store/migrate-pi-session-identities! replica user-id 2)))
+          (.then
+           (fn [_]
+             (let [queries (mapv :query (filter :query @calls))
+                   migration-queries (drop 1 queries)]
+               (is (re-find #"sessionIdentityVersion" (first queries)))
+               (is (some #(re-find #"s.id = \$sessionPrefix \+ s.piSessionId" %)
+                         migration-queries))
+               (is (some #(re-find #"entry.sessionId = s.id" %) migration-queries))
+               (is (some #(re-find #"memory:AdamObservation" %) migration-queries))
+               (is (some #(re-find #"memory:AdamReflection" %) migration-queries))
+               (is (re-find #"u.sessionIdentityVersion = \$targetVersion"
+                            (last migration-queries)))
+               (is (= 2 @closes))
+               (done))))
+          (.catch
+           (fn [error]
+             (is false (.-stack error))
+             (done)))))))
+
 (deftest writes-entry-tree-and-checkpoint-in-one-transaction
   (async done
     (let [{:keys [driver calls closes]} (transactional-driver)

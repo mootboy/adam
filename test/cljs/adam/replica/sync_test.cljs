@@ -135,7 +135,7 @@
                (is (= :mirrored (:status result)))
                (is (= parent-path (:parent-session session)))
                (is (= "parent-1" (:parent-pi-session-id session)))
-               (is (= "urn:adam:session:user-1:parent-1"
+               (is (= "urn:adam:session:user-1:pi:parent-1"
                       (:parent-session-id session)))
                (rmSync directory #js {:recursive true :force true})
                (done))))

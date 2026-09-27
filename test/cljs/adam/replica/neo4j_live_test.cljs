@@ -4,6 +4,7 @@
             [adam.knowledge.store :as knowledge-store]
             [adam.knowledge.surfaces :as knowledge-surfaces]
             [adam.replica.identity :as identity]
+            [adam.replica.migration :as replica-migration]
             [adam.replica.neo4j :as adam-neo4j]
             [adam.replica.restore :as restore]
             [adam.replica.store :as store]
@@ -246,6 +247,133 @@
                        ^js record (first records)]
                    (is (= 1 (count records)))
                    (is (= "parent-first-live" (.get record "parentId"))))
+                 (finish! nil)))
+              (.catch finish!)))))))
+
+(deftest live-source-scoped-identity-migration-preserves-remote-session-graph
+  (async done
+    (let [uri (environment "ADAM_TEST_NEO4J_URI")
+          username (environment "ADAM_TEST_NEO4J_USERNAME")
+          password (environment "ADAM_TEST_NEO4J_PASSWORD")
+          database (or (environment "ADAM_TEST_NEO4J_DATABASE") "neo4j")]
+      (if-not (and uri username password)
+        (do
+          (is false "ADAM_TEST_NEO4J_URI, USERNAME, and PASSWORD are required")
+          (done))
+        (let [user-uuid (randomUUID)
+              user-id (identity/user-urn user-uuid)
+              old-parent-id (str "urn:adam:session:" user-uuid ":parent")
+              old-child-id (str "urn:adam:session:" user-uuid ":child")
+              new-parent-id (identity/session-urn user-uuid "parent")
+              new-child-id (identity/session-urn user-uuid "child")
+              new-entry-id (identity/entry-urn user-uuid "child" "entry")
+              new-observation-id (identity/observation-urn user-uuid "pi" "child" "aaaaaaaaaaaa")
+              new-reflection-id (identity/reflection-urn user-uuid "pi" "child" "bbbbbbbbbbbb")
+              repository-id (str "urn:adam:repository:local:" user-uuid ":legacy")
+              file-id (str "urn:adam:file:" user-uuid)
+              auth-token (.basic (.-auth neo4j) username password)
+              ^js driver ((.-driver neo4j) uri auth-token)
+              replica (adam-neo4j/replica-with-driver driver database)
+              ^js query-session (.session driver #js {:database database})
+              finish!
+              (fn [error]
+                (-> (.run query-session
+                          "MATCH (n) WHERE n.id CONTAINS $userUuid DETACH DELETE n"
+                          #js {:userUuid user-uuid})
+                    (.catch (fn [_] nil))
+                    (.finally
+                     (fn []
+                       (-> (.close query-session)
+                           (.then (fn [_] (store/close! replica)))
+                           (.finally
+                            (fn []
+                              (when error (is false (.-stack error)))
+                              (done))))))))]
+          (-> (store/initialize! replica {:id user-id})
+              (.then
+               (fn [_]
+                 (.run
+                  query-session
+                  "MATCH (u:AdamUser {id: $userId})
+                   SET u.sessionIdentityVersion = 2
+                   CREATE (parent:AdamSession {id: $oldParentId, piSessionId: 'parent', headerJson: '{\"type\":\"session\",\"id\":\"parent\"}'})
+                   CREATE (child:AdamSession {id: $oldChildId, piSessionId: 'child', parentPiSessionId: 'parent', parentSessionId: $oldParentId, headerJson: '{\"type\":\"session\",\"id\":\"child\"}', sourceFile: '/remote-only/child.jsonl'})
+                   CREATE (entry:AdamEntry {id: $oldEntryId, sessionId: $oldChildId, entryId: 'entry', parentId: null, parentUrn: null, ordinal: 0, rawJson: $rawJson, payloadHash: 'payload-hash', payloadBytes: 47})
+                   CREATE (observation:AdamObservation {id: $oldObservationId, memoryId: 'aaaaaaaaaaaa', content: 'legacy observation'})
+                   CREATE (reflection:AdamReflection {id: $oldReflectionId, memoryId: 'bbbbbbbbbbbb', content: 'legacy reflection'})
+                   CREATE (repository:AdamRepository {id: $repositoryId})
+                   CREATE (file:AdamCodeFile {id: $fileId, repositoryId: $repositoryId, relativePath: 'src/a.cljs'})
+                   CREATE (u)-[:OWNS]->(parent)
+                   CREATE (u)-[:OWNS]->(child)
+                   CREATE (child)-[:FORKED_FROM]->(parent)
+                   CREATE (child)-[:HAS_ENTRY]->(entry)
+                   CREATE (child)-[:CURRENT_LEAF]->(entry)
+                   CREATE (child)-[:HAS_MEMORY]->(observation)
+                   CREATE (child)-[:HAS_MEMORY]->(reflection)
+                   CREATE (entry)-[:TOUCHES]->(file)
+                   CREATE (observation)-[:SOURCED_FROM]->(entry)
+                   CREATE (observation)-[:ABOUT]->(file)
+                   CREATE (reflection)-[:SUPPORTED_BY]->(observation)"
+                  #js {:userId user-id
+                       :oldParentId old-parent-id
+                       :oldChildId old-child-id
+                       :oldEntryId (str "urn:adam:entry:" user-uuid ":child:entry")
+                       :oldObservationId (str "urn:adam:observation:" user-uuid ":child:aaaaaaaaaaaa")
+                       :oldReflectionId (str "urn:adam:reflection:" user-uuid ":child:bbbbbbbbbbbb")
+                       :repositoryId repository-id
+                       :fileId file-id
+                       :rawJson "{\"type\":\"message\",\"id\":\"entry\"}"})))
+              (.then (fn [_] (store/session-identity-version! replica user-id)))
+              (.then
+               (fn [version]
+                 (is (= 0 version))
+                 (replica-migration/migrate-if-needed!
+                  {:store replica :user-id user-id})))
+              (.then
+               (fn [result]
+                 (is (= {:status :migrated :version 2} result))
+                 (store/session-identity-version! replica user-id)))
+              (.then
+               (fn [version]
+                 (is (= 2 version))
+                 (.run
+                  query-session
+                  "MATCH (child:AdamSession {id: $childId})-[:FORKED_FROM]->(parent:AdamSession {id: $parentId})
+                   MATCH (child)-[:HAS_ENTRY]->(entry:AdamEntry {id: $entryId})
+                   MATCH (child)-[:HAS_MEMORY]->(observation:AdamObservation {id: $observationId})
+                   MATCH (child)-[:HAS_MEMORY]->(reflection:AdamReflection {id: $reflectionId})
+                   MATCH (child)-[:CURRENT_LEAF]->(entry)
+                   MATCH (entry)-[:TOUCHES]->(file:AdamCodeFile {id: $fileId})
+                   MATCH (observation)-[:SOURCED_FROM]->(entry)
+                   MATCH (observation)-[:ABOUT]->(file)
+                   MATCH (reflection)-[:SUPPORTED_BY]->(observation)
+                   RETURN child, parent, entry, observation, reflection"
+                  #js {:childId new-child-id
+                       :parentId new-parent-id
+                       :entryId new-entry-id
+                       :observationId new-observation-id
+                       :reflectionId new-reflection-id
+                       :fileId file-id})))
+              (.then
+               (fn [^js result]
+                 (let [records (array-seq (.-records result))
+                       ^js record (first records)
+                       child (.-properties (.get record "child"))
+                       entry (.-properties (.get record "entry"))
+                       observation (.-properties (.get record "observation"))]
+                   (is (= 1 (count records)))
+                   (is (= "pi" (aget child "sourceKind")))
+                   (is (= "child" (aget child "sourceSessionId")))
+                   (is (= new-parent-id (aget child "parentSessionId")))
+                   (is (= new-child-id (aget entry "sessionId")))
+                   (is (= "{\"type\":\"message\",\"id\":\"entry\"}"
+                          (aget entry "rawJson")))
+                   (is (= "pi" (aget observation "sourceKind"))))
+                 (replica-migration/migrate-if-needed!
+                  {:store replica :user-id user-id})))
+              (.then
+               (fn [result]
+                 (is (= {:status :current :version 2} result))
                  (finish! nil)))
               (.catch finish!)))))))
 
