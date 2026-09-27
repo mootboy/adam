@@ -2,7 +2,7 @@
 
 Status: approved design; implementation is incremental.
 
-`adam` provides host-neutral durable memory infrastructure with a full Pi adapter and a read-only Claude Code adapter. In Pi it runs alongside memory producers such as `pi-observational-memory`; it does not execute or import their runtime. Claude Code currently queries memories already indexed through Pi and does not yet contribute transcript data.
+`adam` provides host-neutral durable memory infrastructure with a full Pi adapter and a read-only Claude Code adapter. In Pi it runs alongside memory producers such as `pi-observational-memory`; it does not execute or import their runtime. Claude Code currently queries memories already indexed through Pi and does not yet contribute transcript data. The approved future ingestion boundary is defined in [`claude-transcript-contract.md`](claude-transcript-contract.md).
 
 ## Authority and boundaries
 
@@ -99,7 +99,7 @@ The first adapter is implemented structurally in `src/adam/sources/pi_observatio
 
 ## Repository and file evidence
 
-Only explicit Pi tool calls named `read`, `edit`, or `write` with a non-empty `path` provide file evidence. Matching tool-result entries inherit evidence through `toolCallId`.
+Only explicit file tools provide evidence. Pi recognizes `read`, `edit`, and `write` calls with a non-empty `path`; Claude ingestion will recognize `Read`, `Edit`, and `Write` calls with a non-empty `input.file_path`. Matching results are linked structurally rather than inferred from output or prose.
 
 Paths are canonicalized through the containing root reported by `git worktree list --porcelain -z`. Main-checkout and linked-worktree spellings of the same repository-relative path identify one file while evidence retains the actual worktree commit, branch, and dirty state.
 

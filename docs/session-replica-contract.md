@@ -50,16 +50,17 @@ User-owned identifiers use a private, user-scoped namespace. Code identity is ca
 ```text
 urn:adam:user:<userUuid>
 urn:adam:identity:git-email:<sha256(normalizedEmail)>
-urn:adam:session:<userUuid>:<piSessionId>
-urn:adam:entry:<userUuid>:<piSessionId>:<entryId>
+urn:adam:session:<userUuid>:pi:<piSessionId>
+urn:adam:session:<userUuid>:claude-code:<claudeSessionId>
+urn:adam:entry:<userUuid>:<sourceKind>:<sourceSessionId>:<entryId>
 urn:adam:repository:git:<sha256(normalizedOrigin)>
 urn:adam:repository:local:<userUuid>:<sha256(resolvedRoot)>
 urn:adam:file:<sha256(repositoryId + NUL + normalizedRelativePath)>
-urn:adam:observation:<userUuid>:<piSessionId>:<memoryId>
-urn:adam:reflection:<userUuid>:<piSessionId>:<memoryId>
+urn:adam:observation:<userUuid>:pi:<piSessionId>:<memoryId>
+urn:adam:reflection:<userUuid>:pi:<piSessionId>:<memoryId>
 ```
 
-Session and entry IDs are user-scoped so copied files cannot create accidental cross-user ownership or lineage. Repositories with equivalent credential-free SSH or HTTPS origins converge across users, sessions, machines, checkouts, and registered worktrees. Originless repositories retain isolated user-scoped local identities and cannot be queried by origin.
+Session and entry IDs are user- and source-scoped so copied files or equal host-local IDs cannot create accidental cross-user or cross-host ownership and lineage. The current Pi-only graph uses the earlier unqualified session IDs until the versioned 0.3 migration rewrites all dependent identities and relationships while preserving raw payloads and remote-only sessions. Repositories with equivalent credential-free SSH or HTTPS origins converge across users, sessions, machines, checkouts, and registered worktrees. Originless repositories retain isolated user-scoped local identities and cannot be queried by origin.
 
 ## JSONL validation
 
@@ -121,7 +122,7 @@ AdamIdentity
   id, kind, value, normalizedValue, displayValue, firstSeenAt, lastSeenAt
 
 AdamSession
-  id, piSessionId, headerJson, cwd, version, createdAt
+  id, sourceKind, sourceSessionId, piSessionId, headerJson, cwd, version, createdAt
   parentSession, parentPiSessionId, parentSessionId
   name, currentLeafId, sourceFile
   completeThroughOrdinal, completeThroughByteOffset, committedPrefixHash
