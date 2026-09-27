@@ -98,6 +98,8 @@
   (let [properties #js {}]
     (doseq [[key value include-nil?]
             [["id" (:id session) false]
+             ["sourceKind" (:source-kind session) false]
+             ["sourceSessionId" (:source-session-id session) false]
              ["piSessionId" (:pi-session-id session) false]
              ["headerJson" (:header-json session) false]
              ["cwd" (:cwd session) false]
@@ -113,11 +115,13 @@
       (set-property! properties key value include-nil?))
     properties))
 
-(defn- entry-properties [session-id entry]
+(defn- entry-properties [session entry]
   (let [properties #js {}]
     (doseq [[key value include-nil?]
             [["id" (:id entry) false]
-             ["sessionId" session-id false]
+             ["sessionId" (:id session) false]
+             ["sourceKind" (:source-kind session) false]
+             ["sourceSessionId" (:source-session-id session) false]
              ["entryId" (:entry-id entry) false]
              ["type" (:type entry) false]
              ["role" (:role entry) false]
@@ -143,6 +147,17 @@
       (number? value) value
       (and value (fn? (.-toNumber candidate))) (.toNumber candidate)
       :else (throw (js/Error. "invalid Neo4j integer value")))))
+
+(def ^:private user-urn-prefix "urn:adam:user:")
+
+(defn- source-identity-prefixes [user-id]
+  (when-not (and (string? user-id) (string/starts-with? user-id user-urn-prefix))
+    (throw (js/Error. "invalid Adam user identity")))
+  (let [user-uuid (subs user-id (count user-urn-prefix))]
+    {:session-prefix (str "urn:adam:session:" user-uuid ":pi:")
+     :entry-prefix (str "urn:adam:entry:" user-uuid ":pi:")
+     :observation-prefix (str "urn:adam:observation:" user-uuid ":pi:")
+     :reflection-prefix (str "urn:adam:reflection:" user-uuid ":pi:")}))
 
 (defn- checkpoint-from-record [record]
   (when (and record (some? (record-get record "byteOffset")))
@@ -248,7 +263,7 @@
            RETURN e.entryId AS entryId,
                   e.payloadHash AS expectedHash,
                   input.payloadHash AS actualHash"
-          #js {:entries (clj->js (mapv #(entry-properties (:id session) %) entries))})))
+          #js {:entries (clj->js (mapv #(entry-properties session %) entries))})))
       (.then
        (fn [result]
          (doseq [record (records result)]
@@ -270,7 +285,7 @@
            FOREACH (_ IN CASE WHEN parent IS NULL THEN [] ELSE [1] END |
              MERGE (e)-[:PARENT]->(parent))"
           #js {:sessionId (:id session)
-               :entries (clj->js (mapv #(entry-properties (:id session) %) entries))})))
+               :entries (clj->js (mapv #(entry-properties session %) entries))})))
       (.then
        (fn [_]
          (.run
@@ -357,6 +372,8 @@
 
 (defn- observation-properties [observation]
   #js {:id (:id observation)
+       :sourceKind (:source-kind observation)
+       :sourceSessionId (:source-session-id observation)
        :producer (:producer observation)
        :adapterVersion (:adapter-version observation)
        :memoryId (:memory-id observation)
@@ -371,6 +388,8 @@
 
 (defn- reflection-properties [reflection]
   #js {:id (:id reflection)
+       :sourceKind (:source-kind reflection)
+       :sourceSessionId (:source-session-id reflection)
        :producer (:producer reflection)
        :adapterVersion (:adapter-version reflection)
        :memoryId (:memory-id reflection)
@@ -462,7 +481,9 @@
             "UNWIND $observations AS input
              MATCH (s:AdamSession {id: $sessionId})
              MERGE (observation:AdamObservation {id: input.id})
-             SET observation.producer = input.producer,
+             SET observation.sourceKind = input.sourceKind,
+                 observation.sourceSessionId = input.sourceSessionId,
+                 observation.producer = input.producer,
                  observation.adapterVersion = input.adapterVersion,
                  observation.memoryId = input.memoryId,
                  observation.content = input.content,
@@ -503,7 +524,9 @@
             "UNWIND $reflections AS input
              MATCH (s:AdamSession {id: $sessionId})
              MERGE (reflection:AdamReflection {id: input.id})
-             SET reflection.producer = input.producer,
+             SET reflection.sourceKind = input.sourceKind,
+                 reflection.sourceSessionId = input.sourceSessionId,
+                 reflection.producer = input.producer,
                  reflection.adapterVersion = input.adapterVersion,
                  reflection.memoryId = input.memoryId,
                  reflection.content = input.content,
@@ -524,6 +547,10 @@
 
 (defn- session-summary [properties]
   {:id (str (aget properties "id"))
+   :source-kind (when (some? (aget properties "sourceKind"))
+                  (str (aget properties "sourceKind")))
+   :source-session-id (when (some? (aget properties "sourceSessionId"))
+                        (str (aget properties "sourceSessionId")))
    :pi-session-id (str (aget properties "piSessionId"))
    :cwd (str (aget properties "cwd"))
    :name (when (some? (aget properties "name")) (str (aget properties "name")))
@@ -562,6 +589,148 @@
      :dropped? (= true (aget memory "dropped"))}))
 
 (defrecord Neo4jSessionReplica [driver database]
+  store/SessionIdentityMigrationStore
+  (session-identity-version! [_ user-id]
+    (let [{:keys [session-prefix entry-prefix observation-prefix reflection-prefix]}
+          (source-identity-prefixes user-id)]
+      (with-session!
+        driver
+        database
+        (fn [session]
+          (-> (.run
+               session
+               "MATCH (u:AdamUser {id: $userId})
+                RETURN CASE
+                  WHEN EXISTS {
+                    MATCH (u)-[:OWNS]->(s:AdamSession)
+                    WHERE s.piSessionId IS NULL
+                       OR coalesce(s.sourceKind, '') <> 'pi'
+                       OR coalesce(s.sourceSessionId, '') <> s.piSessionId
+                       OR s.id <> $sessionPrefix + s.piSessionId
+                       OR (s.parentPiSessionId IS NOT NULL
+                           AND coalesce(s.parentSessionId, '') <>
+                               $sessionPrefix + s.parentPiSessionId)
+                  }
+                  OR EXISTS {
+                    MATCH (u)-[:OWNS]->(s:AdamSession)-[:HAS_ENTRY]->(entry:AdamEntry)
+                    WHERE entry.id <> $entryPrefix + s.piSessionId + ':' + entry.entryId
+                       OR coalesce(entry.sessionId, '') <> s.id
+                       OR coalesce(entry.sourceKind, '') <> 'pi'
+                       OR coalesce(entry.sourceSessionId, '') <> s.piSessionId
+                       OR (entry.parentId IS NOT NULL
+                           AND coalesce(entry.parentUrn, '') <>
+                               $entryPrefix + s.piSessionId + ':' + entry.parentId)
+                       OR (entry.parentId IS NULL AND entry.parentUrn IS NOT NULL)
+                  }
+                  OR EXISTS {
+                    MATCH (u)-[:OWNS]->(s:AdamSession)-[:HAS_MEMORY]->(memory:AdamObservation)
+                    WHERE memory.id <>
+                            $observationPrefix + s.piSessionId + ':' + memory.memoryId
+                       OR coalesce(memory.sourceKind, '') <> 'pi'
+                       OR coalesce(memory.sourceSessionId, '') <> s.piSessionId
+                  }
+                  OR EXISTS {
+                    MATCH (u)-[:OWNS]->(s:AdamSession)-[:HAS_MEMORY]->(memory:AdamReflection)
+                    WHERE memory.id <>
+                            $reflectionPrefix + s.piSessionId + ':' + memory.memoryId
+                       OR coalesce(memory.sourceKind, '') <> 'pi'
+                       OR coalesce(memory.sourceSessionId, '') <> s.piSessionId
+                  }
+                  THEN 0
+                  ELSE u.sessionIdentityVersion
+                END AS version"
+               #js {:userId user-id
+                    :sessionPrefix session-prefix
+                    :entryPrefix entry-prefix
+                    :observationPrefix observation-prefix
+                    :reflectionPrefix reflection-prefix})
+              (.then
+               (fn [result]
+                 (when-let [record (first (records result))]
+                   (when-let [version (record-get record "version")]
+                     (neo-integer version))))))))))
+
+  (migrate-pi-session-identities! [_ user-id target-version]
+    (let [{:keys [session-prefix entry-prefix observation-prefix reflection-prefix]}
+          (source-identity-prefixes user-id)]
+      (with-session!
+        driver
+        database
+        (fn [^js session]
+          (.executeWrite
+           session
+           (fn [tx]
+             (-> (.run
+                  tx
+                  "MATCH (:AdamUser {id: $userId})-[:OWNS]->(s:AdamSession)
+                   WHERE s.piSessionId IS NULL
+                   RETURN count(s) AS invalidCount"
+                  #js {:userId user-id})
+                 (.then
+                  (fn [result]
+                    (let [record (first (records result))
+                          invalid-count (if record
+                                          (neo-integer (record-get record "invalidCount"))
+                                          0)]
+                      (when (pos? invalid-count)
+                        (throw (ex-info
+                                "cannot source-scope sessions without piSessionId"
+                                {:type :invalid-session-identity
+                                 :count invalid-count}))))))
+                 (.then
+                  (fn [_]
+                    (.run
+                     tx
+                     "MATCH (:AdamUser {id: $userId})-[:OWNS]->(s:AdamSession)
+                      SET s.id = $sessionPrefix + s.piSessionId,
+                          s.sourceKind = 'pi',
+                          s.sourceSessionId = s.piSessionId,
+                          s.parentSessionId = CASE
+                            WHEN s.parentPiSessionId IS NULL THEN null
+                            ELSE $sessionPrefix + s.parentPiSessionId
+                          END"
+                     #js {:userId user-id :sessionPrefix session-prefix})))
+                 (.then
+                  (fn [_]
+                    (.run
+                     tx
+                     "MATCH (:AdamUser {id: $userId})-[:OWNS]->(s:AdamSession)-[:HAS_ENTRY]->(entry:AdamEntry)
+                      SET entry.id = $entryPrefix + s.piSessionId + ':' + entry.entryId,
+                          entry.sessionId = s.id,
+                          entry.sourceKind = 'pi',
+                          entry.sourceSessionId = s.piSessionId,
+                          entry.parentUrn = CASE
+                            WHEN entry.parentId IS NULL THEN null
+                            ELSE $entryPrefix + s.piSessionId + ':' + entry.parentId
+                          END"
+                     #js {:userId user-id :entryPrefix entry-prefix})))
+                 (.then
+                  (fn [_]
+                    (.run
+                     tx
+                     "MATCH (:AdamUser {id: $userId})-[:OWNS]->(s:AdamSession)-[:HAS_MEMORY]->(memory:AdamObservation)
+                      SET memory.id = $observationPrefix + s.piSessionId + ':' + memory.memoryId,
+                          memory.sourceKind = 'pi',
+                          memory.sourceSessionId = s.piSessionId"
+                     #js {:userId user-id :observationPrefix observation-prefix})))
+                 (.then
+                  (fn [_]
+                    (.run
+                     tx
+                     "MATCH (:AdamUser {id: $userId})-[:OWNS]->(s:AdamSession)-[:HAS_MEMORY]->(memory:AdamReflection)
+                      SET memory.id = $reflectionPrefix + s.piSessionId + ':' + memory.memoryId,
+                          memory.sourceKind = 'pi',
+                          memory.sourceSessionId = s.piSessionId"
+                     #js {:userId user-id :reflectionPrefix reflection-prefix})))
+                 (.then
+                  (fn [_]
+                    (.run
+                     tx
+                     "MATCH (u:AdamUser {id: $userId})
+                      SET u.sessionIdentityVersion = $targetVersion,
+                          u.sessionIdentityMigratedAt = datetime()"
+                     #js {:userId user-id :targetVersion target-version}))))))))))
+
   knowledge-store/FileEvidenceStore
   (ensure-file-evidence-schema! [_]
     (ensure-file-evidence-constraints! driver database))

@@ -7,6 +7,7 @@
             [adam.replica.commands :as commands]
             [adam.replica.config :as config]
             [adam.replica.identity :as identity]
+            [adam.replica.migration :as replica-migration]
             [adam.replica.neo4j :as neo4j]
             [adam.replica.state :as global-state]
             [adam.replica.store :as store]
@@ -45,7 +46,9 @@
   (let [{:keys [configured? connected? reason user-uuid git-email active-session-file
                 last-result last-mirrored-at last-error file-evidence-indexed-at
                 file-evidence-repository file-evidence-status file-evidence-error
-                memory-adapter-status code-memory-version code-memory-rebuild-status
+                memory-adapter-status session-identity-version
+                session-identity-migration-status session-identity-migration-error
+                code-memory-version code-memory-rebuild-status
                 code-memory-rebuild-error last-timing]} runtime-state]
     (string/join
      "\n"
@@ -78,6 +81,12 @@
                 (str "File evidence repository: " file-evidence-repository))
               (when file-evidence-status (str "File evidence: " file-evidence-status))
               (when file-evidence-error (str "File evidence error: " file-evidence-error))
+              (when session-identity-version
+                (str "Session identity schema: v" session-identity-version))
+              (when session-identity-migration-status
+                (str "Session identity migration: " session-identity-migration-status))
+              (when session-identity-migration-error
+                (str "Session identity migration error: " session-identity-migration-error))
               (when code-memory-version
                 (str "Code memory schema: v" code-memory-version))
               (when code-memory-rebuild-status
@@ -157,10 +166,34 @@
                             (-> (get-user!)
                                 (.then
                                  (fn [user]
-                                   (-> (store/initialize!
-                                        replica
-                                        {:id (identity/user-urn (:user-uuid user))})
-                                       (.then (fn [_] replica))))))))
+                                   (let [user-id (identity/user-urn (:user-uuid user))]
+                                     (-> (store/initialize! replica {:id user-id})
+                                         (.then
+                                          (fn [_]
+                                            (if (satisfies?
+                                                 store/SessionIdentityMigrationStore
+                                                 replica)
+                                              (-> (replica-migration/migrate-if-needed!
+                                                   {:store replica :user-id user-id})
+                                                  (.catch
+                                                   (fn [error]
+                                                     (swap! runtime-state assoc
+                                                            :session-identity-migration-status
+                                                            "waiting to retry"
+                                                            :session-identity-migration-error
+                                                            (error-message error))
+                                                     (js/Promise.reject error))))
+                                              (js/Promise.resolve
+                                               {:status :unsupported
+                                                :version nil}))))
+                                         (.then
+                                          (fn [result]
+                                            (swap! runtime-state assoc
+                                                   :session-identity-version (:version result)
+                                                   :session-identity-migration-status
+                                                   (name (:status result))
+                                                   :session-identity-migration-error nil)
+                                            replica)))))))))
                          (.catch
                           (fn [error]
                             (reset! replica-promise nil)

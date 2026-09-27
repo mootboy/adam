@@ -111,7 +111,7 @@
           (.then
            (fn [resolved]
              (is (nil? resolved))
-             (is (= [["urn:adam:session:user-1:session-clear" 3]] @clears))
+             (is (= [["urn:adam:session:user-1:pi:session-clear" 3]] @clears))
              (rmSync directory #js {:recursive true :force true})
              (done)))
           (.catch
