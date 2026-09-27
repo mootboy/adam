@@ -5,7 +5,7 @@
 
 **A Distributed Agent Memory** — durable session replication and provenance-bearing memory retrieval for coding agents.
 
-Adam provides a full [Pi](https://pi.dev) extension and a read-only [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin. Pi support includes automatic, lossless Neo4j session replication, resumable checkpoints, complete entry trees, selected-leaf preservation, canonical fork lineage, historical import, local-first restoration, deterministic repository/file evidence, structural adaptation of persisted `pi-observational-memory` entries, and bounded file-context retrieval. Claude Code can explicitly query those existing memories through a stdio MCP server; Claude transcript ingestion is not yet implemented.
+Adam provides a full [Pi](https://pi.dev) extension and a read-only [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin. Pi support includes automatic, lossless Neo4j session replication, resumable checkpoints, complete entry trees, selected-leaf preservation, canonical fork lineage, historical import, local-first restoration, deterministic repository/file evidence, structural adaptation of persisted `pi-observational-memory` entries, and bounded file-context retrieval. Claude Code can explicitly query those existing memories through a stdio MCP server. The lossless Claude transcript scanner, graph storage, and native file-evidence adapter are implemented, but lifecycle hooks and automatic reconciliation are not yet connected.
 
 ## Design documents
 
@@ -91,7 +91,7 @@ Build or unpack an Adam release, export the same `ADAM_NEO4J_*` variables, and l
 claude --plugin-dir /absolute/path/to/adam
 ```
 
-The plugin starts the packaged stdio MCP server and exposes `adam_file_context` with the same origin lookup, user isolation, provenance rendering, and output bounds as Pi. Its bundled skill recommends explicit retrieval for a known file and does not inject memories automatically. Claude Code currently reads memories already indexed by Pi; it does not ingest Claude transcripts.
+The plugin starts the packaged stdio MCP server and exposes `adam_file_context` with the same origin lookup, user isolation, provenance rendering, and output bounds as Pi. Its bundled skill recommends explicit retrieval for a known file and does not inject memories automatically. Claude Code currently reads memories already indexed by Pi. Adam's Claude scanner and storage engine are implemented, but the plugin does not yet enqueue or reconcile transcripts automatically; that requires the next non-blocking hook/worker stage.
 
 Adam stores the permanent user UUID under `${XDG_CONFIG_HOME:-~/.config}/adam/config.json`. On first use it atomically adopts an existing Pi-scoped UUID from `${PI_CODING_AGENT_DIR:-~/.pi/agent}/adam/config.json`. Conflicting UUIDs fail visibly rather than silently splitting identity.
 

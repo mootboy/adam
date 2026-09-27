@@ -2,6 +2,7 @@
   (:require [adam.knowledge.store :as knowledge-store]
             [adam.replica.neo4j :as neo4j]
             [adam.replica.store :as store]
+            [adam.sources.claude-code.store :as claude-store]
             [cljs.test :refer [async deftest is]]))
 
 (defn- recording-driver []
@@ -37,7 +38,7 @@
                 (fn [query params]
                   (swap! calls conj {:query query :params params})
                   (cond
-                    (re-find #"RETURN e.entryId" query)
+                    (re-find #"RETURN (?:e|entry)\.entryId" query)
                     (let [^js input (first (array-seq (.-entries params)))]
                       (js/Promise.resolve
                        #js {:records
@@ -46,7 +47,7 @@
                                    "expectedHash" (if mismatch? "stored-hash" (.-payloadHash input))
                                    "actualHash" (.-payloadHash input)})]}))
 
-                    (re-find #"RETURN s.completeThroughByteOffset AS byteOffset" query)
+                    (re-find #"RETURN (?:s|stream)\.completeThroughByteOffset AS byteOffset" query)
                     (js/Promise.resolve
                      #js {:records #js [(fake-record {"byteOffset" (.-byteOffset params)})]})
 
@@ -106,9 +107,52 @@
                (is (some #(re-find #"entry.sessionId = s.id" %) migration-queries))
                (is (some #(re-find #"memory:AdamObservation" %) migration-queries))
                (is (some #(re-find #"memory:AdamReflection" %) migration-queries))
+               (is (= 5 (count (filter #(re-find #"coalesce\(s.sourceKind, 'pi'\) = 'pi'" %)
+                                       migration-queries))))
                (is (re-find #"u.sessionIdentityVersion = \$targetVersion"
                             (last migration-queries)))
                (is (= 2 @closes))
+               (done))))
+          (.catch
+           (fn [error]
+             (is false (.-stack error))
+             (done)))))))
+
+(deftest writes-claude-stream-entry-structure-and-checkpoint-in-one-transaction
+  (async done
+    (let [{:keys [driver calls]} (transactional-driver)
+          replica (neo4j/replica-with-driver driver "neo4j")
+          session {:id "urn:adam:session:user-1:claude-code:session-1"
+                   :user-id "urn:adam:user:user-1"
+                   :source-kind "claude-code"
+                   :source-session-id "session-1"
+                   :current-leaf-id "entry-1"
+                   :source-file "/transcripts/session.jsonl"
+                   :writer-version "adam-v1"}
+          stream {:id "urn:adam:stream:user-1:claude-code:session-1:main"
+                  :session-id (:id session)
+                  :stream-id "main"
+                  :path "/transcripts/session.jsonl"}
+          entry {:id "urn:adam:entry:user-1:claude-code:session-1:entry-1"
+                 :entry-id "entry-1" :record-uuid "entry-1"
+                 :stream-id "main" :type "assistant"
+                 :parent-id nil :logical-parent-id "older"
+                 :logical-parent-urn "urn:adam:entry:user-1:claude-code:session-1:older"
+                 :ordinal 0 :raw-json "{\"uuid\":\"entry-1\"}"
+                 :payload-hash "hash" :payload-bytes 20}]
+      (-> (claude-store/write-stream-batch!
+           replica
+           {:session session :stream stream :entries [entry]
+            :checkpoint {:complete-through-ordinal 0
+                         :complete-through-byte-offset 21
+                         :committed-prefix-hash "prefix"}})
+          (.then
+           (fn [_]
+             (let [queries (map :query @calls)]
+               (is (some #(re-find #"AdamTranscriptStream" %) queries))
+               (is (some #(re-find #"HAS_STREAM" %) queries))
+               (is (some #(re-find #"LOGICAL_PARENT" %) queries))
+               (is (some #(re-find #"stream.completeThroughByteOffset" %) queries))
                (done))))
           (.catch
            (fn [error]

@@ -64,19 +64,23 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 
 ## Claude transcript ingestion
 
-These cases define the approved 0.3 scanner contract; transcript ingestion is not yet implemented.
+These cases define the implemented 0.3 scanner, graph-storage, and file-evidence contract. Hook-triggered automatic reconciliation remains pending.
 
 | Case | Expected result |
 | --- | --- |
 | Hook supplies a Claude `transcript_path` | That stream is read as authoritative without scanning undocumented storage directories |
-| Parent transcript contains unknown or UUID-less records | Every complete physical record is preserved losslessly |
+| Parent transcript contains unknown or UUID-less records | Every complete physical record is preserved losslessly and UUID-less identity is deterministic within the stream |
+| Transcript ends with incomplete non-newline JSON | The tail remains uncommitted and is retried after a later append |
+| Transcript contains malformed completed JSON, duplicate UUIDs, or unresolved structural references | The stream is rejected without repairing the source |
+| Transcript changes during scanning | The scan is rejected and retried later |
 | Claude session resumes normally | Existing committed prefix remains unchanged and only the appended suffix is synchronized |
 | Transcript contains a manual compact boundary | Continuity follows `logicalParentUuid`; compact-summary prose creates no file evidence |
 | Latest `last-prompt` names a valid leaf | Parent-stream current context begins from its `leafUuid` |
 | One active model request emits parallel tool fragments | Active fragments sharing `requestId` and their structurally matched results remain in current context |
 | Claude calls native `Read`, `Edit`, or `Write` | Non-empty `input.file_path` creates deterministic file evidence using that record's cwd |
 | Claude uses Bash, MCP, prose, a compact summary, or handback text containing a path | No file evidence is created |
-| Explicitly located subagent stream shares the parent session ID | It remains a child stream of that Claude session, retains `agentId`/sidechain provenance, and its native file tools may create evidence |
+| Explicitly located subagent stream shares the parent session ID | It remains a checkpointed child stream of that Claude session, retains `agentId`/sidechain provenance, and its native file tools may create evidence |
+| Parent and subagent streams are mirrored | One source-scoped `AdamSession` owns both `AdamTranscriptStream` nodes and every lossless entry; compact continuity uses `LOGICAL_PARENT` |
 | Subagent completion is copied into parent handback records | Records are preserved but handback prose creates no evidence |
 
 ## Checkpoints and synchronization

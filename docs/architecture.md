@@ -2,7 +2,7 @@
 
 Status: approved design; implementation is incremental.
 
-`adam` provides host-neutral durable memory infrastructure with a full Pi adapter and a read-only Claude Code adapter. In Pi it runs alongside memory producers such as `pi-observational-memory`; it does not execute or import their runtime. Claude Code currently queries memories already indexed through Pi and does not yet contribute transcript data. The approved future ingestion boundary is defined in [`claude-transcript-contract.md`](claude-transcript-contract.md).
+`adam` provides host-neutral durable memory infrastructure with a full Pi adapter and a read-only Claude Code adapter. In Pi it runs alongside memory producers such as `pi-observational-memory`; it does not execute or import their runtime. Claude Code currently queries memories already indexed through Pi. Its lossless transcript scanner, stream-aware graph storage, and native file-evidence adapter are implemented, but hooks and automatic reconciliation are not yet connected. The ingestion boundary is defined in [`claude-transcript-contract.md`](claude-transcript-contract.md).
 
 ## Authority and boundaries
 
@@ -99,7 +99,7 @@ The first adapter is implemented structurally in `src/adam/sources/pi_observatio
 
 ## Repository and file evidence
 
-Only explicit file tools provide evidence. Pi recognizes `read`, `edit`, and `write` calls with a non-empty `path`; Claude ingestion will recognize `Read`, `Edit`, and `Write` calls with a non-empty `input.file_path`. Matching results are linked structurally rather than inferred from output or prose.
+Only explicit file tools provide evidence. Pi recognizes `read`, `edit`, and `write` calls with a non-empty `path`; the Claude adapter recognizes `Read`, `Edit`, and `Write` calls with a non-empty `input.file_path`. Matching results are linked structurally rather than inferred from output or prose.
 
 Paths are canonicalized through the containing root reported by `git worktree list --porcelain -z`. Main-checkout and linked-worktree spellings of the same repository-relative path identify one file while evidence retains the actual worktree commit, branch, and dirty state.
 
@@ -111,7 +111,7 @@ When a session cwd is a non-Git workspace, the selected branch is searched in se
 
 The projection follows parent links from the recorded current leaf. Abandoned branches remain in the lossless replica but do not contribute current code-memory associations.
 
-This file-evidence layer is implemented in `src/adam/knowledge/evidence.cljs`, `repository.cljs`, `index.cljs`, and `store.cljs`, with lifecycle composition in `src/adam/replica/register.cljs` and Neo4j persistence in `src/adam/replica/neo4j.cljs`. It runs only after successful lossless mirroring, is rebuildable, and reports a healthy waiting state when neither the session cwd nor selected explicit evidence resolves to Git.
+The Pi file-evidence layer is implemented in `src/adam/knowledge/evidence.cljs`, `repository.cljs`, `index.cljs`, and `store.cljs`, with lifecycle composition in `src/adam/replica/register.cljs`. Claude scanning, source modeling, synchronization, and evidence adaptation live under `src/adam/sources/claude_code/`. Neo4j persists parent and subagent streams through `AdamTranscriptStream` checkpoints, keeps all entries owned by one source-scoped `AdamSession`, and records compact continuity with `LOGICAL_PARENT`. Both adapters converge on the same repository/file projection. Pi projection runs only after successful lossless mirroring; Claude lifecycle invocation remains deferred to the hook/worker stage.
 
 ## Query architecture
 

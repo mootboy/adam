@@ -52,6 +52,7 @@ urn:adam:user:<userUuid>
 urn:adam:identity:git-email:<sha256(normalizedEmail)>
 urn:adam:session:<userUuid>:pi:<piSessionId>
 urn:adam:session:<userUuid>:claude-code:<claudeSessionId>
+urn:adam:stream:<userUuid>:claude-code:<claudeSessionId>:<streamId>
 urn:adam:entry:<userUuid>:<sourceKind>:<sourceSessionId>:<entryId>
 urn:adam:repository:git:<sha256(normalizedOrigin)>
 urn:adam:repository:local:<userUuid>:<sha256(resolvedRoot)>
@@ -73,7 +74,9 @@ A valid persisted session has:
 - parent references that resolve within the file or are null roots;
 - deterministic ordinals, byte offsets, byte lengths, and SHA-256 hashes.
 
-The scanner streams lines and preserves each complete original JSON line. New or unknown entry types are retained rather than rejected. Malformed sessions are reported with file and line context and are never repaired automatically.
+The Pi scanner streams lines and preserves each complete original JSON line. New or unknown entry types are retained rather than rejected. Malformed sessions are reported with file and line context and are never repaired automatically.
+
+The Claude scanner separately preserves every complete parent or explicitly located subagent record, including unknown and UUID-less records. UUID-less records receive deterministic stream-local identities. A non-newline invalid tail is deferred as a concurrent partial write; malformed newline-terminated records are rejected. Stream checkpoints independently detect shrinkage and committed-prefix changes. Parent and `logicalParentUuid` continuity, latest `last-prompt.leafUuid`, active `requestId` fragments, tool-use/result IDs, and `sourceToolAssistantUUID` determine current context without relying on timestamp or physical order alone.
 
 ## Incremental synchronization
 
@@ -105,6 +108,7 @@ Uniqueness constraints cover `id` on:
 - `AdamIdentity`
 - `AdamSession`
 - `AdamEntry`
+- `AdamTranscriptStream`
 - `AdamRepository`
 - `AdamCodeFile`
 - `AdamObservation`
@@ -129,8 +133,15 @@ AdamSession
   entryCount, logHash, logBytes, largestEntryBytes
   conflicted, lastMirroredAt, writerVersion
 
+AdamTranscriptStream
+  id, sessionId, streamId, agentId, transcriptPath
+  completeThroughOrdinal, completeThroughByteOffset, committedPrefixHash
+  entryCount, logHash, logBytes, sourceBytes, incompleteTailBytes
+  conflicted, lastMirroredAt
+
 AdamEntry
-  id, sessionId, sourceKind, sourceSessionId, entryId, type, role, parentId, timestamp, ordinal
+  id, sessionId, sourceKind, sourceSessionId, entryId, recordUuid, streamId, agentId
+  type, role, parentId, logicalParentId, cwd, requestId, timestamp, ordinal
   rawJson, payloadHash, payloadBytes
 ```
 
@@ -140,8 +151,11 @@ Relationships:
 (AdamUser)-[:HAS_IDENTITY]->(AdamIdentity)
 (AdamUser)-[:OWNS]->(AdamSession)
 (AdamSession)-[:FORKED_FROM]->(AdamSession)
+(AdamSession)-[:HAS_STREAM]->(AdamTranscriptStream)
+(AdamTranscriptStream)-[:HAS_ENTRY]->(AdamEntry)
 (AdamSession)-[:HAS_ENTRY]->(AdamEntry)
 (AdamEntry)-[:PARENT]->(AdamEntry)
+(AdamEntry)-[:LOGICAL_PARENT]->(AdamEntry)
 (AdamSession)-[:CURRENT_LEAF]->(AdamEntry)
 ```
 

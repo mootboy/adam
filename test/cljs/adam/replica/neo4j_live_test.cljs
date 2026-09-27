@@ -9,6 +9,9 @@
             [adam.replica.restore :as restore]
             [adam.replica.store :as store]
             [adam.replica.sync :as sync]
+            [adam.sources.claude-code.evidence :as claude-evidence]
+            [adam.sources.claude-code.scanner :as claude-scanner]
+            [adam.sources.claude-code.sync :as claude-sync]
             [cljs.test :refer [async deftest is]]
             ["neo4j-driver" :as neo4j]
             ["node:crypto" :refer [randomUUID]]
@@ -498,5 +501,125 @@
                    (is (= 1 (.toNumber repositories)))
                    (is (= 1 (.toNumber files)))
                    (is (= 0 (.toNumber ownerships))))
+                 (finish! nil)))
+              (.catch finish!)))))))
+
+(deftest live-claude-transcript-round-trip-and-file-evidence
+  (async done
+    (let [uri (environment "ADAM_TEST_NEO4J_URI")
+          username (environment "ADAM_TEST_NEO4J_USERNAME")
+          password (environment "ADAM_TEST_NEO4J_PASSWORD")
+          database (or (environment "ADAM_TEST_NEO4J_DATABASE") "neo4j")]
+      (if-not (and uri username password)
+        (do
+          (is false "ADAM_TEST_NEO4J_URI, USERNAME, and PASSWORD are required")
+          (done))
+        (let [user-uuid (randomUUID)
+              user-id (identity/user-urn user-uuid)
+              auth-token (.basic (.-auth neo4j) username password)
+              ^js driver ((.-driver neo4j) uri auth-token)
+              replica (adam-neo4j/replica-with-driver driver database)
+              ^js query-session (.session driver #js {:database database})
+              main-path (join (.cwd js/process) "test/fixtures/claude/main.jsonl")
+              subagent-path (join (.cwd js/process) "test/fixtures/claude/subagent.jsonl")
+              repository (evidence/build-repository
+                          {:user-uuid user-uuid :root "/work/repo"
+                           :remote (str "git@example.com:" user-uuid "/repo.git")
+                           :commit "main-head" :branch "main" :dirty? false
+                           :worktrees [{:root "/work/repo" :commit "main-head"
+                                        :branch "main" :dirty? false}
+                                       {:root "/work/tree" :commit "feature-head"
+                                        :branch "feature" :dirty? true}]})
+              scan (claude-scanner/scan-session
+                    {:session-id "claude-session-1"
+                     :transcript-path main-path
+                     :subagents [{:agent-id "agent-1"
+                                  :transcript-path subagent-path}]})
+              projection (claude-evidence/extract-projection
+                          {:user-uuid user-uuid :repository repository :scan scan})
+              session-id (identity/session-urn user-uuid "claude-code"
+                                               "claude-session-1")
+              finish!
+              (fn [error]
+                (-> (.run query-session
+                          "MATCH (file:AdamCodeFile {repositoryId: $repositoryId}) DETACH DELETE file"
+                          #js {:repositoryId (:id repository)})
+                    (.then (fn [_]
+                             (.run query-session
+                                   "MATCH (repository:AdamRepository {id: $repositoryId}) DETACH DELETE repository"
+                                   #js {:repositoryId (:id repository)})))
+                    (.then (fn [_]
+                             (.run query-session
+                                   "MATCH (n) WHERE n.id CONTAINS $userUuid DETACH DELETE n"
+                                   #js {:userUuid user-uuid})))
+                    (.catch (fn [_] nil))
+                    (.finally
+                     (fn []
+                       (-> (.close query-session)
+                           (.then (fn [_] (store/close! replica)))
+                           (.finally
+                            (fn []
+                              (when error (is false (.-stack error)))
+                              (done))))))))]
+          (-> (store/initialize! replica {:id user-id})
+              (.then (fn [_]
+                       (knowledge-store/ensure-file-evidence-schema! replica)))
+              (.then (fn [_]
+                       (claude-sync/sync-session-scan!
+                        {:store replica :user-uuid user-uuid :scan scan})))
+              (.then
+               (fn [result]
+                 (is (= :mirrored (:status result)))
+                 (is (= 16 (:entries-written result)))
+                 (knowledge-store/index-file-evidence! replica projection)))
+              (.then
+               (fn [_]
+                 (claude-sync/sync-session-scan!
+                  {:store replica :user-uuid user-uuid :scan scan})))
+              (.then
+               (fn [result]
+                 (is (= :unchanged (:status result)))
+                 (replica-migration/migrate-if-needed!
+                  {:store replica :user-id user-id})))
+              (.then
+               (fn [migration]
+                 (is (= {:status :migrated :version 2} migration))
+                 (.run
+                  query-session
+                  "MATCH (u:AdamUser {id: $userId})-[:OWNS]->(s:AdamSession {id: $sessionId})
+                   MATCH (s)-[:HAS_STREAM]->(stream:AdamTranscriptStream)
+                   MATCH (s)-[:HAS_ENTRY]->(entry:AdamEntry)
+                   OPTIONAL MATCH (s)-[:CURRENT_LEAF]->(leaf:AdamEntry)
+                   OPTIONAL MATCH (:AdamEntry {entryId: 'compact-1'})-[:LOGICAL_PARENT]->(logicalParent:AdamEntry)
+                   OPTIONAL MATCH (entry)-[touch:TOUCHES]->(file:AdamCodeFile {repositoryId: $repositoryId})
+                   RETURN s.sourceKind AS sourceKind,
+                          leaf.entryId AS leafId,
+                          logicalParent.entryId AS logicalParentId,
+                          count(DISTINCT stream) AS streams,
+                          count(DISTINCT entry) AS entries,
+                          count(DISTINCT touch) AS touches,
+                          count(DISTINCT file) AS files,
+                          collect(DISTINCT stream.entryCount) AS streamCounts,
+                          collect(DISTINCT {id: entry.entryId, raw: entry.rawJson}) AS rawEntries"
+                  #js {:userId user-id :sessionId session-id
+                       :repositoryId (:id repository)})))
+              (.then
+               (fn [^js result]
+                 (let [^js record (first (array-seq (.-records result)))]
+                   (is (= "claude-code" (.get record "sourceKind")))
+                   (is (= "r-write" (.get record "leafId")))
+                   (is (= "r-edit" (.get record "logicalParentId")))
+                   (is (= 2 (.toNumber (.get record "streams"))))
+                   (is (= 16 (.toNumber (.get record "entries"))))
+                   (is (= 8 (.toNumber (.get record "touches"))))
+                   (is (= 4 (.toNumber (.get record "files"))))
+                   (is (= #{3 13}
+                          (set (map (fn [^js value]
+                                      (if (number? value) value (.toNumber value)))
+                                    (array-seq (.get record "streamCounts"))))))
+                   (is (= (into {} (map (juxt :entry-id :raw-json) (:entries scan)))
+                          (into {} (map (fn [^js item]
+                                         [(aget item "id") (aget item "raw")])
+                                       (array-seq (.get record "rawEntries")))))))
                  (finish! nil)))
               (.catch finish!)))))))
