@@ -1,6 +1,7 @@
 (ns adam.replica.neo4j
   (:require [adam.knowledge.store :as knowledge-store]
             [adam.replica.store :as store]
+            [adam.sources.claude-code.store :as claude-store]
             [clojure.string :as string]
             ["neo4j-driver" :as neo4j-driver]))
 
@@ -131,7 +132,14 @@
              ["rawJson" (:raw-json entry) false]
              ["payloadHash" (:payload-hash entry) false]
              ["payloadBytes" (:payload-bytes entry) false]
-             ["parentUrn" (:parent-urn entry) false]]]
+             ["parentUrn" (:parent-urn entry) false]
+             ["logicalParentId" (:logical-parent-id entry) true]
+             ["logicalParentUrn" (:logical-parent-urn entry) false]
+             ["recordUuid" (:record-uuid entry) false]
+             ["streamId" (:stream-id entry) false]
+             ["agentId" (:agent-id entry) false]
+             ["cwd" (:cwd entry) false]
+             ["requestId" (:request-id entry) false]]]
       (set-property! properties key value include-nil?))
     properties))
 
@@ -349,6 +357,165 @@
          (if (empty? (records result))
            (reject-checkpoint! tx (:id session) (:complete-through-byte-offset checkpoint))
            (update-current-leaf! tx session))))))
+
+(defn- stream-properties [stream]
+  (let [properties #js {}]
+    (doseq [[key value include-nil?]
+            [["id" (:id stream) false]
+             ["sessionId" (:session-id stream) false]
+             ["streamId" (:stream-id stream) false]
+             ["agentId" (:agent-id stream) false]
+             ["transcriptPath" (:path stream) false]]]
+      (set-property! properties key value include-nil?))
+    properties))
+
+(defn- merge-claude-stream! [^js tx session stream]
+  (-> (merge-session! tx session)
+      (.then
+       (fn [_]
+         (.run
+          tx
+          "MATCH (s:AdamSession {id: $sessionId})
+           MERGE (stream:AdamTranscriptStream {id: $streamId})
+           SET stream += $stream
+           MERGE (s)-[:HAS_STREAM]->(stream)"
+          #js {:sessionId (:id session)
+               :streamId (:id stream)
+               :stream (stream-properties stream)})))))
+
+(defn- stream-checkpoint-in-transaction! [^js tx stream-id]
+  (-> (.run
+       tx
+       "MATCH (stream:AdamTranscriptStream {id: $streamId})
+        RETURN stream.completeThroughOrdinal AS ordinal,
+               stream.completeThroughByteOffset AS byteOffset,
+               stream.committedPrefixHash AS prefixHash,
+               stream.entryCount AS entryCount,
+               stream.logHash AS logHash"
+       #js {:streamId stream-id})
+      (.then (fn [result] (checkpoint-from-record (first (records result)))))))
+
+(defn- reject-stream-checkpoint! [tx stream-id actual-offset]
+  (-> (stream-checkpoint-in-transaction! tx stream-id)
+      (.then
+       (fn [current]
+         (throw (store/checkpoint-conflict
+                 (or (:complete-through-byte-offset current) -1)
+                 actual-offset))))))
+
+(defn- write-claude-stream-batch-transaction!
+  [^js tx {:keys [session stream entries checkpoint]}]
+  (-> (merge-claude-stream! tx session stream)
+      (.then
+       (fn [_]
+         (.run
+          tx
+          "UNWIND $entries AS input
+           MERGE (entry:AdamEntry {id: input.id})
+           ON CREATE SET entry += input
+           WITH entry, input
+           RETURN entry.entryId AS entryId,
+                  entry.payloadHash AS expectedHash,
+                  input.payloadHash AS actualHash"
+          #js {:entries (clj->js (mapv #(entry-properties session %) entries))})))
+      (.then
+       (fn [result]
+         (doseq [record (records result)]
+           (store/assert-entry-compatible!
+            {:entry-id (str (record-get record "entryId"))
+             :payload-hash (str (record-get record "expectedHash"))}
+            {:entry-id (str (record-get record "entryId"))
+             :payload-hash (str (record-get record "actualHash"))}))))
+      (.then
+       (fn [_]
+         (.run
+          tx
+          "MATCH (s:AdamSession {id: $sessionId}),
+                 (stream:AdamTranscriptStream {id: $streamId})
+           UNWIND $entries AS input
+           MATCH (entry:AdamEntry {id: input.id})
+           MERGE (s)-[:HAS_ENTRY]->(entry)
+           MERGE (stream)-[:HAS_ENTRY]->(entry)
+           WITH input, entry
+           OPTIONAL MATCH (parent:AdamEntry {id: input.parentUrn})
+           OPTIONAL MATCH (logicalParent:AdamEntry {id: input.logicalParentUrn})
+           FOREACH (_ IN CASE WHEN parent IS NULL THEN [] ELSE [1] END |
+             MERGE (entry)-[:PARENT]->(parent))
+           FOREACH (_ IN CASE WHEN logicalParent IS NULL THEN [] ELSE [1] END |
+             MERGE (entry)-[:LOGICAL_PARENT]->(logicalParent))"
+          #js {:sessionId (:id session)
+               :streamId (:id stream)
+               :entries (clj->js (mapv #(entry-properties session %) entries))})))
+      (.then
+       (fn [_]
+         (.run
+          tx
+          "MATCH (stream:AdamTranscriptStream {id: $streamId})
+           WHERE stream.completeThroughByteOffset IS NULL
+              OR stream.completeThroughByteOffset < $byteOffset
+              OR (stream.completeThroughByteOffset = $byteOffset
+                  AND stream.committedPrefixHash = $prefixHash)
+           SET stream.completeThroughOrdinal = $ordinal,
+               stream.completeThroughByteOffset = $byteOffset,
+               stream.committedPrefixHash = $prefixHash,
+               stream.entryCount = null,
+               stream.logHash = null,
+               stream.logBytes = null,
+               stream.lastMirroredAt = datetime()
+           RETURN stream.completeThroughByteOffset AS byteOffset"
+          #js {:streamId (:id stream)
+               :ordinal (:complete-through-ordinal checkpoint)
+               :byteOffset (:complete-through-byte-offset checkpoint)
+               :prefixHash (:committed-prefix-hash checkpoint)})))
+      (.then
+       (fn [result]
+         (if (empty? (records result))
+           (reject-stream-checkpoint! tx (:id stream)
+                                      (:complete-through-byte-offset checkpoint))
+           nil)))))
+
+(defn- complete-claude-stream-transaction!
+  [^js tx {:keys [session stream checkpoint log-bytes source-bytes
+                  incomplete-tail-bytes largest-entry-bytes has-final-newline?]}]
+  (-> (merge-claude-stream! tx session stream)
+      (.then
+       (fn [_]
+         (.run
+          tx
+          "MATCH (stream:AdamTranscriptStream {id: $streamId})
+           WHERE stream.completeThroughByteOffset IS NULL
+              OR (stream.completeThroughByteOffset = $byteOffset
+                  AND stream.committedPrefixHash = $prefixHash)
+           SET stream.completeThroughOrdinal = $ordinal,
+               stream.completeThroughByteOffset = $byteOffset,
+               stream.committedPrefixHash = $prefixHash,
+               stream.entryCount = $entryCount,
+               stream.logHash = $logHash,
+               stream.logBytes = $logBytes,
+               stream.sourceBytes = $sourceBytes,
+               stream.incompleteTailBytes = $incompleteTailBytes,
+               stream.largestEntryBytes = $largestEntryBytes,
+               stream.hasFinalNewline = $hasFinalNewline,
+               stream.lastMirroredAt = datetime(),
+               stream.conflicted = false
+           RETURN stream.completeThroughByteOffset AS byteOffset"
+          #js {:streamId (:id stream)
+               :ordinal (:complete-through-ordinal checkpoint)
+               :byteOffset (:complete-through-byte-offset checkpoint)
+               :prefixHash (:committed-prefix-hash checkpoint)
+               :entryCount (:entry-count checkpoint)
+               :logHash (:log-hash checkpoint)
+               :logBytes log-bytes
+               :sourceBytes source-bytes
+               :incompleteTailBytes incomplete-tail-bytes
+               :largestEntryBytes largest-entry-bytes
+               :hasFinalNewline has-final-newline?})))
+      (.then
+       (fn [result]
+         (if (empty? (records result))
+           (reject-stream-checkpoint! tx (:id stream)
+                                      (:complete-through-byte-offset checkpoint))
+           nil)))))
 
 (defn- repository-properties [repository]
   (let [properties #js {:id (:id repository)}]
@@ -603,38 +770,42 @@
                 RETURN CASE
                   WHEN EXISTS {
                     MATCH (u)-[:OWNS]->(s:AdamSession)
-                    WHERE s.piSessionId IS NULL
+                    WHERE coalesce(s.sourceKind, 'pi') = 'pi'
+                      AND (s.piSessionId IS NULL
                        OR coalesce(s.sourceKind, '') <> 'pi'
                        OR coalesce(s.sourceSessionId, '') <> s.piSessionId
                        OR s.id <> $sessionPrefix + s.piSessionId
                        OR (s.parentPiSessionId IS NOT NULL
                            AND coalesce(s.parentSessionId, '') <>
-                               $sessionPrefix + s.parentPiSessionId)
+                               $sessionPrefix + s.parentPiSessionId))
                   }
                   OR EXISTS {
                     MATCH (u)-[:OWNS]->(s:AdamSession)-[:HAS_ENTRY]->(entry:AdamEntry)
-                    WHERE entry.id <> $entryPrefix + s.piSessionId + ':' + entry.entryId
+                    WHERE coalesce(s.sourceKind, 'pi') = 'pi'
+                      AND (entry.id <> $entryPrefix + s.piSessionId + ':' + entry.entryId
                        OR coalesce(entry.sessionId, '') <> s.id
                        OR coalesce(entry.sourceKind, '') <> 'pi'
                        OR coalesce(entry.sourceSessionId, '') <> s.piSessionId
                        OR (entry.parentId IS NOT NULL
                            AND coalesce(entry.parentUrn, '') <>
                                $entryPrefix + s.piSessionId + ':' + entry.parentId)
-                       OR (entry.parentId IS NULL AND entry.parentUrn IS NOT NULL)
+                       OR (entry.parentId IS NULL AND entry.parentUrn IS NOT NULL))
                   }
                   OR EXISTS {
                     MATCH (u)-[:OWNS]->(s:AdamSession)-[:HAS_MEMORY]->(memory:AdamObservation)
-                    WHERE memory.id <>
+                    WHERE coalesce(s.sourceKind, 'pi') = 'pi'
+                      AND (memory.id <>
                             $observationPrefix + s.piSessionId + ':' + memory.memoryId
                        OR coalesce(memory.sourceKind, '') <> 'pi'
-                       OR coalesce(memory.sourceSessionId, '') <> s.piSessionId
+                       OR coalesce(memory.sourceSessionId, '') <> s.piSessionId)
                   }
                   OR EXISTS {
                     MATCH (u)-[:OWNS]->(s:AdamSession)-[:HAS_MEMORY]->(memory:AdamReflection)
-                    WHERE memory.id <>
+                    WHERE coalesce(s.sourceKind, 'pi') = 'pi'
+                      AND (memory.id <>
                             $reflectionPrefix + s.piSessionId + ':' + memory.memoryId
                        OR coalesce(memory.sourceKind, '') <> 'pi'
-                       OR coalesce(memory.sourceSessionId, '') <> s.piSessionId
+                       OR coalesce(memory.sourceSessionId, '') <> s.piSessionId)
                   }
                   THEN 0
                   ELSE u.sessionIdentityVersion
@@ -663,7 +834,8 @@
              (-> (.run
                   tx
                   "MATCH (:AdamUser {id: $userId})-[:OWNS]->(s:AdamSession)
-                   WHERE s.piSessionId IS NULL
+                   WHERE coalesce(s.sourceKind, 'pi') = 'pi'
+                     AND s.piSessionId IS NULL
                    RETURN count(s) AS invalidCount"
                   #js {:userId user-id})
                  (.then
@@ -682,6 +854,7 @@
                     (.run
                      tx
                      "MATCH (:AdamUser {id: $userId})-[:OWNS]->(s:AdamSession)
+                      WHERE coalesce(s.sourceKind, 'pi') = 'pi'
                       SET s.id = $sessionPrefix + s.piSessionId,
                           s.sourceKind = 'pi',
                           s.sourceSessionId = s.piSessionId,
@@ -695,6 +868,7 @@
                     (.run
                      tx
                      "MATCH (:AdamUser {id: $userId})-[:OWNS]->(s:AdamSession)-[:HAS_ENTRY]->(entry:AdamEntry)
+                      WHERE coalesce(s.sourceKind, 'pi') = 'pi'
                       SET entry.id = $entryPrefix + s.piSessionId + ':' + entry.entryId,
                           entry.sessionId = s.id,
                           entry.sourceKind = 'pi',
@@ -709,6 +883,7 @@
                     (.run
                      tx
                      "MATCH (:AdamUser {id: $userId})-[:OWNS]->(s:AdamSession)-[:HAS_MEMORY]->(memory:AdamObservation)
+                      WHERE coalesce(s.sourceKind, 'pi') = 'pi'
                       SET memory.id = $observationPrefix + s.piSessionId + ':' + memory.memoryId,
                           memory.sourceKind = 'pi',
                           memory.sourceSessionId = s.piSessionId"
@@ -718,6 +893,7 @@
                     (.run
                      tx
                      "MATCH (:AdamUser {id: $userId})-[:OWNS]->(s:AdamSession)-[:HAS_MEMORY]->(memory:AdamReflection)
+                      WHERE coalesce(s.sourceKind, 'pi') = 'pi'
                       SET memory.id = $reflectionPrefix + s.piSessionId + ':' + memory.memoryId,
                           memory.sourceKind = 'pi',
                           memory.sourceSessionId = s.piSessionId"
@@ -730,6 +906,67 @@
                       SET u.sessionIdentityVersion = $targetVersion,
                           u.sessionIdentityMigratedAt = datetime()"
                      #js {:userId user-id :targetVersion target-version}))))))))))
+
+  claude-store/ClaudeTranscriptStore
+  (ensure-claude-schema! [_]
+    (ensure-label-constraints! driver database ["AdamTranscriptStream"]))
+
+  (get-stream-checkpoint! [_ stream-id]
+    (with-session!
+      driver database
+      (fn [session]
+        (-> (.run
+             session
+             "MATCH (stream:AdamTranscriptStream {id: $streamId})
+              RETURN stream.completeThroughOrdinal AS ordinal,
+                     stream.completeThroughByteOffset AS byteOffset,
+                     stream.committedPrefixHash AS prefixHash,
+                     stream.entryCount AS entryCount,
+                     stream.logHash AS logHash"
+             #js {:streamId stream-id})
+            (.then (fn [result]
+                     (checkpoint-from-record (first (records result)))))))))
+
+  (write-stream-batch! [_ request]
+    (with-session!
+      driver database
+      (fn [^js session]
+        (.executeWrite session
+                       (fn [tx]
+                         (write-claude-stream-batch-transaction! tx request))))))
+
+  (complete-stream! [_ request]
+    (with-session!
+      driver database
+      (fn [^js session]
+        (.executeWrite session
+                       (fn [tx]
+                         (complete-claude-stream-transaction! tx request))))))
+
+  (mark-stream-conflict! [_ conflict]
+    (with-session!
+      driver database
+      (fn [session]
+        (.run
+         session
+         "MERGE (stream:AdamTranscriptStream {id: $streamId})
+          SET stream.conflicted = true,
+              stream.conflictReason = $reason,
+              stream.conflictSourceFile = $sourceFile,
+              stream.conflictDetectedAt = datetime()"
+         #js {:streamId (:stream-id conflict)
+              :reason (name (:reason conflict))
+              :sourceFile (:source-file conflict)}))))
+
+  (complete-claude-session! [_ {:keys [session]}]
+    (with-session!
+      driver database
+      (fn [^js neo-session]
+        (.executeWrite
+         neo-session
+         (fn [tx]
+           (-> (merge-session! tx session)
+               (.then (fn [_] (update-current-leaf! tx session)))))))))
 
   knowledge-store/FileEvidenceStore
   (ensure-file-evidence-schema! [_]
@@ -818,6 +1055,7 @@
              session
              "MATCH (u:AdamUser {id: $userId})
               OPTIONAL MATCH (u)-[:OWNS]->(s:AdamSession)
+              WHERE coalesce(s.sourceKind, 'pi') = 'pi'
               OPTIONAL MATCH (s)-[worked:WORKED_ON]->(:AdamRepository)
               WITH u, s,
                    CASE
@@ -941,6 +1179,7 @@
              session
              "MATCH (:AdamUser {id: $userId})-[:OWNS]->(s:AdamSession)
               WHERE s.cwd = $cwd
+                AND coalesce(s.sourceKind, 'pi') = 'pi'
               RETURN s
               ORDER BY s.createdAt DESC, s.id"
              #js {:userId user-id :cwd cwd})
@@ -955,7 +1194,9 @@
       database
       (fn [session]
         (-> (.run session
-                  "MATCH (s:AdamSession {id: $sessionId}) RETURN s"
+                  "MATCH (s:AdamSession {id: $sessionId})
+                   WHERE coalesce(s.sourceKind, 'pi') = 'pi'
+                   RETURN s"
                   #js {:sessionId session-id})
             (.then
              (fn [result]

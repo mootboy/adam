@@ -19,6 +19,10 @@
   ([user-uuid source-kind source-session-id]
    (str "urn:adam:session:" user-uuid ":" source-kind ":" source-session-id)))
 
+(defn stream-urn [user-uuid source-kind source-session-id stream-id]
+  (str "urn:adam:stream:" user-uuid ":" source-kind ":" source-session-id
+       ":" stream-id))
+
 (defn entry-urn
   ([user-uuid pi-session-id entry-id]
    (entry-urn user-uuid pi-source-kind pi-session-id entry-id))

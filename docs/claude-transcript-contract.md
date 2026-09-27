@@ -1,6 +1,6 @@
 # Claude Code transcript ingestion contract
 
-Status: approved for implementation; ingestion is not yet implemented.
+Status: scanner, graph storage, and file-evidence adapter implemented; lifecycle reconciliation pending.
 
 This contract records behavior observed with Claude Code 2.1.283 and defines the initial Adam ingestion boundary. Claude transcripts remain authoritative; Adam is a read-only replica and deterministic file-evidence index.
 
@@ -100,4 +100,4 @@ Claude can therefore retrieve Pi-produced memories associated with files it touc
 
 ## Deferred validation
 
-Permanent sanitized fixtures should be introduced with the scanner implementation, when the exact parser invariants are known. Defensive cases such as malformed final lines, duplicate tool IDs, and concurrent partial writes remain scanner-level acceptance work; they do not block this observed authority contract.
+Permanent sanitized structural fixtures now cover parent and subagent streams, native file tools, parallel request fragments, compaction continuity, unknown and UUID-less records, malformed trailing records, duplicate tool IDs, changed prefixes, shrinkage, and concurrent writes. The scanner defers an incomplete non-newline tail, rejects malformed complete records and immutable identity conflicts, and preserves every accepted raw record byte-for-byte.
