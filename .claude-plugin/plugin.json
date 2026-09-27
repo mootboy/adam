@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "adam",
   "version": "0.2.1",
-  "description": "Explicit, provenance-bearing retrieval from A Distributed Agent Memory",
+  "description": "Durable transcript evidence and explicit provenance-bearing retrieval from A Distributed Agent Memory",
   "author": {
     "name": "mootboy"
   },

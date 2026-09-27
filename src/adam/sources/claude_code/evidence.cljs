@@ -29,6 +29,19 @@
          :assistant-id (:record-uuid entry)
          :path path}))))
 
+(defn explicit-file-locators [scan]
+  (->> (scanner/selected-entries scan)
+       (mapcat
+        (fn [entry]
+          (let [value (js/JSON.parse (:raw-json entry))]
+            (keep (fn [block]
+                    (when-let [{:keys [path]} (file-tool-call entry block)]
+                      (when (:cwd entry)
+                        {:cwd (:cwd entry) :path path})))
+                  (message-blocks value)))))
+       distinct
+       vec))
+
 (defn- tool-result-id [block]
   (when (and (json-object? block)
              (= "tool_result" (aget block "type"))

@@ -2,11 +2,11 @@
 
 Status: approved design; implementation is incremental.
 
-`adam` provides host-neutral durable memory infrastructure with a full Pi adapter and a read-only Claude Code adapter. In Pi it runs alongside memory producers such as `pi-observational-memory`; it does not execute or import their runtime. Claude Code currently queries memories already indexed through Pi. Its lossless transcript scanner, stream-aware graph storage, and native file-evidence adapter are implemented, but hooks and automatic reconciliation are not yet connected. The ingestion boundary is defined in [`claude-transcript-contract.md`](claude-transcript-contract.md).
+`adam` provides host-neutral durable memory infrastructure with full Pi and Claude Code adapters. In Pi it runs alongside memory producers such as `pi-observational-memory`; it does not execute or import their runtime. Claude Code contributes lossless transcript streams and native file evidence through non-blocking lifecycle hooks and a durable reconciliation worker, while retrieval remains an explicit read-only MCP operation. The ingestion boundary is defined in [`claude-transcript-contract.md`](claude-transcript-contract.md).
 
 ## Authority and boundaries
 
-Pi session JSONL is authoritative. adam reads persisted sessions but never modifies or overwrites an existing session file. Neo4j is an eventually consistent replica and a rebuildable derived index.
+Pi session JSONL and hook-located Claude transcript streams are authoritative for their respective sources. adam reads persisted sessions but never modifies or overwrites an existing source file. Neo4j is an eventually consistent replica and a rebuildable derived index.
 
 ```text
 Pi
@@ -50,14 +50,16 @@ host-neutral core
        │    ├── lifecycle, commands, and session scanner
        │    └── adam_file_context
        └── Claude Code plugin boundary
-            └── stdio MCP adam_file_context
+            ├── stdio MCP adam_file_context
+            ├── bounded lifecycle hook enqueue
+            └── serialized retrying reconciliation worker
 ```
 
 The session replica and derived knowledge projection are separate failure domains. A projection or adapter failure must never invalidate a successfully mirrored session. Before either runs, a transactionally atomic migration source-scopes existing Pi session, entry, observation, and reflection identities; remote-only graph state is migrated in place rather than rebuilt from local files.
 
 ## ClojureScript boundary
 
-Application behavior is implemented in ClojureScript and compiled ahead of time to ESM JavaScript. `extension.js` is the minimal Pi factory shim and `mcp.js` is the executable stdio MCP boundary. The committed `dist/adam.js` and `dist/adam-mcp.js` artifacts let Pi and Claude Code run without Java or a ClojureScript compiler.
+Application behavior is implemented in ClojureScript and compiled ahead of time to ESM JavaScript. `extension.js`, `mcp.js`, `hook.js`, and `worker.js` are minimal host boundaries. The committed extension, MCP, hook, and worker artifacts under `dist/` let Pi and Claude Code run without Java or a ClojureScript compiler.
 
 Pi, MCP, and Node objects remain JavaScript values at their boundaries. Lifecycle handlers and tools return native promises for asynchronous work. Storage and domain logic expose narrow ClojureScript protocols rather than depend directly on a host API.
 
@@ -111,7 +113,7 @@ When a session cwd is a non-Git workspace, the selected branch is searched in se
 
 The projection follows parent links from the recorded current leaf. Abandoned branches remain in the lossless replica but do not contribute current code-memory associations.
 
-The Pi file-evidence layer is implemented in `src/adam/knowledge/evidence.cljs`, `repository.cljs`, `index.cljs`, and `store.cljs`, with lifecycle composition in `src/adam/replica/register.cljs`. Claude scanning, source modeling, synchronization, and evidence adaptation live under `src/adam/sources/claude_code/`. Neo4j persists parent and subagent streams through `AdamTranscriptStream` checkpoints, keeps all entries owned by one source-scoped `AdamSession`, and records compact continuity with `LOGICAL_PARENT`. Both adapters converge on the same repository/file projection. Pi projection runs only after successful lossless mirroring; Claude lifecycle invocation remains deferred to the hook/worker stage.
+The Pi file-evidence layer is implemented in `src/adam/knowledge/evidence.cljs`, `repository.cljs`, `index.cljs`, and `store.cljs`, with lifecycle composition in `src/adam/replica/register.cljs`. Claude scanning, source modeling, synchronization, locator persistence, reconciliation, and evidence adaptation live under `src/adam/sources/claude_code/`. Neo4j persists parent and subagent streams through `AdamTranscriptStream` checkpoints, keeps all entries owned by one source-scoped `AdamSession`, and records compact continuity with `LOGICAL_PARENT`. Both adapters converge on the same repository/file projection, and each projection runs only after successful lossless mirroring.
 
 ## Query architecture
 
@@ -126,7 +128,9 @@ Both are explicit and read-only. Local mode retains Git/worktree discovery and r
 ## Failure isolation
 
 - Missing configuration disables Neo4j behavior without preventing Pi startup.
-- Neo4j outages leave local Pi work unaffected and are retried later.
+- Neo4j outages leave local Pi and Claude work unaffected and are retried later.
+- Claude hooks persist only bounded locators, never wait for Neo4j, and acknowledge notifications only after successful reconciliation.
+- One lease-owning Claude worker serializes graph writes; dead or incomplete leases are recovered safely.
 - Malformed JSONL is reported and never repaired automatically.
 - Immutable payload conflicts stop writes for the affected session only.
 - Repository discovery or file-evidence indexing failures are reported separately and never mark successful lossless replication unhealthy.
@@ -146,7 +150,7 @@ Agent tool in Pi and Claude Code:
 
 - `adam_file_context({ path, origin? })`
 
-The Claude Code plugin launches a read-only stdio MCP server from `mcp.js`. It shares query semantics and identity with Pi but does not ingest Claude transcripts in this stage.
+The Claude Code plugin launches the read-only stdio MCP server from `mcp.js` and bounded lifecycle hooks from `hook.js`. Hooks wake `worker.js`, which serializes transcript synchronization and file-evidence projection independently of Claude's interactive lifecycle. Retrieval shares query semantics and identity with Pi; ingestion still produces no observations or reflections.
 
 Environment:
 

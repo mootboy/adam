@@ -64,11 +64,16 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 
 ## Claude transcript ingestion
 
-These cases define the implemented 0.3 scanner, graph-storage, and file-evidence contract. Hook-triggered automatic reconciliation remains pending.
+These cases define the implemented 0.3 scanner, graph-storage, file-evidence, and lifecycle-reconciliation contract.
 
 | Case | Expected result |
 | --- | --- |
-| Hook supplies a Claude `transcript_path` | That stream is read as authoritative without scanning undocumented storage directories |
+| SessionStart, Stop, or SessionEnd supplies a Claude `transcript_path` | A bounded locator-only notification is atomically queued and the hook returns without waiting for Neo4j |
+| SubagentStop supplies `transcript_path`, `agent_transcript_path`, and `agent_id` | Parent and explicit child locators are retained under one source-scoped session without directory scanning |
+| Several hooks notify the same stream before processing | Notifications coalesce for one reconciliation and all are acknowledged only after success |
+| Two workers wake concurrently | One filesystem lease owner processes notifications; the other exits without duplicate writes |
+| Worker crashes while holding its lease | A later worker recovers a dead or old incomplete lease and resumes durable notifications |
+| Neo4j is unavailable after enqueue | Claude remains unblocked; the notification survives and retries with bounded backoff |
 | Parent transcript contains unknown or UUID-less records | Every complete physical record is preserved losslessly and UUID-less identity is deterministic within the stream |
 | Transcript ends with incomplete non-newline JSON | The tail remains uncommitted and is retried after a later append |
 | Transcript contains malformed completed JSON, duplicate UUIDs, or unresolved structural references | The stream is rejected without repairing the source |

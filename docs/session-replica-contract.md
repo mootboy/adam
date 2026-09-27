@@ -90,6 +90,12 @@ Normal synchronization seeks to the committed offset and uploads only appended e
 
 Transactions are bounded by encoded payload bytes, initially targeting approximately 4 MiB. Checkpoints advance only after a batch commits. Completion metadata includes entry count, log hash, log bytes, and largest entry bytes. Interrupted work is resumable and idempotent, and an incomplete prefix is never exposed as restorable.
 
+## Claude lifecycle reconciliation
+
+Claude `SessionStart`, `Stop`, `SubagentStop`, and `SessionEnd` hooks accept bounded host JSON and atomically persist only validated session, cwd, parent-transcript, child-transcript, agent, event, and timestamp locators under `${XDG_CONFIG_HOME:-~/.config}/adam/inbox/`. Hooks do not read transcripts or contact Neo4j and return after waking a detached worker.
+
+One filesystem lease serializes workers. Repeated notifications for the same session/stream locator coalesce; notifications are removed only after lossless stream synchronization and derived file-evidence handling succeed. Parent and explicitly supplied subagent locators are retained in an owner-only per-session manifest for complete subsequent rebuilds. Backend or source failures retain notifications and retry with exponential backoff. A dead worker PID or old incomplete lease can be recovered, while a concurrent live worker prevents duplicate processing.
+
 ## Fork lineage
 
 Pi's header `parentSession` path is retained as provenance but is not canonical identity. adam reads the referenced parent header with a bounded reader and derives the parent session URN from its Pi session ID.

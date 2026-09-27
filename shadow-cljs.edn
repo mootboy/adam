@@ -18,6 +18,24 @@
     {:entries [adam.mcp]
      :exports {start adam.mcp/start}}}}
 
+  :hook
+  {:target :esm
+   :output-dir "dist"
+   :js-options {:js-provider :import}
+   :modules
+   {:adam-hook
+    {:entries [adam.sources.claude-code.hook]
+     :exports {start adam.sources.claude-code.hook/start}}}}
+
+  :worker
+  {:target :esm
+   :output-dir "dist"
+   :js-options {:js-provider :import}
+   :modules
+   {:adam-worker
+    {:entries [adam.worker]
+     :exports {start adam.worker/start}}}}
+
   :test
   {:target :node-test
    :output-to "target/tests.cjs"

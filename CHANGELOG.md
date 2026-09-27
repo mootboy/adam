@@ -10,6 +10,7 @@ All notable changes to adam are documented here.
 - A bundled Claude skill for selective, provenance-aware file-memory retrieval.
 - Transactional, restart-safe migration from Pi-only graph identities to source-scoped session, entry, observation, and reflection identities.
 - Lossless Claude parent/subagent transcript scanning with stream checkpoints, compaction and parallel-request continuity, source-scoped graph persistence, and native Read/Edit/Write file evidence.
+- Non-blocking Claude lifecycle hooks, a durable locator-only notification inbox, retained parent/subagent locators, and a single-lease retrying reconciliation worker.
 
 ### Changed
 
