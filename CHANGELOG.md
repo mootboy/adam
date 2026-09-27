@@ -4,6 +4,16 @@ All notable changes to adam are documented here.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-09-28
+
+### Changed
+
+- `/adam:context` and `adam_file_context` now return active observations plus relevant reflections. Observations tombstoned by their producer stay projected with their provenance but are excluded inside the storage query, before ordering and limiting, so they no longer consume result slots; reflections remain retrievable when their supporting observations were dropped.
+
+### Fixed
+
+- The file-memory result bound now applies to the combined observation and reflection result. The previous query placed `ORDER BY` and `LIMIT` after a `UNION ALL`, which Neo4j 5 attaches to the last branch only, so observations were never limited and the tool's omission probe could not detect them.
+
 ## [0.3.2] - 2026-09-28
 
 ### Fixed
