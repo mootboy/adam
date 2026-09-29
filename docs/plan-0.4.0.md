@@ -148,7 +148,7 @@ Observation and reflection item validation initially follows Adam's existing `pi
 
 A reflection's `supportingObservationIds` and a drop event's `observationIds` refer only to memories from the same producer and source session. Cross-producer support, dropping, consolidation, and deduplication are not protocol v1 behavior.
 
-`sourceCheckpoint` records the physical source prefixes and selected context used by the producer. A single `coversUpToEntryId` is deliberately insufficient for Claude because physical append order, selected tree continuity, parallel request fragments, compaction ancestry, and subagent streams are distinct concerns.
+`sourceCheckpoint` records the physical source prefixes and selected context used by the producer. It is provenance supplied by the producer, not an Adam synchronization checkpoint: Adam validates its shape and cited stream identities but never compares its offsets or hashes with Adam's independently observed transcript checkpoints. The producer and Adam can inspect the same source at different moments, so such a comparison would create false conflicts. A single `coversUpToEntryId` is deliberately insufficient for Claude because physical append order, selected tree continuity, parallel request fragments, compaction ancestry, and subagent streams are distinct concerns.
 
 ### Replay and crash consistency
 
@@ -209,7 +209,7 @@ Create one protocol-v1 validator and normalizer. Inputs are:
 - sidecar event envelopes;
 - a thin Pi adapter that supplies known producer/source metadata and converts supported `om.*` custom entries into the same normalized event form.
 
-Adam does not claim that legacy Pi entries literally contain every sidecar envelope field. Values absent from the producer payload, such as the known Pi producer identity or recording locator, are supplied by the trusted structural adapter and remain distinguishable as adapter-derived provenance.
+Adam does not claim that legacy Pi entries literally contain every sidecar envelope field. Values absent from the producer payload, such as the known Pi producer identity or recording locator, are supplied by the trusted structural adapter and remain distinguishable as adapter-derived provenance. Because Pi custom entries have no protocol event ID, the adapter deterministically synthesizes `eventId` from the source-scoped Pi custom-entry identity. Re-reading or rebuilding the same session therefore produces the same event ID and participates in the same replay/conflict rules as a sidecar event.
 
 ### Aggregate session projection
 
@@ -241,7 +241,7 @@ urn:adam:observation:<user>:<sourceKind>:<sourceSessionId>:<producerId>:<memoryI
 urn:adam:reflection:<user>:<sourceKind>:<sourceSessionId>:<producerId>:<memoryId>
 ```
 
-URN components use canonical encoding rather than raw concatenation where delimiters can be ambiguous.
+Canonical encoding applies only to the new observation and reflection URNs shown above. Existing user, session, transcript-stream, and entry URNs do not change in 0.4.0; expanding this into another source-identity migration is explicitly out of scope.
 
 Before normal memory writes, a graph-native transaction migrates existing Pi observations and reflections using their persisted producer property. It updates identities, stored IDs, support relationships, tombstones, and dependent provenance without requiring local session files. The per-user migration marker advances only at the end of a completely successful transaction. Stale dependent identities force retry even if a marker claims completion. Live coverage must include remote-only memories, dropped observations, support links, file provenance, rollback, and idempotency.
 
@@ -255,7 +255,7 @@ Before normal memory writes, a graph-native transaction migrates existing Pi obs
 
 ### Notification spool
 
-Directory discovery alone is insufficient: Adam's final lifecycle hook may run before a producer commits its sidecar, leaving no later host event to trigger a scan. Protocol v1 therefore includes a durable, locator-only memory notification spool under Adam's XDG state root.
+Directory discovery alone is insufficient: Adam's final lifecycle hook may run before a producer commits its sidecar, leaving no later host event to trigger a scan. Protocol v1 therefore includes a durable, locator-only memory notification spool at `${XDG_STATE_HOME:-~/.local/state}/adam/memory-inbox/`.
 
 After a sidecar append, the producer atomically writes an owner-only notification containing only:
 
@@ -269,7 +269,12 @@ It contains no memory text, transcript content, credentials, or model output. No
 
 Writing the notification is the producer's only Adam-facing action and does not import or invoke Adam. Any later Adam entry point may drain it: Pi startup/lifecycle, the Claude reconciliation worker, or an explicit reconciliation command. A best-effort wake mechanism may reduce latency, but correctness depends on the durable spool, not process ordering. Reversed final-hook ordering must converge after the next Adam startup or explicit reconciliation without another producer append.
 
-This spool is a public file protocol, not reuse of Claude's private hook payload. The existing Claude inbox remains host-locator infrastructure and is not exposed as a producer API.
+This spool is a public file protocol, not reuse of Claude's private hook payload. Adam therefore drains two deliberately separate queues:
+
+- `${XDG_CONFIG_HOME:-~/.config}/adam/inbox/` retains the implemented 0.3 Claude lifecycle notifications that locate authoritative parent and subagent transcripts;
+- `${XDG_STATE_HOME:-~/.local/state}/adam/memory-inbox/` contains protocol-v1 producer notifications that locate authoritative memory sidecars.
+
+They have different schemas, authorities, coalescing keys, and acknowledgement conditions even if one worker lease eventually drains both. A transcript notification is acknowledged after host-source synchronization and evidence projection; a memory notification is acknowledged only after the named sidecar prefix is mirrored and included in an aggregate memory projection. The existing Claude inbox is not exposed as a producer API, and migrating its location is deferred.
 
 ### Worker behavior
 
@@ -310,7 +315,7 @@ Native `Read`, `Edit`, and `Write` activity may be cited. Bash commands, MCP cal
 
 ### Producer characterization before implementation
 
-Before choosing a model client or package shape, characterize and document:
+Before choosing a model client, package shape, hook schedule, or background-worker policy, characterize and document the following. Producer implementation does not begin until this evidence is reviewed; credentials, consent, or detached-process constraints may change the proposed lifecycle:
 
 - credentials and model-provider configuration;
 - whether generation can run detached after Claude exits;
@@ -349,14 +354,16 @@ The end-to-end proof is:
 
 ## Delivery sequence
 
-1. Characterize the reference Claude producer and record the non-blocking generation/privacy contract.
+The scope is one 0.4.0 milestone, not one implementation PR. Track each numbered increment with a repository issue and deliver it through one or more small, independently reviewable PRs. Intermediate PRs land on `main` without changing the released package version. Only the final release-preparation PR bumps the package and plugin versions to 0.4.0, finalizes the changelog, rebuilds all committed runtimes, and activates the protected-main tag/release pipeline.
+
+1. Characterize the reference Claude producer and record the non-blocking generation/privacy contract. Treat the result as a gate that may revise later producer scheduling.
 2. Commit `docs/memory-protocol-contract.md` with fixtures for valid events, replay, malformed complete records, incomplete tails, unresolved citations, tombstones, duplicate IDs, prefix changes, and source/producer mismatch.
 3. Implement lossless memory-stream scanning, raw-record storage, checkpoints, and live round-trip tests.
-4. Implement the graph-native producer-scoped identity migration.
+4. Implement the graph-native producer-scoped memory-identity migration without changing session, stream, or entry identities.
 5. Implement aggregate multi-producer projection and retrieval provenance.
-6. Implement the durable notification spool and host-neutral reconciliation service.
+6. Implement the distinct durable memory-notification spool and host-neutral reconciliation service.
 7. Build the reference producer and complete the cross-host tracer bullet.
-8. Release 0.4.0 through the protected-main flow, then cut over Pi and Claude installations to the same tagged artifact.
+8. Prepare and merge the sole 0.4.0 release PR through the protected-main flow, then cut over Pi and Claude installations to the same tagged artifact.
 
 ## 0.4.0 acceptance
 
