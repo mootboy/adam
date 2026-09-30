@@ -149,6 +149,32 @@
              (is false (.-stack error))
              (done)))))))
 
+(deftest migrates-producer-scoped-memory-identities-in-one-transaction
+  (async done
+    (let [{:keys [driver calls closes]} (recording-driver)
+          replica (neo4j/replica-with-driver driver "neo4j")
+          user-id "urn:adam:user:user-1"]
+      (-> (knowledge-store/memory-identity-version! replica user-id)
+          (.then
+           (fn [version]
+             (is (nil? version))
+             (knowledge-store/migrate-memory-identities! replica user-id 1)))
+          (.then
+           (fn [_]
+             (let [queries (mapv :query (filter :query @calls))]
+               (is (re-find #"memoryIdentityVersion" (first queries)))
+               (is (some #(re-find #"elementId\(memory\) = input.elementId" %)
+                         queries))
+               (is (some #(re-find #"memory.producer = input.producer" %) queries))
+               (is (re-find #"u.memoryIdentityVersion = \$targetVersion"
+                            (last queries)))
+               (is (= 2 @closes))
+               (done))))
+          (.catch
+           (fn [error]
+             (is false (.-stack error))
+             (done)))))))
+
 (deftest writes-claude-stream-entry-structure-and-checkpoint-in-one-transaction
   (async done
     (let [{:keys [driver calls]} (transactional-driver)
@@ -420,6 +446,8 @@
                (is (= true (.-dropped observation)))
                (is (= "memory-1" (.-recordingEntryId observation)))
                (is (= "bbbbbbbbbbbb" (.-memoryId reflection)))
+               (is (re-find #"producer: input.producer" (:query reflection-call))
+                   "reflection support remains producer-local")
                (is (= 1 @closes))
                (done))))
           (.catch

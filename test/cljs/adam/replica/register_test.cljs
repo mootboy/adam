@@ -9,13 +9,22 @@
 
 (defrecord LifecycleReplica [checkpoint initializations writes completions closes
                              identity-version identity-migrations
-                             evidence-schemas projections migration-version rebuild-completions]
+                             evidence-schemas projections migration-version rebuild-completions
+                             memory-identity-version memory-identity-migrations]
   store/SessionIdentityMigrationStore
   (session-identity-version! [_ _user-id]
     (js/Promise.resolve @identity-version))
   (migrate-pi-session-identities! [_ user-id target-version]
     (swap! identity-migrations conj [user-id target-version])
     (reset! identity-version target-version)
+    (js/Promise.resolve nil))
+
+  knowledge-store/MemoryIdentityMigrationStore
+  (memory-identity-version! [_ _user-id]
+    (js/Promise.resolve @memory-identity-version))
+  (migrate-memory-identities! [_ user-id target-version]
+    (swap! memory-identity-migrations conj [user-id target-version])
+    (reset! memory-identity-version target-version)
     (js/Promise.resolve nil))
 
   knowledge-store/FileEvidenceStore
@@ -103,7 +112,8 @@
           path (join directory "session.jsonl")
           replica (->LifecycleReplica (atom nil) (atom []) (atom []) (atom []) (atom 0)
                                       (atom 0) (atom [])
-                                      (atom 0) (atom []) (atom 3) (atom []))
+                                      (atom 0) (atom []) (atom 3) (atom [])
+                                      (atom 1) (atom []))
           attempts (atom 0)
           {:keys [pi]} (fake-pi)
           notifications (atom [])
@@ -161,9 +171,12 @@
           closes (atom 0)
           identity-version (atom 0)
           identity-migrations (atom [])
+          memory-identity-version (atom 0)
+          memory-identity-migrations (atom [])
           replica (->LifecycleReplica checkpoint initializations writes completions closes
                                       identity-version identity-migrations
-                                      (atom 0) (atom []) (atom 3) (atom []))
+                                      (atom 0) (atom []) (atom 3) (atom [])
+                                      memory-identity-version memory-identity-migrations)
           {:keys [pi commands tools events]} (fake-pi)
           notifications (atom [])
           clock (atom -10)
@@ -203,6 +216,10 @@
              (is (= 2 (count @initializations)))
              (is (= [["urn:adam:user:user-1" 2]] @identity-migrations))
              (is (= 2 @identity-version))
+             (is (= [["urn:adam:user:user-1" 1]] @memory-identity-migrations))
+             (is (= 1 @memory-identity-version))
+             (is (= "migrated"
+                    (:memory-identity-migration-status ((:status runtime)))))
              (is (= "urn:adam:session:user-1:pi:session-1"
                     (get-in (first @writes) [:session :id])))
              (is (= "urn:adam:identity:git-email:hash"
@@ -226,6 +243,10 @@
              ((aget (get @commands "adam:status") "handler") "" ctx)
              (is (re-find #"connected" (first (last @notifications))))
              (is (re-find #"Last timing: turn-end" (first (last @notifications))))
+             (is (re-find #"Memory identity schema: v1"
+                          (first (last @notifications))))
+             (is (re-find #"Memory identity migration: migrated"
+                          (first (last @notifications))))
              (is (re-find #"l\*\*\*@example.com" (first (last @notifications))))
              (is (not (re-find #"linus@example.com" (first (last @notifications)))))
              ((:shutdown! runtime))))
@@ -250,7 +271,8 @@
           rebuild-completions (atom [])
           replica (->LifecycleReplica (atom nil) (atom []) (atom []) (atom []) (atom 0)
                                       (atom 2) (atom [])
-                                      schemas projections migration-version rebuild-completions)
+                                      schemas projections migration-version rebuild-completions
+                                      (atom 1) (atom []))
           {:keys [pi]} (fake-pi)
           repository {:id "urn:adam:repository:user-1:hash"
                       :user-id "urn:adam:user:user-1"
@@ -315,7 +337,8 @@
           path (join directory "session.jsonl")
           replica (->LifecycleReplica (atom nil) (atom []) (atom []) (atom []) (atom 0)
                                       (atom 2) (atom [])
-                                      (atom 0) (atom :fail) (atom 3) (atom []))
+                                      (atom 0) (atom :fail) (atom 3) (atom [])
+                                      (atom 1) (atom []))
           {:keys [pi]} (fake-pi)
           runtime (register/register!
                    pi

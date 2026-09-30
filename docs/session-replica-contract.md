@@ -57,18 +57,13 @@ urn:adam:entry:<userUuid>:<sourceKind>:<sourceSessionId>:<entryId>
 urn:adam:repository:git:<sha256(normalizedOrigin)>
 urn:adam:repository:local:<userUuid>:<sha256(resolvedRoot)>
 urn:adam:file:<sha256(repositoryId + NUL + normalizedRelativePath)>
-urn:adam:observation:<userUuid>:pi:<piSessionId>:<memoryId>
-urn:adam:reflection:<userUuid>:pi:<piSessionId>:<memoryId>
-```
-
-The approved 0.4 memory protocol migrates only observation/reflection identity to include immutable producer identity:
-
-```text
 urn:adam:observation:<userUuid>:<sourceKind>:<sourceSessionId>:<producerId>:<memoryId>
 urn:adam:reflection:<userUuid>:<sourceKind>:<sourceSessionId>:<producerId>:<memoryId>
 ```
 
-Session and entry IDs are user- and source-scoped so copied files or equal host-local IDs cannot create accidental cross-user or cross-host ownership and lineage. Before normal synchronization, the versioned 0.3 migration transactionally rewrites earlier unqualified Pi session, entry, observation, reflection, parent, and denormalized session identities while preserving raw payloads, relationships, checkpoints, and remote-only sessions. Its user marker is written last in the same transaction, and effective-version checks reject stale dependent identity even when a newer marker exists. Repositories with equivalent credential-free SSH or HTTPS origins converge across users, sessions, machines, checkouts, and registered worktrees. Originless repositories retain isolated user-scoped local identities and cannot be queried by origin.
+Observation and reflection segments use canonical percent encoding. Producer identity is immutable and prevents equal producer-local memory IDs in one source session from colliding.
+
+Session and entry IDs are user- and source-scoped so copied files or equal host-local IDs cannot create accidental cross-user or cross-host ownership and lineage. Before normal synchronization, the versioned 0.3 migration transactionally rewrites earlier unqualified Pi session, entry, observation, reflection, parent, and denormalized session identities while preserving raw payloads, relationships, checkpoints, and remote-only sessions. The 0.4 graph-native memory migration then rewrites only observation and reflection IDs from persisted source and producer metadata. Its per-user marker advances last in the same write transaction; exact effective-identity checks force repair when a stale memory contradicts an advanced marker. Sessions, entries, tombstones, support links, file provenance, and remote-only memories remain in place. Repositories with equivalent credential-free SSH or HTTPS origins converge across users, sessions, machines, checkouts, and registered worktrees. Originless repositories retain isolated user-scoped local identities and cannot be queried by origin.
 
 ## JSONL validation
 

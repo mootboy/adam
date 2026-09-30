@@ -1,5 +1,6 @@
 (ns adam.replica.register
   (:require [adam.knowledge.index :as knowledge-index]
+            [adam.knowledge.memory-migration :as memory-migration]
             [adam.knowledge.migration :as knowledge-migration]
             [adam.knowledge.repository :as knowledge-repository]
             [adam.knowledge.store :as knowledge-store]
@@ -48,6 +49,8 @@
                 file-evidence-repository file-evidence-status file-evidence-error
                 memory-adapter-status session-identity-version
                 session-identity-migration-status session-identity-migration-error
+                memory-identity-version memory-identity-migration-status
+                memory-identity-migration-error
                 code-memory-version code-memory-rebuild-status
                 code-memory-rebuild-error last-timing]} runtime-state]
     (string/join
@@ -87,6 +90,12 @@
                 (str "Session identity migration: " session-identity-migration-status))
               (when session-identity-migration-error
                 (str "Session identity migration error: " session-identity-migration-error))
+              (when memory-identity-version
+                (str "Memory identity schema: v" memory-identity-version))
+              (when memory-identity-migration-status
+                (str "Memory identity migration: " memory-identity-migration-status))
+              (when memory-identity-migration-error
+                (str "Memory identity migration error: " memory-identity-migration-error))
               (when code-memory-version
                 (str "Code memory schema: v" code-memory-version))
               (when code-memory-rebuild-status
@@ -193,6 +202,29 @@
                                                    :session-identity-migration-status
                                                    (name (:status result))
                                                    :session-identity-migration-error nil)
+                                            (if (satisfies?
+                                                 knowledge-store/MemoryIdentityMigrationStore
+                                                 replica)
+                                              (-> (memory-migration/migrate-if-needed!
+                                                   {:store replica :user-id user-id})
+                                                  (.catch
+                                                   (fn [error]
+                                                     (swap! runtime-state assoc
+                                                            :memory-identity-migration-status
+                                                            "waiting to retry"
+                                                            :memory-identity-migration-error
+                                                            (error-message error))
+                                                     (js/Promise.reject error))))
+                                              (js/Promise.resolve
+                                               {:status :unsupported
+                                                :version nil}))))
+                                         (.then
+                                          (fn [result]
+                                            (swap! runtime-state assoc
+                                                   :memory-identity-version (:version result)
+                                                   :memory-identity-migration-status
+                                                   (name (:status result))
+                                                   :memory-identity-migration-error nil)
                                             replica)))))))))
                          (.catch
                           (fn [error]

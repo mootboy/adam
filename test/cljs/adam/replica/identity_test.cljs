@@ -13,10 +13,20 @@
          (identity/entry-urn "user-1" "session-1" "entry-1")))
   (is (= "urn:adam:entry:user-1:claude-code:session-1:entry-1"
          (identity/entry-urn "user-1" "claude-code" "session-1" "entry-1")))
-  (is (= "urn:adam:observation:user-1:pi:session-1:memory-1"
-         (identity/observation-urn "user-1" "pi" "session-1" "memory-1")))
-  (is (= "urn:adam:reflection:user-1:pi:session-1:memory-1"
-         (identity/reflection-urn "user-1" "pi" "session-1" "memory-1")))
+  (is (= "urn:adam:observation:user-1:pi:session-1:pi-observational-memory:memory-1"
+         (identity/observation-urn
+          "user-1" "pi" "session-1" "pi-observational-memory" "memory-1")))
+  (is (= "urn:adam:reflection:user-1:pi:session-1:pi-observational-memory:memory-1"
+         (identity/reflection-urn
+          "user-1" "pi" "session-1" "pi-observational-memory" "memory-1")))
+  (is (= "urn:adam:observation:user-1:claude-code:session%3A1:org.example.memory:abc123def456"
+         (identity/observation-urn
+          "user-1" "claude-code" "session:1" "org.example.memory" "abc123def456")))
+  (is (not=
+       (identity/observation-urn
+        "user-1" "claude-code" "session-1" "producer-a" "abc123def456")
+       (identity/observation-urn
+        "user-1" "claude-code" "session-1" "producer-b" "abc123def456")))
   (let [stream-id (identity/memory-stream-urn
                    "user-1" "claude-code" "session-1" "org.example.memory")]
     (is (= "urn:adam:memory-stream:user-1:claude-code:session-1:org.example.memory"
