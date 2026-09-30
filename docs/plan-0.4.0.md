@@ -244,7 +244,7 @@ urn:adam:reflection:<user>:<sourceKind>:<sourceSessionId>:<producerId>:<memoryId
 
 Canonical encoding applies only to the new observation and reflection URNs shown above. Existing user, session, transcript-stream, and entry URNs do not change in 0.4.0; expanding this into another source-identity migration is explicitly out of scope.
 
-Before normal memory writes, a graph-native transaction migrates existing Pi observations and reflections using their persisted producer property. It updates identities, stored IDs, support relationships, tombstones, and dependent provenance without requiring local session files. The per-user migration marker advances only at the end of a completely successful transaction. Stale dependent identities force retry even if a marker claims completion. Live coverage must include remote-only memories, dropped observations, support links, file provenance, rollback, and idempotency.
+Before normal memory writes, an implemented graph-native transaction migrates existing Pi observations and reflections using their persisted producer property. It updates only memory identities and required source/producer metadata; support relationships, tombstones, dependent provenance, sessions, and entries remain in place without requiring local session files. The per-user migration marker advances only at the end of a completely successful transaction. Exact effective-identity checks force retry even if a marker claims completion. Live coverage includes remote-only memories, dropped observations, support links, file provenance, rollback, and idempotency.
 
 ### Retrieval and status
 
@@ -363,7 +363,7 @@ The scope is one 0.4.0 milestone, not one implementation PR. Track each numbered
 1. **Complete:** characterize the reference Claude producer and record the non-blocking generation/privacy contract in [`claude-memory-producer-contract.md`](claude-memory-producer-contract.md).
 2. **Complete:** commit [`memory-protocol-contract.md`](memory-protocol-contract.md) with fixtures for valid events, replay and JCS edge canonicalization, malformed complete records, incomplete tails, source-checkpoint regressions, unresolved citations, tombstones, duplicate IDs, prefix changes, and source/producer mismatch.
 3. **Complete:** implement lossless memory-stream scanning, raw-record storage, checkpoints, and live round-trip tests.
-4. Implement the graph-native producer-scoped memory-identity migration without changing session, stream, or entry identities.
+4. **Complete:** implement the graph-native producer-scoped memory-identity migration without changing session, stream, or entry identities.
 5. Implement aggregate multi-producer projection and retrieval provenance.
 6. Implement the distinct durable memory-notification spool and host-neutral reconciliation service.
 7. Build the reference producer and complete the cross-host tracer bullet.

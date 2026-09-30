@@ -1,6 +1,7 @@
 (ns adam.replica.neo4j
   (:require [adam.knowledge.store :as knowledge-store]
             [adam.memory.store :as memory-store]
+            [adam.replica.identity :as identity]
             [adam.replica.store :as store]
             [adam.sources.claude-code.store :as claude-store]
             [clojure.string :as string]
@@ -162,10 +163,13 @@
 
 (def ^:private user-urn-prefix "urn:adam:user:")
 
-(defn- source-identity-prefixes [user-id]
+(defn- user-uuid-from-id [user-id]
   (when-not (and (string? user-id) (string/starts-with? user-id user-urn-prefix))
     (throw (js/Error. "invalid Adam user identity")))
-  (let [user-uuid (subs user-id (count user-urn-prefix))]
+  (subs user-id (count user-urn-prefix)))
+
+(defn- source-identity-prefixes [user-id]
+  (let [user-uuid (user-uuid-from-id user-id)]
     {:session-prefix (str "urn:adam:session:" user-uuid ":pi:")
      :entry-prefix (str "urn:adam:entry:" user-uuid ":pi:")
      :observation-prefix (str "urn:adam:observation:" user-uuid ":pi:")
@@ -887,7 +891,8 @@
              MERGE (s)-[:HAS_MEMORY]->(reflection)
              WITH reflection, input
              UNWIND input.supportingObservationIds AS observationId
-             MATCH (observation:AdamObservation {memoryId: observationId})
+             MATCH (observation:AdamObservation {memoryId: observationId,
+                                                   producer: input.producer})
                    <-[:HAS_MEMORY]-(:AdamSession {id: $sessionId})
              MERGE (reflection)-[:SUPPORTED_BY]->(observation)"
             #js {:sessionId (:session-id projection)
@@ -938,6 +943,76 @@
           vec)
      :dropped? (= true (aget memory "dropped"))}))
 
+(defn- migration-memory-row [user-uuid value]
+  (let [kind (keyword (str (aget value "kind")))
+        source-kind (aget value "sourceKind")
+        source-session-id (aget value "sourceSessionId")
+        producer (aget value "producer")
+        memory-id (aget value "memoryId")
+        valid? (every? #(and (string? %) (not (string/blank? %)))
+                       [source-kind source-session-id producer memory-id])
+        expected-id
+        (when valid?
+          (case kind
+            :observation
+            (identity/observation-urn user-uuid source-kind source-session-id
+                                      producer memory-id)
+            :reflection
+            (identity/reflection-urn user-uuid source-kind source-session-id
+                                     producer memory-id)
+            nil))]
+    {:element-id (str (aget value "elementId"))
+     :kind kind
+     :current-id (when (some? (aget value "id")) (str (aget value "id")))
+     :source-kind source-kind
+     :source-session-id source-session-id
+     :producer producer
+     :memory-id memory-id
+     :expected-id expected-id
+     :valid? (and valid? (some? expected-id))}))
+
+(defn- migration-memory-rows [user-id values]
+  (let [user-uuid (user-uuid-from-id user-id)]
+    (mapv #(migration-memory-row user-uuid %) (array-seq (or values #js [])))))
+
+(defn- memory-identities-current? [rows]
+  (every? #(and (:valid? %)
+                (= (:current-id %) (:expected-id %)))
+          rows))
+
+(defn- assert-migratable-memory-rows! [rows]
+  (when-let [invalid (first (remove :valid? rows))]
+    (throw (ex-info "cannot producer-scope memory without complete provenance"
+                    {:type :invalid-memory-identity
+                     :element-id (:element-id invalid)})))
+  (let [identities (map (juxt :kind :expected-id) rows)]
+    (when-not (= (count identities) (count (set identities)))
+      (throw (ex-info "producer-scoped memory identities would collide"
+                      {:type :memory-identity-collision}))))
+  rows)
+
+(defn- memory-migration-properties [row]
+  #js {:elementId (:element-id row)
+       :id (:expected-id row)
+       :sourceKind (:source-kind row)
+       :sourceSessionId (:source-session-id row)
+       :producer (:producer row)})
+
+(def ^:private memory-identity-state-query
+  "MATCH (u:AdamUser {id: $userId})
+   OPTIONAL MATCH (u)-[:OWNS]->(s:AdamSession)-[:HAS_MEMORY]->(memory)
+   WHERE memory:AdamObservation OR memory:AdamReflection
+   RETURN u.memoryIdentityVersion AS version,
+          collect(CASE WHEN memory IS NULL THEN null ELSE {
+            elementId: elementId(memory),
+            kind: CASE WHEN memory:AdamObservation THEN 'observation' ELSE 'reflection' END,
+            id: memory.id,
+            sourceKind: coalesce(memory.sourceKind, s.sourceKind),
+            sourceSessionId: coalesce(memory.sourceSessionId, s.sourceSessionId),
+            producer: memory.producer,
+            memoryId: memory.memoryId
+          } END) AS memories")
+
 (defrecord Neo4jSessionReplica [driver database]
   store/SessionIdentityMigrationStore
   (session-identity-version! [_ user-id]
@@ -977,16 +1052,24 @@
                   OR EXISTS {
                     MATCH (u)-[:OWNS]->(s:AdamSession)-[:HAS_MEMORY]->(memory:AdamObservation)
                     WHERE coalesce(s.sourceKind, 'pi') = 'pi'
-                      AND (memory.id <>
-                            $observationPrefix + s.piSessionId + ':' + memory.memoryId
+                      AND ((memory.id <>
+                              $observationPrefix + s.piSessionId + ':' + memory.memoryId
+                            AND memory.id <>
+                              $observationPrefix + s.piSessionId + ':' +
+                              coalesce(memory.producer, 'pi-observational-memory') + ':' +
+                              memory.memoryId)
                        OR coalesce(memory.sourceKind, '') <> 'pi'
                        OR coalesce(memory.sourceSessionId, '') <> s.piSessionId)
                   }
                   OR EXISTS {
                     MATCH (u)-[:OWNS]->(s:AdamSession)-[:HAS_MEMORY]->(memory:AdamReflection)
                     WHERE coalesce(s.sourceKind, 'pi') = 'pi'
-                      AND (memory.id <>
-                            $reflectionPrefix + s.piSessionId + ':' + memory.memoryId
+                      AND ((memory.id <>
+                              $reflectionPrefix + s.piSessionId + ':' + memory.memoryId
+                            AND memory.id <>
+                              $reflectionPrefix + s.piSessionId + ':' +
+                              coalesce(memory.producer, 'pi-observational-memory') + ':' +
+                              memory.memoryId)
                        OR coalesce(memory.sourceKind, '') <> 'pi'
                        OR coalesce(memory.sourceSessionId, '') <> s.piSessionId)
                   }
@@ -1089,6 +1172,61 @@
                       SET u.sessionIdentityVersion = $targetVersion,
                           u.sessionIdentityMigratedAt = datetime()"
                      #js {:userId user-id :targetVersion target-version}))))))))))
+
+  knowledge-store/MemoryIdentityMigrationStore
+  (memory-identity-version! [_ user-id]
+    (with-session!
+      driver
+      database
+      (fn [session]
+        (-> (.run session memory-identity-state-query #js {:userId user-id})
+            (.then
+             (fn [result]
+               (when-let [record (first (records result))]
+                 (let [version (record-get record "version")
+                       rows (migration-memory-rows
+                             user-id (record-get record "memories"))]
+                   (if (memory-identities-current? rows)
+                     (when (some? version) (neo-integer version))
+                     0)))))))))
+
+  (migrate-memory-identities! [_ user-id target-version]
+    (with-session!
+      driver
+      database
+      (fn [^js session]
+        (.executeWrite
+         session
+         (fn [tx]
+           (-> (.run tx memory-identity-state-query #js {:userId user-id})
+               (.then
+                (fn [result]
+                  (let [record (first (records result))
+                        rows (assert-migratable-memory-rows!
+                              (migration-memory-rows
+                               user-id
+                               (when record (record-get record "memories"))))]
+                    (.run
+                     tx
+                     "UNWIND $memories AS input
+                      MATCH (:AdamUser {id: $userId})-[:OWNS]->(:AdamSession)-[:HAS_MEMORY]->(memory)
+                      WHERE elementId(memory) = input.elementId
+                        AND (memory:AdamObservation OR memory:AdamReflection)
+                      SET memory.id = input.id,
+                          memory.sourceKind = input.sourceKind,
+                          memory.sourceSessionId = input.sourceSessionId,
+                          memory.producer = input.producer"
+                     #js {:userId user-id
+                          :memories
+                          (clj->js (mapv memory-migration-properties rows))}))))
+               (.then
+                (fn [_]
+                  (.run
+                   tx
+                   "MATCH (u:AdamUser {id: $userId})
+                    SET u.memoryIdentityVersion = $targetVersion,
+                        u.memoryIdentityMigratedAt = datetime()"
+                   #js {:userId user-id :targetVersion target-version})))))))))
 
   claude-store/ClaudeTranscriptStore
   (ensure-claude-schema! [_]

@@ -1,6 +1,8 @@
 (ns adam.sources.claude-code.runtime
-  (:require [adam.knowledge.repository :as repository]
+  (:require [adam.knowledge.memory-migration :as memory-migration]
+            [adam.knowledge.repository :as repository]
             [adam.knowledge.runtime :as knowledge-runtime]
+            [adam.knowledge.store :as knowledge-store]
             [adam.replica.identity :as identity]
             [adam.replica.migration :as migration]
             [adam.replica.neo4j :as neo4j]
@@ -42,6 +44,14 @@
                                           replica-store/SessionIdentityMigrationStore
                                           store)
                                        (migration/migrate-if-needed!
+                                        {:store store :user-id user-id})
+                                       (js/Promise.resolve nil))))
+                                  (.then
+                                   (fn [_]
+                                     (if (satisfies?
+                                          knowledge-store/MemoryIdentityMigrationStore
+                                          store)
+                                       (memory-migration/migrate-if-needed!
                                         {:store store :user-id user-id})
                                        (js/Promise.resolve nil))))
                                   (.then

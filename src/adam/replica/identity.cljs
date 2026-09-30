@@ -38,13 +38,28 @@
    (str "urn:adam:entry:" user-uuid ":" source-kind ":" source-session-id
         ":" entry-id)))
 
-(defn observation-urn [user-uuid source-kind source-session-id memory-id]
-  (str "urn:adam:observation:" user-uuid ":" source-kind ":" source-session-id
-       ":" memory-id))
+(defn- canonical-urn-segment [value]
+  (-> (js/encodeURIComponent (str value))
+      (string/replace
+       #"[!'()*]"
+       (fn [character]
+         (str "%" (-> (.charCodeAt character 0)
+                       (.toString 16)
+                       string/upper-case))))))
 
-(defn reflection-urn [user-uuid source-kind source-session-id memory-id]
-  (str "urn:adam:reflection:" user-uuid ":" source-kind ":" source-session-id
-       ":" memory-id))
+(defn observation-urn
+  [user-uuid source-kind source-session-id producer-id memory-id]
+  (str "urn:adam:observation:"
+       (string/join ":" (map canonical-urn-segment
+                             [user-uuid source-kind source-session-id
+                              producer-id memory-id]))))
+
+(defn reflection-urn
+  [user-uuid source-kind source-session-id producer-id memory-id]
+  (str "urn:adam:reflection:"
+       (string/join ":" (map canonical-urn-segment
+                             [user-uuid source-kind source-session-id
+                              producer-id memory-id]))))
 
 (defn git-email-identity [email]
   (when (string? email)

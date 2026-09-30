@@ -43,7 +43,7 @@ Persisted logs are the integration protocol. Pi producers may embed supported en
 
 ```text
 host-neutral core
-  ├── identity, source-scoped graph migration, and Neo4j configuration
+  ├── identity, source/producer-scoped graph migrations, and Neo4j configuration
   ├── session replica and knowledge projection
   └── file-memory query and bounded tool adapter
        ├── Pi extension boundary
@@ -55,7 +55,7 @@ host-neutral core
             └── serialized retrying reconciliation worker
 ```
 
-The session replica and derived knowledge projection are separate failure domains. A projection or adapter failure must never invalidate a successfully mirrored session. Before either runs, a transactionally atomic migration source-scopes existing Pi session, entry, observation, and reflection identities; remote-only graph state is migrated in place rather than rebuilt from local files.
+The session replica and derived knowledge projection are separate failure domains. A projection or adapter failure must never invalidate a successfully mirrored session. Before either runs, transactionally atomic graph-native migrations first source-scope existing Pi session and entry identities, then producer-scope observation and reflection identities. Remote-only graph state is migrated in place rather than rebuilt from local files, and version markers advance only after their complete transactions succeed.
 
 ## ClojureScript boundary
 
@@ -99,7 +99,7 @@ Unknown custom entries are ignored. Malformed or unsupported producer entries pr
 
 The first adapter is implemented structurally in `src/adam/sources/pi_observational_memory/` without importing the producer package. It preserves first-valid-record semantics, dropped-observation tombstones, source-entry provenance, and reflection support links. The resulting `AdamObservation` and `AdamReflection` nodes are rebuilt transactionally with the file-evidence projection; adapter diagnostics expose only producer, entry ID, and reason.
 
-Adam 0.4 protocol v1 additionally defines producer/session sidecars with `observations.recorded`, `reflections.recorded`, `observations.dropped`, and content-free `source.covered` events. The contract fixes safe paths, lossless JSONL framing, RFC 8785 replay identity, stream-qualified citations, and source-coverage recovery. Adam now scans an explicitly located sidecar, preserves every complete physical record in checkpointed `AdamMemoryStream`/`AdamMemoryRecord` storage, defers partial tails, stops only on physical conflicts, and continues raw mirroring after immutable-event conflicts while semantic advancement remains blocked. Producer-scoped memory migration, aggregate projection, notification-driven discovery, and the reference producer remain staged.
+Adam 0.4 protocol v1 additionally defines producer/session sidecars with `observations.recorded`, `reflections.recorded`, `observations.dropped`, and content-free `source.covered` events. The contract fixes safe paths, lossless JSONL framing, RFC 8785 replay identity, stream-qualified citations, and source-coverage recovery. Adam now scans an explicitly located sidecar, preserves every complete physical record in checkpointed `AdamMemoryStream`/`AdamMemoryRecord` storage, defers partial tails, stops only on physical conflicts, and continues raw mirroring after immutable-event conflicts while semantic advancement remains blocked. Observation and reflection identities now include canonical producer scope through a restart-safe graph migration. Aggregate projection, notification-driven discovery, and the reference producer remain staged.
 
 ## Repository and file evidence
 

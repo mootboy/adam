@@ -147,10 +147,10 @@
            (stored {:type "custom" :id "memory-1" :parentId "result-1"})
            (stored {:type "custom" :id "memory-2" :parentId "memory-1"})]
           :memory-projection memory-projection})]
-    (is (= "urn:adam:observation:00000000-0000-4000-8000-000000000001:pi:session-1:aaaaaaaaaaaa"
+    (is (= "urn:adam:observation:00000000-0000-4000-8000-000000000001:pi:session-1:pi-observational-memory:aaaaaaaaaaaa"
            (get-in projection [:observations 0 :id])))
     (is (= [(get-in projection [:files 0 :id])]
            (get-in projection [:observations 0 :file-ids])))
-    (is (= "urn:adam:reflection:00000000-0000-4000-8000-000000000001:pi:session-1:bbbbbbbbbbbb"
+    (is (= "urn:adam:reflection:00000000-0000-4000-8000-000000000001:pi:session-1:pi-observational-memory:bbbbbbbbbbbb"
            (get-in projection [:reflections 0 :id])))
     (is (= (:diagnostics memory-projection) (:memory-diagnostics projection)))))

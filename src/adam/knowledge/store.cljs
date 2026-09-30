@@ -11,3 +11,7 @@
 (defprotocol CodeMemoryMigrationStore
   (code-memory-version! [store user-id])
   (complete-code-memory-rebuild! [store user-id version]))
+
+(defprotocol MemoryIdentityMigrationStore
+  (memory-identity-version! [store user-id])
+  (migrate-memory-identities! [store user-id target-version]))

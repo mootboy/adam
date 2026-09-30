@@ -65,6 +65,20 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 | Marker is current but a dependent node is stale | Effective version is outdated and migration runs again |
 | User graph is already current | Migration is an idempotent no-op |
 
+## Producer-scoped memory identity migration
+
+| Case | Expected result |
+| --- | --- |
+| Existing Pi observation or reflection uses a producerless source-scoped URN | Its ID gains canonical producer scope before normal memory projection |
+| Two producers use the same memory ID in one source session | Their observation/reflection URNs remain distinct |
+| Graph contains remote-only memories | IDs migrate from persisted source and producer metadata without local JSONL (**live**) |
+| Observation is dropped or linked through `ABOUT` and `SOURCED_FROM` | Tombstone and provenance remain unchanged after migration (**live**) |
+| Reflection has `SUPPORTED_BY` links | Existing producer-local support relationships remain unchanged (**live**) |
+| Marker claims current but a memory ID or producer field is stale | Effective version is outdated and migration runs again (**live**) |
+| A memory lacks required migration provenance or the transaction fails | No memory ID or marker advances, and migration remains retryable (**live**) |
+| User memory graph is already current | Migration is an idempotent no-op (**live**) |
+| Session, transcript-stream, and entry identities are inspected before and after | They remain unchanged |
+
 ## Memory protocol v1
 
 These protocol cases run deterministically in the normal suite. Lossless scanning and checkpoint planning are implemented without Neo4j; raw graph round-trip and resume behavior are covered by opt-in live validation. Aggregate memory projection remains staged.

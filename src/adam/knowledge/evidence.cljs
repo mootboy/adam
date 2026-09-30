@@ -216,7 +216,7 @@
               (assoc memory
                      :id (identity/observation-urn
                           user-uuid identity/pi-source-kind pi-session-id
-                          (:memory-id memory))
+                          (:producer memory) (:memory-id memory))
                      :source-kind identity/pi-source-kind
                      :source-session-id pi-session-id
                      :file-ids file-ids)))
@@ -225,7 +225,7 @@
             (assoc memory
                    :id (identity/reflection-urn
                         user-uuid identity/pi-source-kind pi-session-id
-                        (:memory-id memory))
+                        (:producer memory) (:memory-id memory))
                    :source-kind identity/pi-source-kind
                    :source-session-id pi-session-id))]
       {:extractor-version extractor-version

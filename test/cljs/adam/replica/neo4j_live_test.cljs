@@ -1,6 +1,7 @@
 (ns adam.replica.neo4j-live-test
   (:require [adam.knowledge.evidence :as evidence]
             [adam.knowledge.index :as knowledge-index]
+            [adam.knowledge.memory-migration :as memory-migration]
             [adam.knowledge.store :as knowledge-store]
             [adam.knowledge.surfaces :as knowledge-surfaces]
             [adam.knowledge.tool :as knowledge-tool]
@@ -283,8 +284,18 @@
               new-parent-id (identity/session-urn user-uuid "parent")
               new-child-id (identity/session-urn user-uuid "child")
               new-entry-id (identity/entry-urn user-uuid "child" "entry")
-              new-observation-id (identity/observation-urn user-uuid "pi" "child" "aaaaaaaaaaaa")
-              new-reflection-id (identity/reflection-urn user-uuid "pi" "child" "bbbbbbbbbbbb")
+              source-observation-id
+              (str "urn:adam:observation:" user-uuid ":pi:child:aaaaaaaaaaaa")
+              source-reflection-id
+              (str "urn:adam:reflection:" user-uuid ":pi:child:bbbbbbbbbbbb")
+              source-invalid-observation-id
+              (str "urn:adam:observation:" user-uuid ":pi:child:cccccccccccc")
+              new-observation-id
+              (identity/observation-urn
+               user-uuid "pi" "child" "pi-observational-memory" "aaaaaaaaaaaa")
+              new-reflection-id
+              (identity/reflection-urn
+               user-uuid "pi" "child" "pi-observational-memory" "bbbbbbbbbbbb")
               repository-id (str "urn:adam:repository:local:" user-uuid ":legacy")
               file-id (str "urn:adam:file:" user-uuid)
               auth-token (.basic (.-auth neo4j) username password)
@@ -311,12 +322,14 @@
                  (.run
                   query-session
                   "MATCH (u:AdamUser {id: $userId})
-                   SET u.sessionIdentityVersion = 2
+                   SET u.sessionIdentityVersion = 2,
+                       u.memoryIdentityVersion = 1
                    CREATE (parent:AdamSession {id: $oldParentId, piSessionId: 'parent', headerJson: '{\"type\":\"session\",\"id\":\"parent\"}'})
                    CREATE (child:AdamSession {id: $oldChildId, piSessionId: 'child', parentPiSessionId: 'parent', parentSessionId: $oldParentId, headerJson: '{\"type\":\"session\",\"id\":\"child\"}', sourceFile: '/remote-only/child.jsonl'})
                    CREATE (entry:AdamEntry {id: $oldEntryId, sessionId: $oldChildId, entryId: 'entry', parentId: null, parentUrn: null, ordinal: 0, rawJson: $rawJson, payloadHash: 'payload-hash', payloadBytes: 47})
-                   CREATE (observation:AdamObservation {id: $oldObservationId, memoryId: 'aaaaaaaaaaaa', content: 'legacy observation'})
-                   CREATE (reflection:AdamReflection {id: $oldReflectionId, memoryId: 'bbbbbbbbbbbb', content: 'legacy reflection'})
+                   CREATE (observation:AdamObservation {id: $oldObservationId, memoryId: 'aaaaaaaaaaaa', producer: 'pi-observational-memory', content: 'legacy observation', dropped: true})
+                   CREATE (reflection:AdamReflection {id: $oldReflectionId, memoryId: 'bbbbbbbbbbbb', producer: 'pi-observational-memory', content: 'legacy reflection'})
+                   CREATE (invalidObservation:AdamObservation {id: $oldInvalidObservationId, memoryId: 'cccccccccccc', content: 'invalid until repaired'})
                    CREATE (repository:AdamRepository {id: $repositoryId})
                    CREATE (file:AdamCodeFile {id: $fileId, repositoryId: $repositoryId, relativePath: 'src/a.cljs'})
                    CREATE (u)-[:OWNS]->(parent)
@@ -326,6 +339,7 @@
                    CREATE (child)-[:CURRENT_LEAF]->(entry)
                    CREATE (child)-[:HAS_MEMORY]->(observation)
                    CREATE (child)-[:HAS_MEMORY]->(reflection)
+                   CREATE (child)-[:HAS_MEMORY]->(invalidObservation)
                    CREATE (entry)-[:TOUCHES]->(file)
                    CREATE (observation)-[:SOURCED_FROM]->(entry)
                    CREATE (observation)-[:ABOUT]->(file)
@@ -336,6 +350,7 @@
                        :oldEntryId (str "urn:adam:entry:" user-uuid ":child:entry")
                        :oldObservationId (str "urn:adam:observation:" user-uuid ":child:aaaaaaaaaaaa")
                        :oldReflectionId (str "urn:adam:reflection:" user-uuid ":child:bbbbbbbbbbbb")
+                       :oldInvalidObservationId (str "urn:adam:observation:" user-uuid ":child:cccccccccccc")
                        :repositoryId repository-id
                        :fileId file-id
                        :rawJson "{\"type\":\"message\",\"id\":\"entry\"}"})))
@@ -367,8 +382,8 @@
                   #js {:childId new-child-id
                        :parentId new-parent-id
                        :entryId new-entry-id
-                       :observationId new-observation-id
-                       :reflectionId new-reflection-id
+                       :observationId source-observation-id
+                       :reflectionId source-reflection-id
                        :fileId file-id})))
               (.then
                (fn [^js result]
@@ -384,7 +399,85 @@
                    (is (= new-child-id (aget entry "sessionId")))
                    (is (= "{\"type\":\"message\",\"id\":\"entry\"}"
                           (aget entry "rawJson")))
-                   (is (= "pi" (aget observation "sourceKind"))))
+                   (is (= "pi" (aget observation "sourceKind")))
+                   (is (= true (aget observation "dropped"))))
+                 (knowledge-store/memory-identity-version! replica user-id)))
+              (.then
+               (fn [version]
+                 (is (= 0 version)
+                     "a stale marker cannot hide producerless memory identities")
+                 (-> (memory-migration/migrate-if-needed!
+                      {:store replica :user-id user-id})
+                     (.then
+                      (fn [_]
+                        (throw (js/Error. "expected invalid migration to fail"))))
+                     (.catch
+                      (fn [error]
+                        (is (= :invalid-memory-identity (:type (ex-data error))))
+                        :migration-rejected)))))
+              (.then
+               (fn [result]
+                 (is (= :migration-rejected result))
+                 (.run
+                  query-session
+                  "MATCH (u:AdamUser {id: $userId})
+                   MATCH (:AdamSession {id: $childId})-[:HAS_MEMORY]->(observation:AdamObservation {id: $observationId})
+                   MATCH (:AdamSession {id: $childId})-[:HAS_MEMORY]->(invalid:AdamObservation {id: $invalidObservationId})
+                   RETURN u.memoryIdentityVersion AS version, observation, invalid"
+                  #js {:userId user-id
+                       :childId new-child-id
+                       :observationId source-observation-id
+                       :invalidObservationId source-invalid-observation-id})))
+              (.then
+               (fn [^js result]
+                 (let [^js record (first (array-seq (.-records result)))]
+                   (is (= 1 (.toNumber (.get record "version")))
+                       "a rejected migration retains the prior marker")
+                   (is (some? (.get record "observation"))
+                       "a rejected migration retains valid legacy identities"))
+                 (.run
+                  query-session
+                  "MATCH (:AdamSession {id: $childId})-[:HAS_MEMORY]->(invalid:AdamObservation {id: $invalidObservationId})
+                   SET invalid.producer = 'pi-observational-memory'"
+                  #js {:childId new-child-id
+                       :invalidObservationId source-invalid-observation-id})))
+              (.then
+               (fn [_]
+                 (memory-migration/migrate-if-needed!
+                  {:store replica :user-id user-id})))
+              (.then
+               (fn [result]
+                 (is (= {:status :migrated :version 1} result))
+                 (.run
+                  query-session
+                  "MATCH (child:AdamSession {id: $childId})-[:HAS_MEMORY]->(observation:AdamObservation {id: $observationId})
+                   MATCH (child)-[:HAS_MEMORY]->(reflection:AdamReflection {id: $reflectionId})
+                   MATCH (child)-[:HAS_ENTRY]->(entry:AdamEntry {id: $entryId})
+                   MATCH (entry)-[:TOUCHES]->(file:AdamCodeFile {id: $fileId})
+                   MATCH (observation)-[:SOURCED_FROM]->(entry)
+                   MATCH (observation)-[:ABOUT]->(file)
+                   MATCH (reflection)-[:SUPPORTED_BY]->(observation)
+                   RETURN child, entry, observation, reflection"
+                  #js {:childId new-child-id
+                       :entryId new-entry-id
+                       :observationId new-observation-id
+                       :reflectionId new-reflection-id
+                       :fileId file-id})))
+              (.then
+               (fn [^js result]
+                 (let [records (array-seq (.-records result))
+                       ^js record (first records)
+                       observation (.-properties (.get record "observation"))
+                       reflection (.-properties (.get record "reflection"))]
+                   (is (= 1 (count records)))
+                   (is (= true (aget observation "dropped")))
+                   (is (= "pi-observational-memory" (aget observation "producer")))
+                   (is (= "pi-observational-memory" (aget reflection "producer"))))
+                 (memory-migration/migrate-if-needed!
+                  {:store replica :user-id user-id})))
+              (.then
+               (fn [result]
+                 (is (= {:status :current :version 1} result))
                  (replica-migration/migrate-if-needed!
                   {:store replica :user-id user-id})))
               (.then
