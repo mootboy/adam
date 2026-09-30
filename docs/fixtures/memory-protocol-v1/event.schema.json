@@ -1,0 +1,220 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mootboy/adam/blob/main/docs/fixtures/memory-protocol-v1/event.schema.json",
+  "title": "Adam memory protocol v1 event",
+  "oneOf": [
+    { "$ref": "#/$defs/observationsRecorded" },
+    { "$ref": "#/$defs/reflectionsRecorded" },
+    { "$ref": "#/$defs/observationsDropped" },
+    { "$ref": "#/$defs/sourceCovered" }
+  ],
+  "$defs": {
+    "protocolId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,127})$"
+    },
+    "stableId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,255})$"
+    },
+    "hostId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "memoryId": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{12}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "maxLength": 64,
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "producer": {
+      "type": "object",
+      "required": ["id", "version"],
+      "properties": {
+        "id": { "$ref": "#/$defs/protocolId" },
+        "version": { "type": "string", "minLength": 1, "maxLength": 128 }
+      },
+      "additionalProperties": true
+    },
+    "source": {
+      "type": "object",
+      "required": ["kind", "sessionId"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/protocolId" },
+        "sessionId": { "$ref": "#/$defs/hostId" }
+      },
+      "additionalProperties": true
+    },
+    "streamCheckpoint": {
+      "type": "object",
+      "required": ["streamId", "committedBytes", "prefixSha256", "selectedLeafEntryId"],
+      "properties": {
+        "streamId": { "$ref": "#/$defs/hostId" },
+        "committedBytes": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "prefixSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "selectedLeafEntryId": {
+          "oneOf": [
+            { "$ref": "#/$defs/hostId" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "sourceCheckpoint": {
+      "type": "object",
+      "required": ["streams"],
+      "properties": {
+        "streams": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/streamCheckpoint" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "sourceEntry": {
+      "type": "object",
+      "required": ["streamId", "entryId"],
+      "properties": {
+        "streamId": { "$ref": "#/$defs/hostId" },
+        "entryId": { "$ref": "#/$defs/hostId" }
+      },
+      "additionalProperties": true
+    },
+    "observation": {
+      "type": "object",
+      "required": ["id", "content", "timestamp", "relevance", "sourceEntries", "tokenCount"],
+      "properties": {
+        "id": { "$ref": "#/$defs/memoryId" },
+        "content": { "type": "string", "minLength": 1, "maxLength": 65536 },
+        "timestamp": { "$ref": "#/$defs/timestamp" },
+        "relevance": { "enum": ["low", "medium", "high", "critical"] },
+        "sourceEntries": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/sourceEntry" }
+        },
+        "tokenCount": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+      },
+      "additionalProperties": true
+    },
+    "reflection": {
+      "type": "object",
+      "required": ["id", "content", "supportingObservationIds", "tokenCount"],
+      "properties": {
+        "id": { "$ref": "#/$defs/memoryId" },
+        "content": { "type": "string", "minLength": 1, "maxLength": 65536, "pattern": "^[^\\r\\n]+$" },
+        "supportingObservationIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/memoryId" }
+        },
+        "tokenCount": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+      },
+      "additionalProperties": true
+    },
+    "envelope": {
+      "type": "object",
+      "required": ["protocolVersion", "eventId", "kind", "producer", "source", "sourceCheckpoint", "recordedAt"],
+      "properties": {
+        "protocolVersion": { "const": 1 },
+        "eventId": { "$ref": "#/$defs/stableId" },
+        "kind": {
+          "enum": ["observations.recorded", "reflections.recorded", "observations.dropped", "source.covered"]
+        },
+        "producer": { "$ref": "#/$defs/producer" },
+        "source": { "$ref": "#/$defs/source" },
+        "sourceCheckpoint": { "$ref": "#/$defs/sourceCheckpoint" },
+        "recordedAt": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": true
+    },
+    "observationsRecorded": {
+      "allOf": [
+        { "$ref": "#/$defs/envelope" },
+        {
+          "required": ["observations"],
+          "properties": {
+            "kind": { "const": "observations.recorded" },
+            "observations": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 256,
+              "items": { "$ref": "#/$defs/observation" }
+            }
+          },
+          "not": { "anyOf": [{ "required": ["reflections"] }, { "required": ["observationIds"] }] }
+        }
+      ]
+    },
+    "reflectionsRecorded": {
+      "allOf": [
+        { "$ref": "#/$defs/envelope" },
+        {
+          "required": ["reflections"],
+          "properties": {
+            "kind": { "const": "reflections.recorded" },
+            "reflections": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 256,
+              "items": { "$ref": "#/$defs/reflection" }
+            }
+          },
+          "not": { "anyOf": [{ "required": ["observations"] }, { "required": ["observationIds"] }] }
+        }
+      ]
+    },
+    "observationsDropped": {
+      "allOf": [
+        { "$ref": "#/$defs/envelope" },
+        {
+          "required": ["observationIds"],
+          "properties": {
+            "kind": { "const": "observations.dropped" },
+            "observationIds": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 256,
+              "uniqueItems": true,
+              "items": { "$ref": "#/$defs/memoryId" }
+            }
+          },
+          "not": { "anyOf": [{ "required": ["observations"] }, { "required": ["reflections"] }] }
+        }
+      ]
+    },
+    "sourceCovered": {
+      "allOf": [
+        { "$ref": "#/$defs/envelope" },
+        {
+          "properties": { "kind": { "const": "source.covered" } },
+          "not": {
+            "anyOf": [
+              { "required": ["observations"] },
+              { "required": ["reflections"] },
+              { "required": ["observationIds"] }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "protocolVersion": 1,
+  "schema": "event.schema.json",
+  "locator": {
+    "sourceKind": "claude-code",
+    "sourceSessionId": "session-123",
+    "producerId": "org.example.claude-memory"
+  },
+  "cases": [
+    {
+      "id": "valid-events",
+      "file": "valid-events.jsonl",
+      "expected": { "completeRecords": 4, "acceptedEvents": 4, "diagnostic": null }
+    },
+    {
+      "id": "identical-replay",
+      "file": "identical-replay.jsonl",
+      "expected": { "completeRecords": 2, "acceptedEvents": 1, "diagnostic": "idempotent-replay", "canonicalPayloadSha256": ["80f73422ca3b6877749e249674920e820a420832f7bc3d0e0a15eb6de7ebf16d", "80f73422ca3b6877749e249674920e820a420832f7bc3d0e0a15eb6de7ebf16d"] }
+    },
+    {
+      "id": "conflicting-event-id",
+      "file": "conflicting-event-id.jsonl",
+      "expected": { "completeRecords": 2, "acceptedEvents": 1, "diagnostic": "immutable-event-conflict", "canonicalPayloadSha256": ["eaee228fca4bc36211a461b3b4c9a417664ff8128b157b1cf8cd2eb706d13015", "c257f8e2201c42f127828ab7465be75a4d2ccbaf999c8675023ae92d0fb20ad9"] }
+    },
+    {
+      "id": "malformed-complete-record",
+      "file": "malformed-complete-record.jsonl",
+      "expected": { "completeRecords": 1, "acceptedEvents": 0, "diagnostic": "malformed-json" }
+    },
+    {
+      "id": "incomplete-tail",
+      "file": "incomplete-tail.jsonl",
+      "expected": { "completeRecords": 1, "acceptedEvents": 1, "incompleteTail": true }
+    },
+    {
+      "id": "unresolved-citations",
+      "file": "unresolved-citations.jsonl",
+      "expected": { "completeRecords": 2, "acceptedEvents": 2, "diagnostic": "unresolved-reference" }
+    },
+    {
+      "id": "tombstone-before-definition",
+      "file": "tombstone-before-definition.jsonl",
+      "expected": { "completeRecords": 2, "acceptedEvents": 2, "observationDropped": true }
+    },
+    {
+      "id": "conflicting-memory-id",
+      "file": "conflicting-memory-id.jsonl",
+      "expected": { "completeRecords": 2, "acceptedEvents": 2, "diagnostic": "immutable-memory-conflict", "winningDefinitionOrdinal": 0 }
+    },
+    {
+      "id": "prefix-mutation",
+      "file": "prefix-original.jsonl",
+      "comparisonFile": "prefix-mutated.jsonl",
+      "expected": { "diagnostic": "committed-prefix-mismatch" }
+    },
+    {
+      "id": "prefix-shrinkage",
+      "file": "prefix-original.jsonl",
+      "comparisonFile": "prefix-shrunk.jsonl",
+      "expected": { "diagnostic": "checkpoint-out-of-range" }
+    },
+    {
+      "id": "source-mismatch",
+      "file": "source-mismatch.jsonl",
+      "expected": { "completeRecords": 1, "acceptedEvents": 0, "diagnostic": "source-mismatch" }
+    },
+    {
+      "id": "producer-mismatch",
+      "file": "producer-mismatch.jsonl",
+      "expected": { "completeRecords": 1, "acceptedEvents": 0, "diagnostic": "producer-mismatch" }
+    }
+  ]
+}

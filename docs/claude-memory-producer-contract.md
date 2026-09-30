@@ -91,14 +91,9 @@ Crash rules are:
 - after a complete durable append but before local acknowledgement: folding the sidecar finds the committed event, so retry does not generate a second logical result;
 - after sidecar commit but before Adam notification: the producer rewrites the idempotent locator-only notification without rewriting the event.
 
-Protocol v1 must make event identity and immutable-payload comparison deterministic for those retries.
+Protocol v1 makes event identity and immutable-payload comparison deterministic through RFC 8785 canonical JSON and SHA-256.
 
-A model may validly decline to emit memory for a covered source range. The three event kinds currently proposed for protocol v1 cannot commit that outcome, and a disposable producer checkpoint cannot advance beyond sidecar authority. The step-2 protocol contract must therefore choose one of two explicit semantics before implementation:
-
-1. add a content-free coverage event such as `source.covered`, carrying the committed stream-qualified `sourceCheckpoint`; or
-2. accept model re-generation after a crash and bound the repeated cost through the retry ceiling.
-
-Until that choice is made, a no-memory outcome does not advance authoritative coverage.
+A model may validly decline to emit memory for a covered source range. Protocol v1 commits that successful no-memory result as a content-free `source.covered` event carrying only the stream-qualified `sourceCheckpoint`. Folding the sidecar therefore avoids paying again after a post-append crash without inventing an observation. Model/provider failures and cancelled generation do not commit coverage.
 
 ## Scheduling
 
@@ -117,7 +112,7 @@ The initial reference policy is source-progress based rather than wall-clock bas
 - reflections become eligible after approximately 20,000 newly covered source tokens and run only after committed observations exist;
 - tests may lower thresholds to complete the tracer bullet deterministically.
 
-Thresholds are producer configuration, not memory-protocol fields. A model may return no durable memory, but authoritative advancement for that outcome is deliberately left to the step-2 protocol decision in [Source progress and replay](#source-progress-and-replay); the producer must not invent an observation.
+Thresholds are producer configuration, not memory-protocol fields. A model may return no durable memory; the producer advances authoritative coverage with `source.covered` rather than inventing an observation.
 
 ## Model and cost controls
 
@@ -157,4 +152,4 @@ Users remain responsible for whether the configured provider may receive reposit
 - Adam must not require producer model credentials.
 - Adam's durable memory notification spool closes the final-hook ordering race; it does not schedule model generation.
 - Parent and subagent citations require stream-qualified source references.
-- The reference producer can use the Claude CLI for an explicitly enabled tracer bullet without importing Adam, but the step-2 contract must settle no-memory coverage and credential/subscription defaults before implementation.
+- The reference producer can use the Claude CLI for an explicitly enabled tracer bullet without importing Adam; explicit provider credentials remain the default unless applicable subscription terms are confirmed to permit inherited-login background use.

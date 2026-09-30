@@ -4,6 +4,10 @@ All notable changes to adam are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- A normative producer-neutral memory protocol v1 contract with content-free source coverage, deterministic replay/conflict rules, stream-qualified provenance, and executable JSONL conformance fixtures for the staged Adam 0.4 implementation.
+
 ## [0.3.3] - 2026-09-28
 
 ### Changed

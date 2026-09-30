@@ -65,6 +65,26 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 | Marker is current but a dependent node is stale | Effective version is outdated and migration runs again |
 | User graph is already current | Migration is an idempotent no-op |
 
+## Memory protocol v1
+
+These contract/fixture cases are deterministic and precede production sidecar ingestion.
+
+| Case | Expected result |
+| --- | --- |
+| Producer writes each supported v1 event | Observation, reflection, drop, and content-free coverage envelopes satisfy the common bounded schema |
+| Model successfully emits no memory | `source.covered` durably advances producer coverage without creating a memory |
+| Same event ID repeats with RFC 8785-equivalent payload | Raw records are retained and semantic effect applies once |
+| Same event ID repeats with changed canonical payload | The memory stream reports immutable-event conflict and stops semantic advancement |
+| Completed line is malformed JSON | Exact raw record is retained with a diagnostic and no semantic effect |
+| File ends in a non-LF tail | Tail is deferred and excluded from the memory-stream checkpoint |
+| Observation cites an entry not yet mirrored | Memory is retained with unresolved provenance and repaired after source reconciliation |
+| Reflection supports an unknown observation | Reflection is retained with unresolved support and repaired after producer reconciliation |
+| Tombstone precedes an observation definition | Later observation is retained as dropped |
+| Memory ID receives incompatible definitions | First valid definition wins and later definition is diagnosed |
+| Sidecar shrinks or committed prefix changes | Only that memory stream conflicts; other source/producer work continues |
+| Event source or producer differs from sidecar locator | Raw record is retained, identity mismatch is diagnosed, and it has no semantic effect |
+| Protocol fixtures run in the normal suite | Contract conformance needs no Neo4j, model, or host transcript |
+
 ## Claude transcript ingestion
 
 These cases define the implemented 0.3 scanner, graph-storage, file-evidence, and lifecycle-reconciliation contract.

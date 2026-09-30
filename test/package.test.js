@@ -139,6 +139,9 @@ test("the release tarball is complete and runs without source compilation", asyn
       "LICENSE",
       "docs/architecture.md",
       "docs/session-replica-contract.md",
+      "docs/memory-protocol-contract.md",
+      "docs/fixtures/memory-protocol-v1/manifest.json",
+      "docs/fixtures/memory-protocol-v1/event.schema.json",
       "docs/acceptance-matrix.md",
     ]) {
       assert.equal(await exists(path.join(packageRoot, relativePath)), true, `${relativePath} must be packaged`);
