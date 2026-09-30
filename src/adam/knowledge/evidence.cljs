@@ -5,6 +5,8 @@
             ["node:path" :as node-path]))
 
 (def extractor-version 3)
+(def pi-implicit-stream "main")
+(def ^:private max-memory-diagnostics 100)
 (def ^:private supported-file-tools #{"read" "edit" "write"})
 
 (defn- sha256 [value]
@@ -165,10 +167,36 @@
         distinct
         vec)))
 
+(defn- unresolved-reference-diagnostics [available observations reflections]
+  (let [observation-keys (set (map (juxt :producer :memory-id) observations))
+        source-diagnostics
+        (for [observation observations
+              source-entry (:source-entries observation)
+              :when (not (contains? available
+                                    [(:stream-id source-entry) (:entry-id source-entry)]))]
+          {:producer (:producer observation)
+           :memory-id (:memory-id observation)
+           :stream-id (:stream-id source-entry)
+           :entry-id (:entry-id source-entry)
+           :reason :unresolved-reference})
+        support-diagnostics
+        (for [reflection reflections
+              observation-id (:supporting-observation-ids reflection)
+              :when (not (contains? observation-keys
+                                    [(:producer reflection) observation-id]))]
+          {:producer (:producer reflection)
+           :memory-id (:memory-id reflection)
+           :observation-id observation-id
+           :reason :unresolved-reference})]
+    (vec (concat source-diagnostics support-diagnostics))))
+
 (defn extract-projection
-  [{:keys [user-uuid pi-session-id session-id cwd repository entries memory-projection]
+  [{:keys [user-uuid pi-session-id session-id source-kind source-session-id
+           cwd repository entries memory-projection]
     :as input}]
-  (let [selected (selected-entries entries
+  (let [source-kind (or source-kind identity/pi-source-kind)
+        source-session-id (or source-session-id pi-session-id)
+        selected (selected-entries entries
                                    (if (contains? input :current-leaf-id)
                                      (:current-leaf-id input)
                                      ::unspecified))
@@ -179,6 +207,7 @@
         (fn [entry-id resolved]
           (let [{:keys [file worktree]} resolved
                 evidence (cond-> {:entry-id entry-id
+                                  :stream-id pi-implicit-stream
                                   :file-id (:id file)
                                   :commit (:commit worktree)
                                   :dirty? (= true (:dirty? worktree))}
@@ -204,8 +233,11 @@
             (add-evidence! (:entry-id stored) resolved)))))
     (let [project-observation
           (fn [memory]
-            (let [file-ids
-                  (->> (:source-entry-ids memory)
+            (let [citation-entry-ids
+                  (or (seq (:source-entry-ids memory))
+                      (map :entry-id (:source-entries memory)))
+                  file-ids
+                  (->> citation-entry-ids
                        (mapcat (fn [entry-id]
                                  (keep (fn [[[evidence-entry-id file-id] _]]
                                          (when (= entry-id evidence-entry-id) file-id))
@@ -215,19 +247,29 @@
                        vec)]
               (assoc memory
                      :id (identity/observation-urn
-                          user-uuid identity/pi-source-kind pi-session-id
+                          user-uuid source-kind source-session-id
                           (:producer memory) (:memory-id memory))
-                     :source-kind identity/pi-source-kind
-                     :source-session-id pi-session-id
+                     :source-kind source-kind
+                     :source-session-id source-session-id
+                     :source-entries
+                     (or (:source-entries memory)
+                         (mapv (fn [entry-id]
+                                 {:stream-id pi-implicit-stream :entry-id entry-id})
+                               (:source-entry-ids memory)))
                      :file-ids file-ids)))
           project-reflection
           (fn [memory]
             (assoc memory
                    :id (identity/reflection-urn
-                        user-uuid identity/pi-source-kind pi-session-id
+                        user-uuid source-kind source-session-id
                         (:producer memory) (:memory-id memory))
-                   :source-kind identity/pi-source-kind
-                   :source-session-id pi-session-id))]
+                   :source-kind source-kind
+                   :source-session-id source-session-id))
+          observations (mapv project-observation (:observations memory-projection))
+          reflections (mapv project-reflection (:reflections memory-projection))
+          available (set (map (fn [entry]
+                                [pi-implicit-stream (:entry-id entry)])
+                              entries))]
       {:extractor-version extractor-version
        :user-id (identity/user-urn user-uuid)
        :session-id session-id
@@ -237,6 +279,58 @@
        :entry-file-evidence (->> (vals @evidence-by-entry)
                                  (sort-by (juxt :entry-id :file-id))
                                  vec)
-       :observations (mapv project-observation (:observations memory-projection))
-       :reflections (mapv project-reflection (:reflections memory-projection))
-       :memory-diagnostics (vec (:diagnostics memory-projection))})))
+       :available-source-entries available
+       :observations observations
+       :reflections reflections
+       :memory-diagnostics
+       (->> (concat (:diagnostics memory-projection)
+                    (unresolved-reference-diagnostics available observations reflections))
+            (take max-memory-diagnostics) vec)})))
+
+(defn attach-memory-projection [projection user-uuid memory-projection]
+  (let [source-kind (:source-kind projection)
+        source-session-id (:source-session-id projection)
+        evidence-by-entry
+        (group-by (fn [item]
+                    [(or (:stream-id item) pi-implicit-stream) (:entry-id item)])
+                  (:entry-file-evidence projection))
+        project-observation
+        (fn [memory]
+          (let [source-entries
+                (or (:source-entries memory)
+                    (mapv (fn [entry-id]
+                            {:stream-id pi-implicit-stream :entry-id entry-id})
+                          (:source-entry-ids memory)))
+                file-ids (->> source-entries
+                              (mapcat #(get evidence-by-entry
+                                            [(:stream-id %) (:entry-id %)]))
+                              (map :file-id)
+                              distinct sort vec)]
+            (assoc memory
+                   :id (identity/observation-urn
+                        user-uuid source-kind source-session-id
+                        (:producer memory) (:memory-id memory))
+                   :source-kind source-kind
+                   :source-session-id source-session-id
+                   :source-entries source-entries
+                   :source-entry-ids (mapv :entry-id source-entries)
+                   :file-ids file-ids)))
+        project-reflection
+        (fn [memory]
+          (assoc memory
+                 :id (identity/reflection-urn
+                      user-uuid source-kind source-session-id
+                      (:producer memory) (:memory-id memory))
+                 :source-kind source-kind
+                 :source-session-id source-session-id))
+        observations (mapv project-observation (:observations memory-projection))
+        reflections (mapv project-reflection (:reflections memory-projection))
+        diagnostics
+        (->> (concat (:diagnostics memory-projection)
+                     (unresolved-reference-diagnostics
+                      (:available-source-entries projection) observations reflections))
+             (take max-memory-diagnostics) vec)]
+    (assoc projection
+           :observations observations
+           :reflections reflections
+           :memory-diagnostics diagnostics)))

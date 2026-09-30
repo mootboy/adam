@@ -58,12 +58,13 @@
         (fn [entry resolved]
           (let [{:keys [file worktree]} resolved
                 item (cond-> {:entry-id (:entry-id entry)
+                              :stream-id (:stream-id entry)
                               :file-id (:id file)
                               :commit (:commit worktree)
                               :dirty? (= true (:dirty? worktree))}
                        (:branch worktree) (assoc :branch (:branch worktree)))]
             (swap! files assoc (:id file) file)
-            (swap! evidence assoc [(:entry-id entry) (:id file)] item)))]
+            (swap! evidence assoc [(:stream-id entry) (:entry-id entry) (:id file)] item)))]
     (doseq [entry selected
             :let [value (js/JSON.parse (:raw-json entry))]
             block (message-blocks value)]
@@ -100,8 +101,10 @@
        :repository repository
        :files (->> (vals @files) (sort-by :relative-path) vec)
        :entry-file-evidence (->> (vals @evidence)
-                                 (sort-by (juxt :entry-id :file-id))
+                                 (sort-by (juxt :entry-id :stream-id :file-id))
                                  vec)
+       :available-source-entries
+       (set (map (juxt :stream-id :entry-id) (:entries scan)))
        :observations []
        :reflections []
        :memory-diagnostics (vec @diagnostics)})))

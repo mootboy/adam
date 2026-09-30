@@ -201,11 +201,26 @@ These cases define the implemented 0.3 scanner, graph-storage, file-evidence, an
 | Supported producer entry is malformed | Projection reports an isolated diagnostic; replica remains valid |
 | Unknown producer schema version is present | Adapter does not guess or corrupt the projection |
 
+## Aggregate memory projection
+
+| Case | Expected result |
+| --- | --- |
+| Embedded Pi memory and mirrored sidecar memory belong to one session | One transaction replaces their combined derived snapshot |
+| Two producers use the same memory ID | Producer-scoped observation/reflection nodes coexist (**live**) |
+| Tombstone precedes or follows an observation definition | Producer-local observation remains projected as dropped |
+| Reflection supports an observation with the same producer | `SUPPORTED_BY` is created; another producer's equal memory ID is not linked |
+| Citation names a source stream and entry | `SOURCED_FROM` resolves only the matching owned session entry and `ABOUT` follows its `TOUCHES` evidence (**live**) |
+| Citation target is not mirrored yet | Memory remains projected with an `unresolved-reference` diagnostic and links appear after a later rebuild |
+| Producer stream is physically or semantically conflicted | Its accepted retained prefix remains in the aggregate while later invalid/blocked records do not apply |
+| Sidecar disappears after successful mirroring | Retained `AdamMemoryRecord` data preserves the producer's derived contribution (**live**) |
+| Session has no resolvable repository | Aggregate memory remains projected without file links and can link after later repository reconciliation (**live**) |
+| Aggregate projection runs repeatedly | Results and relationships remain deterministic without duplicates |
+
 ## Query surfaces
 
 | Case | Expected result |
 | --- | --- |
-| Known repository-relative file has linked memories | Command and tool return IDs, content, session/source provenance, and observed revisions |
+| Known repository-relative file has linked memories | Command and tool return IDs, content, source-session, stream, producer, and observed-revision provenance |
 | Absolute or workspace-relative path identifies the same file | Query resolves to the same canonical result set |
 | Explicit normalized origin plus relative path is supplied without a checkout | Command and tool query the same canonical file directly |
 | Origin lookup is invoked from an unrelated repository | Current cwd does not constrain the result |

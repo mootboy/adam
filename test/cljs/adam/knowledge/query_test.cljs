@@ -115,17 +115,22 @@
 (deftest renders-memory-content-and-revision-provenance
   (is (= (str "adam context: src/a.cljs (2 results)\n"
               "[observation aaaaaaaaaaaa, dropped] A useful fact\n"
-              "  Session: session-1; sources: entry-1\n"
-              "  Observed: feature/a @ def4567 (dirty)\n"
+              "  Source: claude-code/session-1; producer: producer-a; entries: main:entry-1\n"
+              "  Observed: main · feature/a @ def4567 (dirty)\n"
               "[reflection bbbbbbbbbbbb] Durable decision\n"
-              "  Session: session-1; sources: entry-1")
+              "  Source: claude-code/session-1; producer: producer-a; entries: main:entry-1")
          (query/render-file-memory-results
           "adam context"
           "src/a.cljs"
           [{:kind :observation :memory-id "aaaaaaaaaaaa" :content "A useful\n fact"
-            :pi-session-id "session-1" :source-entry-ids ["entry-1"]
-            :source-contexts [{:commit "def4567890" :branch "feature/a" :dirty? true}]
+            :producer "producer-a" :source-kind "claude-code"
+            :source-session-id "session-1"
+            :source-entries [{:stream-id "main" :entry-id "entry-1"}]
+            :source-contexts [{:stream-id "main" :commit "def4567890"
+                               :branch "feature/a" :dirty? true}]
             :dropped? true}
            {:kind :reflection :memory-id "bbbbbbbbbbbb" :content "Durable decision"
-            :pi-session-id "session-1" :source-entry-ids ["entry-1"]
+            :producer "producer-a" :source-kind "claude-code"
+            :source-session-id "session-1"
+            :source-entries [{:stream-id "main" :entry-id "entry-1"}]
             :source-contexts []}]))))

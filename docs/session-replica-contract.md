@@ -132,7 +132,7 @@ Uniqueness constraints currently cover `id` on:
 - `AdamObservation`
 - `AdamReflection`
 
-The 0.4 lossless sidecar implementation adds unique `AdamMemoryStream` and `AdamMemoryRecord` nodes. A source session owns producer streams through `HAS_MEMORY_STREAM`; each stream owns its physical records through `HAS_RECORD`. Streams distinguish `physical` from `semantic` conflict class so only physical conflicts stop suffix writes. Record payloads, ordinals, byte offsets, hashes, semantic status, and bounded diagnostics remain available for later graph-native migration and aggregate projection.
+The 0.4 lossless sidecar implementation adds unique `AdamMemoryStream` and `AdamMemoryRecord` nodes. A source session owns producer streams through `HAS_MEMORY_STREAM`; each stream owns its physical records through `HAS_RECORD`. Streams distinguish `physical` from `semantic` conflict class so only physical conflicts stop suffix writes. Record payloads, ordinals, byte offsets, hashes, semantic status, and bounded diagnostics feed a deterministic aggregate projection across embedded Pi memory and every retained producer prefix.
 
 A composite range index on `AdamEntry(sessionId, entryId)` supports bounded per-session evidence and memory projection lookups without scanning the complete replicated entry graph.
 
@@ -213,7 +213,7 @@ Relationships:
 
 Queries enforce user isolation through `(AdamUser)-[:OWNS]->(AdamSession)-[:HAS_MEMORY]->(...)-[:ABOUT]->(AdamCodeFile)`, never through ownership of shared repository/file nodes.
 
-Derived knowledge may be deleted and rebuilt without affecting the lossless replica. A session's file evidence is always rebuilt as a whole from one projection; when a source stream's file no longer exists, the projection reads that stream's mirrored raw entries from the replica so its evidence survives the rebuild. The 0.2 code-memory schema/extractor version performs a restart-safe rebuild that replaces user-scoped repository/file identities, removes obsolete derived relationships and orphaned code nodes, and can resume idempotently after interruption.
+Derived knowledge may be deleted and rebuilt without affecting the lossless replica. A session's file evidence and producer-scoped memory are rebuilt as one aggregate snapshot; when a source transcript or memory sidecar no longer exists, projection reads its retained mirrored raw entries or accepted memory-record prefix so prior evidence and memory survive the rebuild. Repository-less sessions retain memory nodes and unresolved citation diagnostics while omitting file links; later source/repository reconciliation rebuilds those links. The 0.2 code-memory schema/extractor version performs a restart-safe rebuild that replaces user-scoped repository/file identities, removes obsolete derived relationships and orphaned code nodes, and can resume idempotently after interruption.
 
 ## Commands
 

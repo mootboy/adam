@@ -79,9 +79,11 @@
     (is (= (:id (evidence/resolve-repository-file with-worktree "/work/repo" "src/a.cljs"))
            (get-in projection [:files 0 :id])))
     (is (= [{:entry-id "assistant-1"
+             :stream-id "main"
              :file-id (get-in projection [:files 0 :id])
              :commit "feature-head" :branch "feature/a" :dirty? true}
             {:entry-id "result-1"
+             :stream-id "main"
              :file-id (get-in projection [:files 0 :id])
              :commit "feature-head" :branch "feature/a" :dirty? true}]
            (:entry-file-evidence projection)))))

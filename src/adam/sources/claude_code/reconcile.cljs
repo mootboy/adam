@@ -1,5 +1,6 @@
 (ns adam.sources.claude-code.reconcile
   (:require [adam.knowledge.evidence :as common-evidence]
+            [adam.knowledge.memory :as memory]
             [adam.knowledge.repository :as repository]
             [adam.knowledge.store :as knowledge-store]
             [adam.sources.claude-code.evidence :as evidence]
@@ -49,7 +50,7 @@
 (defn- reconcile-present!
   [{:keys [locator-options notification user-uuid store sync!
            resolve-repository! ensure-file-schema! index-file-evidence!
-           clear-file-evidence! read-stream-entries!]}]
+           read-stream-entries!]}]
   (let [locator (locators/record! locator-options notification)
         scan (scanner/scan-session
               {:session-id (:session-id locator)
@@ -61,8 +62,6 @@
                                 knowledge-store/ensure-file-evidence-schema!)
         index-file-evidence! (or index-file-evidence!
                                   knowledge-store/index-file-evidence!)
-        clear-file-evidence! (or clear-file-evidence!
-                                 knowledge-store/clear-file-evidence!)
         resolve-from-evidence!
         (fn [projection-scan]
           (reduce
@@ -89,21 +88,41 @@
                         (.then (fn [repository] [projection-scan repository])))))
                  (.then
                   (fn [[projection-scan repository]]
-                    (if-not repository
-                      (-> (clear-file-evidence!
-                           store
-                           (identity/session-urn user-uuid identity/claude-source-kind
-                                                 (:session-id locator))
-                           common-evidence/extractor-version)
+                    (let [session-id
+                          (identity/session-urn user-uuid identity/claude-source-kind
+                                                (:session-id locator))
+                          base-projection
+                          (if repository
+                            (evidence/extract-projection
+                             {:user-uuid user-uuid
+                              :repository repository
+                              :scan projection-scan})
+                            {:extractor-version common-evidence/extractor-version
+                             :adapter-version evidence/adapter-version
+                             :user-id (identity/user-urn user-uuid)
+                             :session-id session-id
+                             :source-kind identity/claude-source-kind
+                             :source-session-id (:session-id locator)
+                             :repository nil :files [] :entry-file-evidence []
+                             :available-source-entries
+                             (set (map (juxt :stream-id :entry-id)
+                                       (:entries projection-scan)))})]
+                      (-> (memory/load-session-projection!
+                           {:store store
+                            :user-id (identity/user-urn user-uuid)
+                            :session-id session-id
+                            :source-kind identity/claude-source-kind
+                            :source-session-id (:session-id locator)
+                            :embedded-projections []})
+                          (.then
+                           (fn [aggregate-memory]
+                             (common-evidence/attach-memory-projection
+                              base-projection user-uuid aggregate-memory)))
+                          (.then
+                           (fn [projection]
+                             (-> (ensure-file-schema! store)
+                                 (.then (fn [_]
+                                          (index-file-evidence! store projection))))))
                           (.then (fn [_]
-                                   (assoc sync-result :projection-status :cleared))))
-                      (let [projection (evidence/extract-projection
-                                        {:user-uuid user-uuid
-                                         :repository repository
-                                         :scan projection-scan})]
-                        (-> (ensure-file-schema! store)
-                            (.then (fn [_]
-                                     (index-file-evidence! store projection)))
-                            (.then (fn [_]
-                                     (assoc sync-result
-                                            :projection-status :projected)))))))))))))))
+                                   (assoc sync-result
+                                          :projection-status :projected))))))))))))))

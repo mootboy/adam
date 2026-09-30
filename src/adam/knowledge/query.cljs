@@ -87,9 +87,14 @@
      (fn [result]
        (let [state (when (and (= :observation (:kind result)) (:dropped? result))
                      ", dropped")
+             entries (or (seq (:source-entries result))
+                         (map (fn [entry-id]
+                                {:stream-id "main" :entry-id entry-id})
+                              (:source-entry-ids result)))
              contexts (->> (:source-contexts result)
-                           (map (fn [{:keys [branch commit dirty?]}]
-                                  (str (or branch "detached") " @ "
+                           (map (fn [{:keys [stream-id branch commit dirty?]}]
+                                  (str (when stream-id (str stream-id " · "))
+                                       (or branch "detached") " @ "
                                        (subs commit 0 (min 7 (count commit)))
                                        (when dirty? " (dirty)"))))
                            distinct
@@ -97,9 +102,13 @@
          (cond->
           [(str "[" (name (:kind result)) " " (:memory-id result) state "] "
                 (compact-content (:content result)))
-           (str "  Session: " (:pi-session-id result) "; sources: "
-                (if (seq (:source-entry-ids result))
-                  (string/join ", " (:source-entry-ids result))
+           (str "  Source: " (or (:source-kind result) "pi") "/"
+                (or (:source-session-id result) (:pi-session-id result))
+                "; producer: " (or (:producer result) "unknown")
+                "; entries: "
+                (if (seq entries)
+                  (string/join ", "
+                               (map #(str (:stream-id %) ":" (:entry-id %)) entries))
                   "none"))]
            (seq contexts) (conj (str "  Observed: " (string/join ", " contexts))))))
      results))))
