@@ -8,11 +8,21 @@
 (def ^:private chunk-bytes (* 64 1024))
 (def ^:private max-record-bytes (* 1024 1024))
 
+(defn failure-class [reason]
+  (cond
+    (contains? #{:unsafe-path :unsafe-permissions :record-too-large :invalid-utf8}
+               reason)
+    :terminal
+
+    (= :concurrent-change reason) :transient
+    :else :unknown))
+
 (defn- sidecar-error [path line-number message reason]
   (let [location (if line-number (str path ":" line-number) path)]
     (doto (ex-info (str location ": " message)
                    {:type :memory-sidecar-error
                     :reason reason
+                    :failure-class (failure-class reason)
                     :path path
                     :line-number line-number})
       (aset "name" "MemorySidecarError"))))
@@ -70,6 +80,7 @@
         event-hashes (atom {})
         accepted-source-checkpoint (atom nil)
         semantic-conflict (atom nil)
+        physical-conflict (atom nil)
         apply-semantics!
         (fn [record]
           (if-not (= :accepted (:semantic-status record))
@@ -110,44 +121,55 @@
         process-line!
         (fn [bytes]
           (swap! line-number inc)
-          (.update prefix-hash bytes)
-          (.update prefix-hash "\n")
-          (let [next-offset (+ @byte-offset (.-length bytes) 1)
-                parsed (parse-record bytes path @line-number locator)
-                record (apply-semantics!
-                        (merge parsed
-                              {:ordinal (count @records)
-                               :byte-offset @byte-offset
-                               :next-byte-offset next-offset
-                               :payload-hash (protocol/sha256 bytes)
-                               :payload-bytes (.-length bytes)
-                               :prefix-hash (digest-copy prefix-hash)}))]
-            (swap! largest-record-bytes max (.-length bytes))
-            (swap! records conj record)
-            (reset! byte-offset next-offset)))
+          (let [parsed (parse-record bytes path @line-number locator)
+                next-offset (+ @byte-offset (.-length bytes) 1)]
+            ;; A physical conflict stops before the offending record, so the
+            ;; committed prefix hash and offset advance only after it parses.
+            (.update prefix-hash bytes)
+            (.update prefix-hash "\n")
+            (let [record (apply-semantics!
+                          (merge parsed
+                                 {:ordinal (count @records)
+                                  :byte-offset @byte-offset
+                                  :next-byte-offset next-offset
+                                  :payload-hash (protocol/sha256 bytes)
+                                  :payload-bytes (.-length bytes)
+                                  :prefix-hash (digest-copy prefix-hash)}))]
+              (swap! largest-record-bytes max (.-length bytes))
+              (swap! records conj record)
+              (reset! byte-offset next-offset))))
         file-descriptor (openSync path "r")]
     (try
-      (loop [pending (js/Buffer.alloc 0)]
-        (let [buffer (js/Buffer.allocUnsafe chunk-bytes)
-              bytes-read (readSync file-descriptor buffer 0 chunk-bytes nil)]
-          (if (zero? bytes-read)
-            (reset! incomplete-tail-bytes (.-length pending))
-            (let [chunk (.subarray buffer 0 bytes-read)
-                  combined (if (zero? (.-length pending))
-                             chunk
-                             (js/Buffer.concat #js [pending chunk]))
-                  remaining
-                  (loop [start 0]
-                    (let [newline-index (.indexOf combined 10 start)]
-                      (if (= -1 newline-index)
-                        (.subarray combined start)
-                        (do
-                          (process-line! (.subarray combined start newline-index))
-                          (recur (inc newline-index))))))]
-              (when (> (.-length remaining) max-record-bytes)
-                (throw (sidecar-error path (inc @line-number)
-                                      "record exceeds 1 MiB" :record-too-large)))
-              (recur remaining)))))
+      (try
+        (loop [pending (js/Buffer.alloc 0)]
+          (let [buffer (js/Buffer.allocUnsafe chunk-bytes)
+                bytes-read (readSync file-descriptor buffer 0 chunk-bytes nil)]
+            (if (zero? bytes-read)
+              (reset! incomplete-tail-bytes (.-length pending))
+              (let [chunk (.subarray buffer 0 bytes-read)
+                    combined (if (zero? (.-length pending))
+                               chunk
+                               (js/Buffer.concat #js [pending chunk]))
+                    remaining
+                    (loop [start 0]
+                      (let [newline-index (.indexOf combined 10 start)]
+                        (if (= -1 newline-index)
+                          (.subarray combined start)
+                          (do
+                            (process-line! (.subarray combined start newline-index))
+                            (recur (inc newline-index))))))]
+                (when (> (.-length remaining) max-record-bytes)
+                  (throw (sidecar-error path (inc @line-number)
+                                        "record exceeds 1 MiB" :record-too-large)))
+                (recur remaining)))))
+        (catch :default error
+          (let [{:keys [type reason line-number]} (ex-data error)]
+            (if (and (= :memory-sidecar-error type)
+                     (contains? #{:record-too-large :invalid-utf8} reason))
+              (reset! physical-conflict {:reason reason
+                                         :line-number line-number
+                                         :failure-class :terminal})
+              (throw error)))))
       (finally
         (closeSync file-descriptor)))
     (let [after (statSync path)]
@@ -170,4 +192,5 @@
        :largest-record-bytes @largest-record-bytes
        :has-final-newline? (and (pos? (.-size after))
                                 (= @byte-offset (.-size after)))
-       :semantic-conflict @semantic-conflict})))
+       :semantic-conflict @semantic-conflict
+       :physical-conflict @physical-conflict})))

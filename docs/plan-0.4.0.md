@@ -282,14 +282,15 @@ They have different schemas, authorities, coalescing keys, and acknowledgement c
 One Adam lease serializes memory-stream graph writes. The worker:
 
 1. validates and coalesces notifications by source session and producer;
-2. mirrors the relevant sidecars independently;
-3. loads retained records for absent known streams;
-4. assembles one aggregate session projection;
-5. acknowledges only notifications covered by successful processing;
-6. continues healthy groups when another stream fails;
-7. retries transient failures with capped backoff.
+2. for each source session, drains pending transcript notifications and ensures the source-scoped `AdamSession` exists before its memory notifications; a missing source session remains transient and retryable;
+3. mirrors the relevant sidecars independently;
+4. loads retained records for absent known streams;
+5. assembles one aggregate session projection;
+6. acknowledges only notifications covered by successful processing;
+7. continues healthy groups when another stream fails;
+8. retries transient failures with capped backoff.
 
-A malformed supported record is a bounded adapter diagnostic and does not poison source-session replication. Prefix mutation or immutable-event conflict marks only that memory stream conflicted and preserves its last committed projection.
+A malformed supported record is a bounded adapter diagnostic and does not poison source-session replication. Prefix mutation physically stops only that memory stream. Immutable-event conflict stops semantic advancement while later raw suffix records continue mirroring as blocked; either case preserves the last committed projection.
 
 Both Pi and Claude composition roots use this host-neutral memory reconciliation service. If v1 sidecars are intentionally implemented only for Claude, the contract must say so; the preferred 0.4.0 outcome is that any known source session can own a protocol sidecar.
 

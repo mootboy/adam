@@ -88,7 +88,11 @@ These protocol cases run deterministically in the normal suite. Lossless scannin
 | Event source or producer differs from sidecar locator | Raw record is retained, identity mismatch is diagnosed, and it has no semantic effect |
 | Protocol fixtures run in the normal suite | Contract conformance needs no Neo4j, model, or host transcript |
 | Explicit sidecar is mirrored, rerun unchanged, then appended | Raw records round-trip byte-for-byte, unchanged synchronization writes nothing, and only the suffix is added |
-| Semantic event conflict appears after valid records | Every complete physical record is mirrored before that memory stream is marked conflicted |
+| Semantic event conflict appears after valid records, then more records append | The conflicting record is mirrored; later complete suffix records continue mirroring as `blocked` while semantic advancement remains stopped (**live**) |
+| Invalid UTF-8 or an oversized record follows valid records | Valid preceding records commit, the offending record does not, and the stream becomes physically conflicted (**live**) |
+| Sidecar path or owner-only permissions are unsafe | The stream is terminally conflicted instead of retried forever; POSIX mode enforcement supports Linux/macOS only |
+| Sidecar changes during scanning | The scan is transiently rejected and may retry without marking a conflict |
+| Memory notification arrives before its source session | The missing-session failure remains transient; the worker reconciles transcript notifications first for that session |
 | One memory stream conflicts | Its source session, transcript/file evidence, and other producer streams remain available |
 
 ## Claude transcript ingestion

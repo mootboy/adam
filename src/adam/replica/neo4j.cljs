@@ -186,7 +186,12 @@
           (assoc :entry-count (neo-integer (record-get record "entryCount")))
           (some? (record-get record "logHash"))
           (assoc :log-hash (str (record-get record "logHash")))
-          conflicted? (assoc :conflicted true))))))
+          conflicted?
+          (assoc :conflicted true
+                 :conflict-class
+                 (some-> (when (record-has? record "conflictClass")
+                           (record-get record "conflictClass"))
+                         str keyword)))))))
 
 (defn- merge-session! [^js tx session]
   (-> (.run
@@ -581,7 +586,8 @@
                     stream.committedPrefixHash AS prefixHash,
                     stream.recordCount AS entryCount,
                     stream.logHash AS logHash,
-                    stream.conflicted AS conflicted"
+                    stream.conflicted AS conflicted,
+                    stream.conflictClass AS conflictClass"
             #js {:streamId stream-id})
       (.then (fn [result] (checkpoint-from-record (first (records result)))))))
 
@@ -671,7 +677,10 @@
                     stream.largestRecordBytes = $largestRecordBytes,
                     stream.hasFinalNewline = $hasFinalNewline,
                     stream.lastMirroredAt = datetime(),
-                    stream.conflicted = $conflicted
+                    stream.conflicted = $conflicted,
+                    stream.conflictClass = CASE WHEN $conflicted
+                                                THEN 'semantic'
+                                                ELSE null END
                 RETURN stream.completeThroughByteOffset AS byteOffset"
                #js {:streamId (:id stream)
                     :ordinal (:complete-through-ordinal checkpoint)
@@ -1207,10 +1216,12 @@
                    (.run tx
                          "MATCH (stream:AdamMemoryStream {id: $streamId})
                           SET stream.conflicted = true,
+                              stream.conflictClass = $conflictClass,
                               stream.conflictReason = $reason,
                               stream.conflictSourceFile = $sourceFile,
                               stream.conflictDetectedAt = datetime()"
                          #js {:streamId (:stream-id conflict)
+                              :conflictClass (name (:conflict-class conflict))
                               :reason (name (:reason conflict))
                               :sourceFile (:source-file conflict)}))]
              (if-let [stream (:stream conflict)]

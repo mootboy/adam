@@ -21,17 +21,31 @@
    :has-final-newline? (:has-final-newline? scan)
    :semantic-conflict (:semantic-conflict scan)})
 
-(defn- conflict! [replica stream scan conflict]
+(defn- conflict!
+  [replica stream scan conflict conflict-class records-written batches-written]
   (let [detail (assoc conflict
                       :stream stream
                       :stream-id (:id stream)
-                      :source-file (:path scan))]
+                      :source-file (:path scan)
+                      :conflict-class conflict-class)]
     (-> (store/mark-memory-stream-conflict! replica detail)
         (.then (fn [_]
                  {:status :conflict
-                  :records-written 0
-                  :batches-written 0
+                  :records-written records-written
+                  :batches-written batches-written
                   :conflict detail})))))
+
+(defn- write-batches! [replica stream batches]
+  (reduce
+   (fn [promise batch]
+     (.then promise
+            (fn [_]
+              (store/write-memory-record-batch!
+               replica {:stream stream
+                        :records (:entries batch)
+                        :checkpoint (:checkpoint batch)}))))
+   (js/Promise.resolve nil)
+   batches))
 
 (defn sync-sidecar-scan!
   [{:keys [store user-uuid scan batch-bytes]
@@ -42,61 +56,51 @@
         (.then (fn [_] (store/get-memory-stream-checkpoint! store (:id stream))))
         (.then
          (fn [checkpoint]
-           (if (:conflicted checkpoint)
+           (if (and (:conflicted checkpoint)
+                    (= :physical (:conflict-class checkpoint)))
              {:status :conflict
               :records-written 0
               :batches-written 0
-              :conflict {:reason :already-conflicted :stream-id (:id stream)}}
-             (let [plan (replica-sync/plan-sync summary records checkpoint batch-bytes)]
+              :conflict {:reason :already-conflicted
+                         :conflict-class :physical
+                         :stream-id (:id stream)}}
+             (let [plan (replica-sync/plan-sync summary records checkpoint batch-bytes)
+                   physical-conflict (:physical-conflict scan)]
                (case (:status plan)
                  :conflict
-                 (conflict! store stream scan (dissoc plan :status))
+                 (conflict! store stream scan (dissoc plan :status)
+                            :physical 0 0)
 
                  :unchanged
-                 (-> (store/complete-memory-stream!
-                      store (completion-request stream scan checkpoint))
-                     (.then
-                      (fn [_]
-                        {:status :unchanged
-                         :records-written 0
-                         :batches-written 0})))
+                 (if physical-conflict
+                   (conflict! store stream scan physical-conflict :physical 0 0)
+                   (-> (store/complete-memory-stream!
+                        store (completion-request stream scan checkpoint))
+                       (.then
+                        (fn [_]
+                          {:status :unchanged
+                           :records-written 0
+                           :batches-written 0}))))
 
                  :pending
-                 (let [batches (:batches plan)]
-                   (-> (reduce
-                        (fn [promise batch]
-                          (.then
-                           promise
-                           (fn [_]
-                             (store/write-memory-record-batch!
-                              store {:stream stream
-                                     :records (:entries batch)
-                                     :checkpoint (:checkpoint batch)}))))
-                        (js/Promise.resolve nil)
-                        batches)
+                 (let [batches (:batches plan)
+                       written (reduce + 0 (map #(count (:entries %)) batches))]
+                   (-> (write-batches! store stream batches)
                        (.then
                         (fn [_]
-                          (store/complete-memory-stream!
-                           store (completion-request stream scan (:completion plan)))))
-                       (.then
-                        (fn [_]
-                          (let [written (reduce + 0 (map #(count (:entries %)) batches))]
-                            (if-let [reason (:semantic-conflict scan)]
-                              (-> (store/mark-memory-stream-conflict!
-                                   store {:stream stream
-                                          :stream-id (:id stream)
-                                          :source-file (:path scan)
-                                          :reason reason})
-                                  (.then
-                                   (fn [_]
-                                     {:status :conflict
+                          (if physical-conflict
+                            (conflict! store stream scan physical-conflict
+                                       :physical written (count batches))
+                            (-> (store/complete-memory-stream!
+                                 store (completion-request stream scan (:completion plan)))
+                                (.then
+                                 (fn [_]
+                                   (if-let [reason (:semantic-conflict scan)]
+                                     (conflict! store stream scan {:reason reason}
+                                                :semantic written (count batches))
+                                     {:status :mirrored
                                       :records-written written
-                                      :batches-written (count batches)
-                                      :conflict {:reason reason
-                                                 :stream-id (:id stream)}})))
-                              {:status :mirrored
-                               :records-written written
-                               :batches-written (count batches)}))))))))))))))
+                                      :batches-written (count batches)})))))))))))))))))
 
 (defn sync-sidecar-file! [{:keys [path store user-uuid] :as options}]
   (try
@@ -109,9 +113,9 @@
                         :source-session-id (:source-session-id options)
                         :producer-id (:producer-id options)}))))
     (catch :default error
-      (let [{:keys [type reason]} (ex-data error)]
+      (let [{:keys [type reason failure-class]} (ex-data error)]
         (if (and (= :memory-sidecar-error type)
-                 (contains? #{:record-too-large :invalid-utf8} reason))
+                 (= :terminal failure-class))
           (let [{:keys [stream]}
                 (model/from-scan
                  user-uuid {:path path
@@ -122,7 +126,8 @@
                 conflict {:stream stream
                           :stream-id (:id stream)
                           :source-file path
-                          :reason reason}]
+                          :reason reason
+                          :conflict-class :physical}]
             (-> (store/ensure-memory-schema! store)
                 (.then (fn [_] (store/mark-memory-stream-conflict! store conflict)))
                 (.then (fn [_]
