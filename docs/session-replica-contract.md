@@ -109,7 +109,7 @@ The normative 0.4 file boundary is [`memory-protocol-contract.md`](memory-protoc
 
 `source.covered` commits a successful no-memory result without inventing a memory. Producer restart recovery folds source coverage from the sidecar, so a crash after durable append does not repay indefinitely for a range the model already declined. Event replay compares SHA-256 hashes of RFC 8785 canonical JSON; an equal repeated event is idempotent and a changed payload under the same event ID conflicts.
 
-Each event carries a complete stream-qualified source checkpoint. It is producer provenance and producer replay authority only. Adam must not compare it with independently observed Pi or Claude synchronization checkpoints. Source citations may remain unresolved until later host-source reconciliation.
+Each event carries a complete stream-qualified source checkpoint. It is producer provenance and producer replay authority only. Adam validates it monotonically against that sidecar's last accepted checkpoint; a disappearing stream, decreasing offset, or changed hash at an equal offset is a non-conflicting `checkpoint-regression` diagnostic and the event is skipped. Adam must not compare it with independently observed Pi or Claude synchronization checkpoints. Source citations may remain unresolved until later host-source reconciliation.
 
 The physical stream uses owner-only, non-symlink, single-writer UTF-8 JSONL with a 1 MiB record bound. Complete malformed records are retained with diagnostics; a non-LF tail is deferred. Sidecar shrinkage or committed-prefix mutation conflicts only that memory stream. Scanner, graph storage, and reconciliation are staged after the contract increment.
 

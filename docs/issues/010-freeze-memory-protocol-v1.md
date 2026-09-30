@@ -25,20 +25,20 @@ This increment is contract-only. It does not implement Adam's production scanner
 - [x] Source checkpoints are explicitly provenance and producer replay authority, never Adam transcript synchronization checkpoints.
 - [x] Replay defines deterministic canonical payload comparison, idempotent duplicate events, immutable-event conflicts, and append/checkpoint crash recovery.
 - [x] First-valid memory definitions, producer/session-local support and tombstones, unresolved citation repair, unknown versions/kinds, and malformed records are specified.
-- [x] Fixtures cover valid events, identical replay, conflicting duplicate event IDs, malformed completed JSON, incomplete tails, unresolved citations, tombstones before definitions, duplicate memory IDs, prefix mutation/shrinkage, and source/producer mismatch.
+- [x] Fixtures cover valid events, identical replay, conflicting duplicate event IDs, RFC 8785 edge canonicalization, malformed completed JSON, incomplete tails, checkpoint regression, unresolved citations, tombstones before definitions, duplicate memory IDs, prefix mutation/shrinkage, and source/producer mismatch.
 - [x] Deterministic fixture-conformance tests run without Neo4j or model access.
 - [x] Architecture, session-replica contract, acceptance matrix, plan, README, and issue index link the normative contract consistently.
 - [x] `npm test` and diff validation pass.
 
 ## Evidence
 
-The contract is published with one informative JSON Schema, a 12-case manifest, and 13 JSONL files covering 21 structurally valid events plus malformed and incomplete framing. Nine deterministic protocol tests exercise event kinds, canonical replay, framing, unresolved references, tombstone order, immutable memory definitions, prefix conflicts, locator identity, and bounded event shape.
+The contract is published with one informative JSON Schema, a 14-case manifest, and 15 JSONL files covering 27 structurally valid events plus malformed and incomplete framing. Eleven deterministic protocol tests exercise event kinds, canonical replay and its non-ASCII edge vector, framing, checkpoint regression, unresolved references, tombstone order, immutable memory definitions, prefix conflicts, locator identity, and bounded event shape.
 
 Validation:
 
-- `npm test`: 104 ClojureScript tests with 401 assertions; 18 Node tests passed and 3 opt-in tests skipped.
-- Focused protocol/package tests: 10 passed.
-- JSON Schema draft validation: 21 fixture events accepted.
+- `npm test`: 104 ClojureScript tests with 401 assertions; 20 Node tests passed and 3 opt-in tests skipped.
+- Focused protocol/package tests: 12 passed.
+- JSON Schema draft validation: 27 fixture events accepted.
 - `npm run check:dist`, package dry-run, and `git diff --check` passed.
 
 Commit, PR, and hosted-check evidence are recorded by the branch and pull request containing this issue.

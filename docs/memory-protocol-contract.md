@@ -66,7 +66,7 @@ A conforming writer MUST:
 - reject a symlink or non-directory component beneath the selected XDG root and reject a symlink or non-regular sidecar;
 - acquire one exclusive writer lease for the locator tuple before appending;
 - recover a stale lease without allowing two live writers;
-- encode exactly one event plus LF before one append operation;
+- encode exactly one event plus LF before one normal append operation; incomplete-tail recovery is the sole non-event append and follows [Crash consistency](#crash-consistency);
 - reject an encoded record larger than 1 MiB, excluding its terminal LF;
 - flush the sidecar after append and fsync the containing directory after durable creation;
 - release the lease only after append durability succeeds.
@@ -105,7 +105,7 @@ Limits are measured after UTF-8 encoding where this contract says bytes and as a
 | token count | integer from 0 through `9007199254740991` |
 | timestamp | RFC 3339 UTC instant ending in `Z`, at most 64 bytes |
 
-Arrays documented as unique MUST not contain duplicate IDs or duplicate `(streamId, entryId)` pairs.
+Arrays documented as unique MUST not contain duplicate IDs or duplicate `(streamId, entryId)` pairs. The 1 MiB physical-record limit governs the combined encoded event even when every field is within its individual bound. Producers MUST split item arrays across events, reduce content, or both; the per-item and item-count maxima do not permit a larger record.
 
 ## Event envelope
 
@@ -159,7 +159,7 @@ The informative machine-readable schema is [`fixtures/memory-protocol-v1/event.s
 
 ## Source checkpoints
 
-`sourceCheckpoint.streams` is a full snapshot of all source streams known to the producer at event creation. Entries MUST be unique and sorted by the UTF-8 byte sequence of `streamId`.
+`sourceCheckpoint.streams` is a full snapshot of all source streams known to the producer at event creation. Entries MUST be unique and sorted lexicographically by UTF-16 code units, the same ordering used for object property names by RFC 8785 and by ECMAScript string comparison. No locale collation or Unicode normalization is applied.
 
 Each stream contains:
 
@@ -169,6 +169,8 @@ Each stream contains:
 - `selectedLeafEntryId`: the selected source leaf used for context, or `null` when the host has none.
 
 A producer folding accepted events carries this full snapshot forward. Once present, a stream MUST NOT disappear from later snapshots. `committedBytes` MUST NOT decrease. Equal byte offsets MUST retain the same prefix hash. A selected leaf MAY change as host context changes.
+
+Adam compares each event with the last accepted source checkpoint for that sidecar. A disappearing stream, decreasing `committedBytes`, or changed `prefixSha256` at an equal offset is a `checkpoint-regression` record diagnostic. Adam retains the raw record, skips every semantic effect of that event (including coverage and memory changes), keeps the previous accepted checkpoint, and continues with later records. It does not mark the memory stream conflicted. A later event is compared with the same last accepted checkpoint until one passes. Newly appearing streams and a changed hash at a larger offset are allowed because this checkpoint is producer provenance rather than Adam's independent source validation.
 
 `sourceCheckpoint` has two roles only:
 
@@ -290,12 +292,12 @@ The sidecar is the producer's commit log. Disposable producer checkpoints may op
 | --- | --- |
 | before generation completes | retry may regenerate; no coverage committed |
 | after generation but before append | retry may regenerate; no event committed |
-| during append before LF/fsync | incomplete tail is deferred; writer recovery must finish or seal it as malformed before another event |
+| during append before LF/fsync | incomplete tail is deferred; writer recovery seals it as malformed before writing a fresh event |
 | after durable append before producer acknowledgement | fold the event and do not create a second logical result |
 | after durable append before Adam notification | rewrite the idempotent locator-only notification; do not rewrite the event |
 | after `source.covered` append | fold its checkpoint and do not pay again for that covered range |
 
-Only the producer writer may recover its incomplete tail. If it has durable private state containing the exact intended remaining bytes, it may append those bytes and LF. Otherwise it MUST append LF to seal the partial bytes as one malformed completed record before appending a freshly generated event. It MUST NOT truncate or overwrite the sidecar. Adam only defers the tail and never performs producer recovery.
+Only the producer writer may recover its incomplete tail. It MUST append the ASCII recovery marker `!` followed by LF, which guarantees that the deferred line is malformed JSON, and then append a freshly generated event with a fresh event ID. It MUST NOT complete the old payload, truncate it, overwrite it, or reuse its event ID. Adam only defers the tail and never performs producer recovery.
 
 A producer can generate a fresh event ID after an uncommitted crash. Once an event is durable, its identity and payload never change.
 
@@ -305,7 +307,7 @@ Protocol processing distinguishes:
 
 - **physical conflict**: invalid UTF-8, oversize record, file shrinkage, or committed-prefix mutation; stop this stream;
 - **stream identity conflict**: locator mismatch or changed payload for an existing event ID; retain raw data and stop semantic advancement for this stream;
-- **record diagnostic**: malformed JSON, unsupported version/kind, malformed supported shape, duplicate memory definition, or unresolved reference; retain raw data and continue when framing remains safe;
+- **record diagnostic**: malformed JSON, unsupported version/kind, malformed supported shape, `checkpoint-regression`, duplicate memory definition, or unresolved reference; retain raw data and continue when framing remains safe;
 - **incomplete append**: defer bytes after the final LF without a diagnostic until completed.
 
 One memory stream's failure MUST NOT invalidate its source session, file evidence, another producer stream, or host operation. A missing sidecar preserves the last mirrored prefix and derived contribution; local deletion is not propagated.
@@ -331,15 +333,15 @@ A legacy Pi entry does not literally gain a sidecar `sourceCheckpoint`. Its exis
 Normative examples live under [`fixtures/memory-protocol-v1/`](fixtures/memory-protocol-v1/). [`manifest.json`](fixtures/memory-protocol-v1/manifest.json) names the canonical locator and expected outcome for:
 
 - all four valid event kinds;
-- canonical idempotent replay and conflicting event reuse;
-- malformed completed JSON and an incomplete tail;
+- canonical idempotent replay and conflicting event reuse, including a non-ASCII RFC 8785 edge vector;
+- malformed completed JSON, an incomplete tail, and source-checkpoint regressions;
 - unresolved entry/support citations;
 - a tombstone before definition;
 - conflicting memory definitions;
 - committed-prefix mutation and shrinkage;
 - source and producer mismatch.
 
-`npm test` executes deterministic fixture checks without Neo4j, model access, or host transcripts. Later scanner and storage increments MUST consume the same fixtures rather than replace them with implementation-specific examples.
+`npm test` executes deterministic fixture checks without Neo4j, model access, or host transcripts. The contract, manifest, schema, and complete fixture corpus are intentionally included in the npm tarball so producer and consumer implementations can run the same conformance cases. Later scanner and storage increments MUST consume these fixtures rather than replace them with implementation-specific examples.
 
 ## Privacy and non-goals
 

@@ -87,7 +87,7 @@ Crash rules are:
 
 - before model completion: no event exists; retry may call the model again;
 - after model completion but before append: no event exists; retry may regenerate;
-- during an incomplete append: protocol framing rules decide recovery before any later append;
+- during an incomplete append: the writer seals the tail as malformed with the protocol recovery marker and LF, then writes a fresh event; it never completes or rewrites the partial payload;
 - after a complete durable append but before local acknowledgement: folding the sidecar finds the committed event, so retry does not generate a second logical result;
 - after sidecar commit but before Adam notification: the producer rewrites the idempotent locator-only notification without rewriting the event.
 

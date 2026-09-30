@@ -23,6 +23,16 @@
       "expected": { "completeRecords": 2, "acceptedEvents": 1, "diagnostic": "immutable-event-conflict", "canonicalPayloadSha256": ["eaee228fca4bc36211a461b3b4c9a417664ff8128b157b1cf8cd2eb706d13015", "c257f8e2201c42f127828ab7465be75a4d2ccbaf999c8675023ae92d0fb20ad9"] }
     },
     {
+      "id": "canonical-jcs",
+      "file": "canonical-jcs.jsonl",
+      "expected": {
+        "completeRecords": 1,
+        "acceptedEvents": 1,
+        "canonicalPayloadSha256": ["7665bf74ad2cbfa0c8cdcd7cb62b6a814fe5ef39c651590d5f04f5ee2b825cc5"],
+        "canonicalPayload": "{\"eventId\":\"evt-jcs-edge\",\"extension\":{\"amount\":333333333.3333333,\"text\":\"Café\\t雪\",\"😀\":\"astral\",\"�\":\"replacement\"},\"kind\":\"source.covered\",\"producer\":{\"id\":\"org.example.claude-memory\",\"version\":\"0.1.0\"},\"protocolVersion\":1,\"recordedAt\":\"2026-09-30T12:00:00.000Z\",\"source\":{\"kind\":\"claude-code\",\"sessionId\":\"session-123\"},\"sourceCheckpoint\":{\"streams\":[{\"committedBytes\":10,\"prefixSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"selectedLeafEntryId\":null,\"streamId\":\"stream-😀\"},{\"committedBytes\":20,\"prefixSha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"selectedLeafEntryId\":null,\"streamId\":\"stream-�\"}]}}"
+      }
+    },
+    {
       "id": "malformed-complete-record",
       "file": "malformed-complete-record.jsonl",
       "expected": { "completeRecords": 1, "acceptedEvents": 0, "diagnostic": "malformed-json" }
@@ -31,6 +41,11 @@
       "id": "incomplete-tail",
       "file": "incomplete-tail.jsonl",
       "expected": { "completeRecords": 1, "acceptedEvents": 1, "incompleteTail": true }
+    },
+    {
+      "id": "checkpoint-regression",
+      "file": "checkpoint-regression.jsonl",
+      "expected": { "completeRecords": 5, "acceptedEvents": 2, "diagnostic": "checkpoint-regression", "diagnosticCount": 3 }
     },
     {
       "id": "unresolved-citations",

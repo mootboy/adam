@@ -149,7 +149,7 @@ Observation and reflection item validation initially follows Adam's existing `pi
 
 A reflection's `supportingObservationIds` and a drop event's `observationIds` refer only to memories from the same producer and source session. Cross-producer support, dropping, consolidation, and deduplication are not protocol v1 behavior.
 
-`sourceCheckpoint` records the physical source prefixes and selected context used by the producer. It is provenance supplied by the producer, not an Adam synchronization checkpoint: Adam validates its shape and cited stream identities but never compares its offsets or hashes with Adam's independently observed transcript checkpoints. The producer and Adam can inspect the same source at different moments, so such a comparison would create false conflicts. A single `coversUpToEntryId` is deliberately insufficient for Claude because physical append order, selected tree continuity, parallel request fragments, compaction ancestry, and subagent streams are distinct concerns.
+`sourceCheckpoint` records the physical source prefixes and selected context used by the producer. It is provenance supplied by the producer, not an Adam synchronization checkpoint: Adam validates its shape, cited stream identities, and monotonicity against that producer sidecar's last accepted checkpoint, but never compares its offsets or hashes with Adam's independently observed transcript checkpoints. A producer-internal regression skips that event with `checkpoint-regression` rather than conflicting the stream. The producer and Adam can inspect the same source at different moments, so cross-authority comparison would create false conflicts. A single `coversUpToEntryId` is deliberately insufficient for Claude because physical append order, selected tree continuity, parallel request fragments, compaction ancestry, and subagent streams are distinct concerns.
 
 ### Replay and crash consistency
 
@@ -360,7 +360,7 @@ The end-to-end proof is:
 The scope is one 0.4.0 milestone, not one implementation PR. Track each numbered increment with a repository issue and deliver it through one or more small, independently reviewable PRs. Intermediate PRs land on `main` without changing the released package version. Only the final release-preparation PR bumps the package and plugin versions to 0.4.0, finalizes the changelog, rebuilds all committed runtimes, and activates the protected-main tag/release pipeline.
 
 1. **Complete:** characterize the reference Claude producer and record the non-blocking generation/privacy contract in [`claude-memory-producer-contract.md`](claude-memory-producer-contract.md).
-2. **Complete:** commit [`memory-protocol-contract.md`](memory-protocol-contract.md) with fixtures for valid events, replay, malformed complete records, incomplete tails, unresolved citations, tombstones, duplicate IDs, prefix changes, and source/producer mismatch.
+2. **Complete:** commit [`memory-protocol-contract.md`](memory-protocol-contract.md) with fixtures for valid events, replay and JCS edge canonicalization, malformed complete records, incomplete tails, source-checkpoint regressions, unresolved citations, tombstones, duplicate IDs, prefix changes, and source/producer mismatch.
 3. Implement lossless memory-stream scanning, raw-record storage, checkpoints, and live round-trip tests.
 4. Implement the graph-native producer-scoped memory-identity migration without changing session, stream, or entry identities.
 5. Implement aggregate multi-producer projection and retrieval provenance.
