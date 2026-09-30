@@ -3,7 +3,8 @@
             [adam.memory.store :as store]
             [adam.memory.sync :as sync]
             [cljs.test :refer [async deftest is]]
-            ["node:fs" :refer [chmodSync copyFileSync mkdtempSync rmSync writeFileSync]]
+            [clojure.string :as string]
+            ["node:fs" :refer [appendFileSync chmodSync copyFileSync mkdtempSync readFileSync rmSync writeFileSync]]
             ["node:os" :refer [tmpdir]]
             ["node:path" :as node-path]))
 
@@ -59,44 +60,65 @@
              (rmSync directory #js {:recursive true :force true})
              (done)))))))
 
-(deftest mirrors-conflicting-event-records-before-isolating-the-stream
+(deftest mirrors-conflicting-event-records-and-later-blocked-suffixes
   (async done
     (let [directory (mkdtempSync (.join node-path (tmpdir) "adam-memory-event-conflict-"))
           path (.join node-path directory "events.jsonl")
           writes (atom [])
-          conflicts (atom [])
-          replica (->FakeMemoryStore (atom nil) writes (atom []) conflicts)]
+          conflicts (atom [])]
       (copyFileSync
        (.resolve node-path "docs/fixtures/memory-protocol-v1/conflicting-event-id.jsonl")
        path)
       (chmodSync path 384)
-      (-> (sync/sync-sidecar-file!
-           {:store replica
-            :user-uuid "00000000-0000-4000-8000-000000000001"
-            :path path :source-kind "claude-code"
-            :source-session-id "session-123"
-            :producer-id "org.example.claude-memory"})
-          (.then
-           (fn [result]
-             (is (= :conflict (:status result)))
-             (is (= :immutable-event-conflict
-                    (get-in result [:conflict :reason])))
-             (is (= 2 (:records-written result)))
-             (is (= 2 (count (mapcat :records @writes))))
-             (is (= 1 (count @conflicts)))))
-          (.catch (fn [error] (is false (.-stack error))))
-          (.finally
-           (fn []
-             (rmSync directory #js {:recursive true :force true})
-             (done)))))))
+      (let [initial-scan (scanner/scan-sidecar
+                          {:path path :source-kind "claude-code"
+                           :source-session-id "session-123"
+                           :producer-id "org.example.claude-memory"})
+            committed (last (:records initial-scan))
+            checkpoint (atom {:complete-through-ordinal (:ordinal committed)
+                              :complete-through-byte-offset (:next-byte-offset committed)
+                              :committed-prefix-hash (:prefix-hash committed)
+                              :conflicted true
+                              :conflict-class :semantic})
+            replica (->FakeMemoryStore checkpoint writes (atom []) conflicts)
+            blocked-event (-> (first (string/split-lines
+                                      (readFileSync valid-fixture "utf8")))
+                              (.replace "event-observations-1" "event-after-conflict"))]
+        (appendFileSync path (str blocked-event "\n") "utf8")
+        (-> (sync/sync-sidecar-file!
+             {:store replica
+              :user-uuid "00000000-0000-4000-8000-000000000001"
+              :path path :source-kind "claude-code"
+              :source-session-id "session-123"
+              :producer-id "org.example.claude-memory"})
+            (.then
+             (fn [result]
+               (is (= :conflict (:status result)))
+               (is (= :immutable-event-conflict
+                      (get-in result [:conflict :reason])))
+               (is (= 1 (:records-written result)))
+               (is (= [:blocked]
+                      (mapv :semantic-status (mapcat :records @writes))))
+               (is (= :semantic (:conflict-class (first @conflicts))))))
+            (.catch (fn [error] (is false (.-stack error))))
+            (.finally
+             (fn []
+               (rmSync directory #js {:recursive true :force true})
+               (done))))))))
 
-(deftest isolates-a-physical-record-conflict
+(deftest mirrors-valid-records-before-isolating-a-physical-conflict
   (async done
     (let [directory (mkdtempSync (.join node-path (tmpdir) "adam-memory-physical-sync-"))
           path (.join node-path directory "events.jsonl")
+          valid-line (first (string/split-lines (readFileSync valid-fixture "utf8")))
+          writes (atom [])
           conflicts (atom [])
-          replica (->FakeMemoryStore (atom nil) (atom []) (atom []) conflicts)]
-      (writeFileSync path (js/Buffer.from #js [255 10]) #js {:mode 384})
+          replica (->FakeMemoryStore (atom nil) writes (atom []) conflicts)]
+      (writeFileSync path
+                     (js/Buffer.concat
+                      #js [(js/Buffer.from (str valid-line "\n") "utf8")
+                           (js/Buffer.from #js [255 10])])
+                     #js {:mode 384})
       (-> (sync/sync-sidecar-file!
            {:store replica
             :user-uuid "00000000-0000-4000-8000-000000000001"
@@ -107,8 +129,35 @@
            (fn [result]
              (is (= :conflict (:status result)))
              (is (= :invalid-utf8 (get-in result [:conflict :reason])))
-             (is (= 1 (count @conflicts)))
+             (is (= 1 (:records-written result)))
+             (is (= [valid-line] (mapv :raw-json (mapcat :records @writes))))
+             (is (= :physical (:conflict-class (first @conflicts))))
              (is (map? (:stream (first @conflicts))))))
+          (.catch (fn [error] (is false (.-stack error))))
+          (.finally
+           (fn []
+             (rmSync directory #js {:recursive true :force true})
+             (done)))))))
+
+(deftest terminal-safety-failures-mark-the-stream-conflicted
+  (async done
+    (let [directory (mkdtempSync (.join node-path (tmpdir) "adam-memory-unsafe-sync-"))
+          path (.join node-path directory "events.jsonl")
+          conflicts (atom [])
+          replica (->FakeMemoryStore (atom nil) (atom []) (atom []) conflicts)]
+      (writeFileSync path "{}\n" #js {:encoding "utf8" :mode 420})
+      (-> (sync/sync-sidecar-file!
+           {:store replica
+            :user-uuid "00000000-0000-4000-8000-000000000001"
+            :path path :source-kind "claude-code"
+            :source-session-id "session-123"
+            :producer-id "org.example.claude-memory"})
+          (.then
+           (fn [result]
+             (is (= :conflict (:status result)))
+             (is (= :unsafe-permissions (get-in result [:conflict :reason])))
+             (is (= :physical (get-in result [:conflict :conflict-class])))
+             (is (= 1 (count @conflicts)))))
           (.catch (fn [error] (is false (.-stack error))))
           (.finally
            (fn []

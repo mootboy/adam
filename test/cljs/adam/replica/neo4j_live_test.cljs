@@ -911,6 +911,7 @@
               transcript-path (join directory "session.jsonl")
               sidecar-path (join directory "events.jsonl")
               conflict-path (join directory "conflict.jsonl")
+              physical-path (join directory "physical.jsonl")
               transcript-fixture (.resolve node-path "test/fixtures/claude/main.jsonl")
               memory-root (.resolve node-path "docs/fixtures/memory-protocol-v1")
               locator {:source-kind "claude-code"
@@ -922,6 +923,9 @@
               conflict-stream-id (identity/memory-stream-urn
                                   user-uuid "claude-code" "session-123"
                                   "org.example.conflict")
+              physical-stream-id (identity/memory-stream-urn
+                                  user-uuid "claude-code" "session-123"
+                                  "org.example.physical")
               source-lines (atom nil)
               finish!
               (fn [error]
@@ -959,6 +963,15 @@
            (-> (readFileSync (join memory-root "conflicting-event-id.jsonl") "utf8")
                (.replaceAll "org.example.claude-memory" "org.example.conflict"))
            #js {:encoding "utf8" :mode 384})
+          (let [physical-valid
+                (-> (first (.split (.trimEnd
+                                    (readFileSync (join memory-root "valid-events.jsonl")
+                                                  "utf8")) "\n"))
+                    (.replaceAll "org.example.claude-memory" "org.example.physical"))]
+            (writeFileSync physical-path
+                           (str physical-valid "\n"
+                                (.repeat "x" (inc (* 1024 1024))) "\n")
+                           #js {:encoding "utf8" :mode 384}))
           (reset! source-lines (vec (.split (.trimEnd (readFileSync sidecar-path "utf8")) "\n")))
           (-> (store/initialize! replica {:id user-id})
               (.then
@@ -1037,10 +1050,44 @@
               (.then
                (fn [records]
                  (is (= 2 (count records)))
+                 (let [blocked-event
+                       (-> (first (.split (.trimEnd
+                                          (readFileSync (join memory-root "valid-events.jsonl")
+                                                        "utf8")) "\n"))
+                           (.replace "event-observations-1" "event-after-conflict")
+                           (.replaceAll "org.example.claude-memory" "org.example.conflict"))]
+                   (appendFileSync conflict-path (str blocked-event "\n") "utf8")
+                   (memory-sync/sync-sidecar-file!
+                    {:store replica :user-uuid user-uuid :path conflict-path
+                     :source-kind "claude-code" :source-session-id "session-123"
+                     :producer-id "org.example.conflict"}))))
+              (.then
+               (fn [result]
+                 (is (= :conflict (:status result)))
+                 (is (= 1 (:records-written result)))
+                 (memory-store/read-memory-records! replica conflict-stream-id)))
+              (.then
+               (fn [records]
+                 (is (= 3 (count records)))
+                 (is (= :blocked (:semantic-status (last records))))
+                 (memory-sync/sync-sidecar-file!
+                  {:store replica :user-uuid user-uuid :path physical-path
+                   :source-kind "claude-code" :source-session-id "session-123"
+                   :producer-id "org.example.physical"})))
+              (.then
+               (fn [result]
+                 (is (= :conflict (:status result)))
+                 (is (= :record-too-large (get-in result [:conflict :reason])))
+                 (is (= 1 (:records-written result)))
+                 (memory-store/read-memory-records! replica physical-stream-id)))
+              (.then
+               (fn [records]
+                 (is (= 1 (count records))
+                     "records before a physical conflict remain mirrored")
                  (memory-store/read-memory-records! replica stream-id)))
               (.then
                (fn [records]
                  (is (= 5 (count records))
-                     "a conflicting producer stream does not alter the healthy stream")
+                     "conflicting producer streams do not alter the healthy stream")
                  (finish! nil)))
               (.catch finish!)))))))

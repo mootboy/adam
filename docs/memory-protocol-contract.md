@@ -81,7 +81,7 @@ A sidecar is an append-only UTF-8 JSONL file.
 - The exact bytes before LF are the record payload. A preceding CR, if present, is payload whitespace and is preserved.
 - Empty completed lines are malformed records, not separators.
 - A trailing sequence without LF is an incomplete active append, even if it happens to parse as JSON. Adam defers it and does not checkpoint or mirror it until LF appears.
-- A completed payload MUST be at most 1 MiB and valid UTF-8. Oversize or invalid UTF-8 stops synchronization before that record and marks the stream conflicted.
+- A completed payload MUST be at most 1 MiB and valid UTF-8. Oversize or invalid UTF-8 stops synchronization before that record, commits any preceding safely framed records, and marks the stream physically conflicted.
 - Completed valid UTF-8 that is malformed JSON is still mirrored exactly, receives `malformed-json`, and has no semantic effect. Later independently framed records remain eligible.
 - JSON values other than an object and objects with duplicate member names are structurally malformed protocol records. They are retained but not interpreted.
 - Unknown fields are retained. For supported v1 events they participate in immutable-payload comparison.
@@ -243,7 +243,7 @@ Within one sidecar:
 
 - the first structurally valid occurrence of an `eventId` establishes its immutable payload;
 - a later occurrence with the same canonical payload hash is an `idempotent-replay`; its raw physical record is mirrored, but semantic effects apply once;
-- a later occurrence with a different canonical payload hash is an `immutable-event-conflict`; its raw record is mirrored, the stream is marked conflicted, and no later semantic state is accepted automatically;
+- a later occurrence with a different canonical payload hash is an `immutable-event-conflict`; its raw record is mirrored, the stream is marked semantically conflicted, and no later semantic state is accepted automatically, while later complete raw suffix records continue to mirror as `blocked`;
 - key order and insignificant JSON whitespace do not change canonical payload identity.
 
 Producers SHOULD avoid appending duplicate events, but consumers MUST implement these replay rules.
@@ -305,12 +305,15 @@ A producer can generate a fresh event ID after an uncommitted crash. Once an eve
 
 Protocol processing distinguishes:
 
-- **physical conflict**: invalid UTF-8, oversize record, file shrinkage, or committed-prefix mutation; stop this stream;
-- **stream identity conflict**: locator mismatch or changed payload for an existing event ID; retain raw data and stop semantic advancement for this stream;
+- **physical conflict**: invalid UTF-8, oversize record, unsafe path or permissions, file shrinkage, or committed-prefix mutation; commit only the safe prefix and stop this stream;
+- **stream identity conflict**: locator mismatch or changed payload for an existing event ID; retain raw data, continue mirroring later physical records as `blocked`, and stop semantic advancement for this stream;
 - **record diagnostic**: malformed JSON, unsupported version/kind, malformed supported shape, `checkpoint-regression`, duplicate memory definition, or unresolved reference; retain raw data and continue when framing remains safe;
-- **incomplete append**: defer bytes after the final LF without a diagnostic until completed.
+- **incomplete append**: defer bytes after the final LF without a diagnostic until completed;
+- **transient scan failure**: concurrent file change or a source session not yet mirrored; preserve the notification and retry after source reconciliation without marking a stream conflict.
 
-One memory stream's failure MUST NOT invalidate its source session, file evidence, another producer stream, or host operation. A missing sidecar preserves the last mirrored prefix and derived contribution; local deletion is not propagated.
+The current owner-only mode validation depends on POSIX file modes, so sidecar ingestion is supported on Linux and macOS only. Other platforms fail closed until an equivalent owner-only check is implemented.
+
+One memory stream's failure MUST NOT invalidate its source session, file evidence, another producer stream, or host operation. A missing sidecar preserves the last mirrored prefix and derived contribution; local deletion is not propagated. `AdamMemoryStream` attachment requires its source-scoped `AdamSession` to exist; a missing source session is transient, and a worker MUST reconcile a pending host transcript before its memory notifications for the same session.
 
 Diagnostics may contain locator identity, event or memory IDs, ordinals, offsets, hashes, and reason classes. They MUST NOT contain memory text, source transcript content, credentials, or raw JSON.
 

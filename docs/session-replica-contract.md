@@ -111,7 +111,7 @@ The normative 0.4 file boundary is [`memory-protocol-contract.md`](memory-protoc
 
 Each event carries a complete stream-qualified source checkpoint. It is producer provenance and producer replay authority only. Adam validates it monotonically against that sidecar's last accepted checkpoint; a disappearing stream, decreasing offset, or changed hash at an equal offset is a non-conflicting `checkpoint-regression` diagnostic and the event is skipped. Adam must not compare it with independently observed Pi or Claude synchronization checkpoints. Source citations may remain unresolved until later host-source reconciliation.
 
-The physical stream uses owner-only, non-symlink, single-writer UTF-8 JSONL with a 1 MiB record bound. The implemented sidecar scanner retains complete malformed and unsupported records with diagnostics, defers a non-LF tail, and detects concurrent changes. Checkpointed synchronization stores raw records in byte-bounded batches; sidecar shrinkage, committed-prefix mutation, or immutable event reuse conflicts only that memory stream.
+The physical stream uses owner-only, non-symlink, single-writer UTF-8 JSONL with a 1 MiB record bound. The implemented sidecar scanner retains complete malformed and unsupported records with diagnostics, defers a non-LF tail, and detects concurrent changes. Checkpointed synchronization stores raw records in byte-bounded batches. Sidecar shrinkage, committed-prefix mutation, invalid UTF-8, oversize records, or unsafe files physically conflict only that memory stream after any preceding safe records commit. Immutable event reuse is a semantic conflict: later complete raw suffixes still mirror as `blocked`, but semantic advancement stops. Concurrent change and a not-yet-mirrored source session are transient and retryable. POSIX owner-mode enforcement currently limits sidecar ingestion to Linux and macOS.
 
 ## Fork lineage
 
@@ -137,7 +137,7 @@ Uniqueness constraints currently cover `id` on:
 - `AdamObservation`
 - `AdamReflection`
 
-The 0.4 lossless sidecar implementation adds unique `AdamMemoryStream` and `AdamMemoryRecord` nodes. A source session owns producer streams through `HAS_MEMORY_STREAM`; each stream owns its physical records through `HAS_RECORD`. Record payloads, ordinals, byte offsets, hashes, semantic status, and bounded diagnostics remain available for later graph-native migration and aggregate projection.
+The 0.4 lossless sidecar implementation adds unique `AdamMemoryStream` and `AdamMemoryRecord` nodes. A source session owns producer streams through `HAS_MEMORY_STREAM`; each stream owns its physical records through `HAS_RECORD`. Streams distinguish `physical` from `semantic` conflict class so only physical conflicts stop suffix writes. Record payloads, ordinals, byte offsets, hashes, semantic status, and bounded diagnostics remain available for later graph-native migration and aggregate projection.
 
 A composite range index on `AdamEntry(sessionId, entryId)` supports bounded per-session evidence and memory projection lookups without scanning the complete replicated entry graph.
 

@@ -1,5 +1,6 @@
 (ns adam.memory.scanner-test
-  (:require [adam.memory.scanner :as scanner]
+  (:require [adam.memory.protocol :as protocol]
+            [adam.memory.scanner :as scanner]
             [cljs.test :refer [deftest is]]
             [clojure.string :as string]
             ["node:fs" :refer [chmodSync copyFileSync mkdtempSync readFileSync rmSync symlinkSync writeFileSync]]
@@ -115,7 +116,7 @@
       (finally
         (rmSync directory #js {:recursive true :force true})))))
 
-(deftest rejects-oversized-and-invalid-utf8-physical-records
+(deftest reports-oversized-and-invalid-utf8-physical-records
   (let [directory (mkdtempSync (.join node-path (tmpdir) "adam-memory-physical-"))
         path (.join node-path directory "events.jsonl")
         locator {:path path :source-kind "claude-code"
@@ -124,13 +125,31 @@
     (try
       (writeFileSync path (str (.repeat "x" (inc (* 1024 1024))) "\n")
                      #js {:encoding "utf8" :mode 384})
-      (is (thrown-with-msg? js/Error #"exceeds 1 MiB"
-                            (scanner/scan-sidecar locator)))
+      (let [scan (scanner/scan-sidecar locator)]
+        (is (= :record-too-large (get-in scan [:physical-conflict :reason])))
+        (is (empty? (:records scan))))
       (writeFileSync path (js/Buffer.from #js [255 10]) #js {:mode 384})
-      (is (thrown-with-msg? js/Error #"not valid UTF-8"
-                            (scanner/scan-sidecar locator)))
+      (let [scan (scanner/scan-sidecar locator)]
+        (is (= :invalid-utf8 (get-in scan [:physical-conflict :reason])))
+        (is (empty? (:records scan))))
       (finally
         (rmSync directory #js {:recursive true :force true})))))
+
+(deftest protocol-string-bounds-use-utf8-bytes
+  (let [event (js/JSON.parse
+               (first (string/split-lines (readFileSync valid-fixture "utf8"))))]
+    (aset (aget (aget event "observations") 0) "content" (.repeat "é" 40000))
+    (is (= [:invalid-envelope]
+           (:diagnostics
+            (protocol/inspect-event
+             event {:source-kind "claude-code"
+                    :source-session-id "session-123"
+                    :producer-id "org.example.claude-memory"}))))))
+
+(deftest classifies-terminal-and-transient-scan-failures
+  (is (= :terminal (scanner/failure-class :unsafe-path)))
+  (is (= :terminal (scanner/failure-class :unsafe-permissions)))
+  (is (= :transient (scanner/failure-class :concurrent-change))))
 
 (deftest rejects-unsafe-sidecar-files
   (let [directory (mkdtempSync (.join node-path (tmpdir) "adam-memory-safety-"))

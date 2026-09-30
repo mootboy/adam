@@ -1,5 +1,6 @@
 (ns adam.memory.protocol
   (:require [clojure.string :as string]
+            ["node:buffer" :refer [Buffer]]
             ["node:crypto" :refer [createHash]]))
 
 (def supported-kinds
@@ -113,7 +114,7 @@
   (js/Object.hasOwn value key))
 
 (defn- bounded-string? [value minimum maximum]
-  (and (string? value) (<= minimum (.-length value) maximum)))
+  (and (string? value) (<= minimum (.byteLength Buffer value "utf8") maximum)))
 
 (defn- protocol-id? [value]
   (and (bounded-string? value 1 128)
