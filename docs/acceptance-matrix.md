@@ -69,7 +69,8 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 
 | Case | Expected result |
 | --- | --- |
-| Existing Pi observation or reflection uses a producerless source-scoped URN | Its ID gains canonical producer scope before normal memory projection |
+| Existing Pi observation or reflection uses a producerless source-scoped URN | Its ID gains canonical `pi-observational-memory` producer scope before normal memory projection |
+| A producerless memory belongs to a non-Pi source | Migration rejects the ambiguous provenance transactionally (**live**) |
 | Two producers use the same memory ID in one source session | Their observation/reflection URNs remain distinct |
 | Graph contains remote-only memories | IDs migrate from persisted source and producer metadata without local JSONL (**live**) |
 | Observation is dropped or linked through `ABOUT` and `SOURCED_FROM` | Tombstone and provenance remain unchanged after migration (**live**) |

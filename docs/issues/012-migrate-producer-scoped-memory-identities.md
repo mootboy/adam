@@ -35,7 +35,7 @@ Adam uses canonical producer-scoped observation and reflection identities. Befor
 ## Acceptance criteria
 
 - [x] New observation and reflection URNs include immutable producer identity.
-- [x] Existing Pi memories migrate using persisted producer metadata without local JSONL.
+- [x] Existing Pi memories migrate using persisted producer metadata without local JSONL, with the historical producer default applied only to producerless legacy Pi memory.
 - [x] Only memory IDs and required producer/source metadata change; sessions and entries remain unchanged.
 - [x] Dropped state, `ABOUT`, `SOURCED_FROM`, `SUPPORTED_BY`, and `HAS_MEMORY` relationships remain intact.
 - [x] Migration runs before normal memory projection.
@@ -50,8 +50,8 @@ Adam uses canonical producer-scoped observation and reflection identities. Befor
 Implemented on `feat/producer-scoped-memory-identity`.
 
 - Deterministic ClojureScript suite: 124 tests with 506 assertions.
-- Ephemeral Neo4j 5.26 suite: 7 tests with 114 assertions plus the worker outage-repair test.
-- Live migration coverage seeds a stale current marker and remote-only Pi memories, rejects an invalid transaction without advancing identities or the marker, repairs and migrates, verifies dropped state plus `ABOUT`, `SOURCED_FROM`, `SUPPORTED_BY`, and `HAS_MEMORY` relationships, and confirms idempotency.
+- Ephemeral Neo4j 5.26 suite: 7 tests with 115 assertions plus the worker outage-repair test.
+- Live migration coverage seeds a stale current marker and remote-only Pi memories, rejects ambiguous producerless non-Pi provenance without advancing identities or the marker, defaults producerless legacy Pi provenance, repairs and migrates, verifies dropped state plus `ABOUT`, `SOURCED_FROM`, `SUPPORTED_BY`, and `HAS_MEMORY` relationships, and confirms idempotency.
 - Release build, compiled boundaries, exact-tarball test, package dry-run, committed-dist drift, and diff checks are required before proposal.
 
 ## Notes
