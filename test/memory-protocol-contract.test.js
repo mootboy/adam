@@ -19,7 +19,7 @@ async function readCompleteLines(relativePath) {
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (value && typeof value === "object") {
-    return `{${Object.keys(value).sort().map((key) =>
+    return `{${Object.keys(value).sort(compareUtf16).map((key) =>
       `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
   }
   return JSON.stringify(value);
@@ -27,6 +27,20 @@ function canonicalJson(value) {
 
 function payloadHash(event) {
   return createHash("sha256").update(canonicalJson(event)).digest("hex");
+}
+
+function compareUtf16(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function checkpointRegresses(previousStreams, currentStreams) {
+  const current = new Map(currentStreams.map((stream) => [stream.streamId, stream]));
+  return previousStreams.some((prior) => {
+    const next = current.get(prior.streamId);
+    return !next
+      || next.committedBytes < prior.committedBytes
+      || (next.committedBytes === prior.committedBytes && next.prefixSha256 !== prior.prefixSha256);
+  });
 }
 
 const protocolId = /^[a-z0-9](?:[a-z0-9._-]{0,127})$/;
@@ -53,7 +67,7 @@ function assertEventShape(event) {
   assert.ok(streams.length >= 1 && streams.length <= 256);
   assertUnique(streams.map(({ streamId }) => streamId), "checkpoint stream IDs");
   assert.deepEqual(streams.map(({ streamId }) => streamId),
-    [...streams.map(({ streamId }) => streamId)].sort());
+    [...streams.map(({ streamId }) => streamId)].sort(compareUtf16));
   for (const stream of streams) {
     assert.ok(Number.isSafeInteger(stream.committedBytes) && stream.committedBytes >= 0);
     assert.match(stream.prefixSha256, sha256);
@@ -110,8 +124,10 @@ test("memory protocol fixture manifest covers the v1 contract cases", async () =
     "valid-events",
     "identical-replay",
     "conflicting-event-id",
+    "canonical-jcs",
     "malformed-complete-record",
     "incomplete-tail",
+    "checkpoint-regression",
     "unresolved-citations",
     "tombstone-before-definition",
     "conflicting-memory-id",
@@ -160,6 +176,19 @@ test("repeated event IDs are idempotent only for identical canonical payloads", 
   assert.notEqual(payloadHash(conflicting[0]), payloadHash(conflicting[1]));
 });
 
+test("the JCS edge vector fixes UTF-16 ordering, escaping, Unicode, and number serialization", async () => {
+  const manifest = await readJson("manifest.json");
+  const expected = manifest.cases.find((fixtureCase) => fixtureCase.id === "canonical-jcs").expected;
+  const [event] = (await readCompleteLines("canonical-jcs.jsonl")).map(JSON.parse);
+
+  assert.equal(event.extension.text, "Café\t雪");
+  assert.equal(event.extension.amount, 333333333.3333333);
+  assert.deepEqual(event.sourceCheckpoint.streams.map(({ streamId }) => streamId),
+    ["stream-😀", "stream-�"]);
+  assert.equal(canonicalJson(event), expected.canonicalPayload);
+  assert.deepEqual([payloadHash(event)], expected.canonicalPayloadSha256);
+});
+
 test("completed malformed JSON is rejected while an incomplete tail is deferred", async () => {
   const malformed = await readCompleteLines("malformed-complete-record.jsonl");
   assert.throws(() => JSON.parse(malformed[0]), SyntaxError);
@@ -171,6 +200,29 @@ test("completed malformed JSON is rejected while an incomplete tail is deferred"
   const deferred = incomplete.subarray(lastLf + 1).toString("utf8");
   assert.doesNotThrow(() => JSON.parse(committed));
   assert.throws(() => JSON.parse(deferred), SyntaxError);
+});
+
+test("checkpoint regressions skip events without conflicting the stream", async () => {
+  const manifest = await readJson("manifest.json");
+  const expected = manifest.cases.find((fixtureCase) => fixtureCase.id === "checkpoint-regression").expected;
+  const events = (await readCompleteLines("checkpoint-regression.jsonl")).map(JSON.parse);
+  let acceptedCheckpoint = null;
+  let acceptedEvents = 0;
+  let diagnosticCount = 0;
+
+  for (const event of events) {
+    const streams = event.sourceCheckpoint.streams;
+    if (acceptedCheckpoint && checkpointRegresses(acceptedCheckpoint, streams)) {
+      diagnosticCount += 1;
+      continue;
+    }
+    acceptedCheckpoint = streams;
+    acceptedEvents += 1;
+  }
+
+  assert.equal(acceptedEvents, expected.acceptedEvents);
+  assert.equal(diagnosticCount, expected.diagnosticCount);
+  assert.equal(acceptedCheckpoint, events.at(-1).sourceCheckpoint.streams);
 });
 
 test("unresolved entry and support citations remain structurally valid", async () => {
@@ -232,6 +284,8 @@ test("all structurally valid fixture records conform to the v1 event shape", asy
     "valid-events.jsonl",
     "identical-replay.jsonl",
     "conflicting-event-id.jsonl",
+    "canonical-jcs.jsonl",
+    "checkpoint-regression.jsonl",
     "unresolved-citations.jsonl",
     "tombstone-before-definition.jsonl",
     "conflicting-memory-id.jsonl",

@@ -148,6 +148,18 @@ test("the release tarball is complete and runs without source compilation", asyn
     }
     assert.equal(await exists(path.join(packageRoot, "src")), false, "ClojureScript source is not a runtime dependency");
 
+    const protocolManifest = JSON.parse(await readFile(
+      path.join(packageRoot, "docs", "fixtures", "memory-protocol-v1", "manifest.json"),
+      "utf8",
+    ));
+    for (const fixtureCase of protocolManifest.cases) {
+      for (const fixtureFile of [fixtureCase.file, fixtureCase.comparisonFile].filter(Boolean)) {
+        assert.equal(await exists(path.join(
+          packageRoot, "docs", "fixtures", "memory-protocol-v1", fixtureFile,
+        )), true, `${fixtureFile} must be packaged`);
+      }
+    }
+
     const manifest = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
     assert.equal(manifest.name, "@mootboy/adam");
     assert.equal(manifest.private, true);

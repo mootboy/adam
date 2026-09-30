@@ -75,6 +75,9 @@ These contract/fixture cases are deterministic and precede production sidecar in
 | Model successfully emits no memory | `source.covered` durably advances producer coverage without creating a memory |
 | Same event ID repeats with RFC 8785-equivalent payload | Raw records are retained and semantic effect applies once |
 | Same event ID repeats with changed canonical payload | The memory stream reports immutable-event conflict and stops semantic advancement |
+| JCS edge vector uses non-ASCII, an escaped control, and a non-integer number | Canonical UTF-8 bytes and SHA-256 match the committed RFC 8785 vector |
+| Source checkpoint drops a stream, decreases an offset, or changes a hash at equal offset | Raw record receives `checkpoint-regression`; the event is skipped and later records continue against the last accepted checkpoint |
+| Event fields individually fit but combined encoding exceeds 1 MiB | Producer splits events or reduces content; the oversized record is rejected |
 | Completed line is malformed JSON | Exact raw record is retained with a diagnostic and no semantic effect |
 | File ends in a non-LF tail | Tail is deferred and excluded from the memory-stream checkpoint |
 | Observation cites an entry not yet mirrored | Memory is retained with unresolved provenance and repaired after source reconciliation |
