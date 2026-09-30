@@ -1,6 +1,6 @@
 # Adam 0.4.0 plan: provider-neutral memory production
 
-Status: draft for review
+Status: active milestone plan
 
 Adam 0.3 made Claude Code a second ingestion host: Adam mirrors its parent and subagent transcripts, indexes native file evidence, and exposes the same explicit file-memory query used by Pi. Claude conversations still produce no observations or reflections. Adam should not become the component that decides what is memorable; instead, 0.4.0 defines a durable protocol through which independent producers can publish memories that Adam losslessly replicates, validates, links to source entries, and projects onto canonical files.
 
@@ -88,7 +88,7 @@ The protocol contract must specify:
 - one append operation per encoded record using append mode;
 - file and containing-directory synchronization after durable creation/append;
 - deferred handling of an incomplete trailing record;
-- rejection of malformed completed JSON;
+- lossless retention and diagnostic rejection of malformed completed JSON;
 - checkpoint validation by committed byte offset and prefix hash;
 - conflict on committed-prefix mutation, shrinkage, or changed immutable event payload;
 - bounded diagnostics that contain identifiers and reasons, not memory content.
@@ -142,7 +142,8 @@ Supported event kinds are:
 
 - `observations.recorded`;
 - `reflections.recorded`;
-- `observations.dropped`.
+- `observations.dropped`;
+- `source.covered`, a content-free successful no-memory result that commits only `sourceCheckpoint`.
 
 Observation and reflection item validation initially follows Adam's existing `pi-observational-memory` structural rules. Sidecar entry citations are qualified by stream because Claude sessions can contain parent and subagent streams. Pi normalization supplies its single implicit stream.
 
@@ -160,7 +161,7 @@ The sidecar itself is the producer's commit log. After restart, a producer deriv
 - a crash after durable append observes the committed event on restart and does not generate a second logical result;
 - a separately stored producer checkpoint can optimize scanning but cannot advance authority beyond the sidecar.
 
-The reference producer must prove this crash window with deterministic tests.
+A valid no-memory model result is durably committed as `source.covered`; model failures and cancellations are not coverage. The reference producer must prove this crash window with deterministic tests.
 
 ### Memory semantics
 
@@ -315,7 +316,7 @@ Native `Read`, `Edit`, and `Write` activity may be cited. Bash commands, MCP cal
 
 ### Producer characterization before implementation
 
-The initial characterization is recorded in [`claude-memory-producer-contract.md`](claude-memory-producer-contract.md). It approves fast locator-only hooks, a detached serialized worker, a repeatable explicitly enabled safe-mode Claude CLI tracer bullet, sidecar-derived replay, bounded structured output, source-progress scheduling, and explicit background-processing consent. Step 2 must still decide how no-memory coverage is committed and must default to an explicit-credential adapter unless inherited-login background use is confirmed to comply with the applicable subscription terms.
+The initial characterization is recorded in [`claude-memory-producer-contract.md`](claude-memory-producer-contract.md). It approves fast locator-only hooks, a detached serialized worker, a repeatable explicitly enabled safe-mode Claude CLI tracer bullet, sidecar-derived replay, bounded structured output, source-progress scheduling, and explicit background-processing consent. Protocol v1 resolves no-memory coverage through `source.covered`; the producer defaults to an explicit-credential adapter unless inherited-login background use is confirmed to comply with the applicable subscription terms.
 
 The characterization covered:
 
@@ -359,7 +360,7 @@ The end-to-end proof is:
 The scope is one 0.4.0 milestone, not one implementation PR. Track each numbered increment with a repository issue and deliver it through one or more small, independently reviewable PRs. Intermediate PRs land on `main` without changing the released package version. Only the final release-preparation PR bumps the package and plugin versions to 0.4.0, finalizes the changelog, rebuilds all committed runtimes, and activates the protected-main tag/release pipeline.
 
 1. **Complete:** characterize the reference Claude producer and record the non-blocking generation/privacy contract in [`claude-memory-producer-contract.md`](claude-memory-producer-contract.md).
-2. Commit `docs/memory-protocol-contract.md` with fixtures for valid events, replay, malformed complete records, incomplete tails, unresolved citations, tombstones, duplicate IDs, prefix changes, and source/producer mismatch.
+2. **Complete:** commit [`memory-protocol-contract.md`](memory-protocol-contract.md) with fixtures for valid events, replay, malformed complete records, incomplete tails, unresolved citations, tombstones, duplicate IDs, prefix changes, and source/producer mismatch.
 3. Implement lossless memory-stream scanning, raw-record storage, checkpoints, and live round-trip tests.
 4. Implement the graph-native producer-scoped memory-identity migration without changing session, stream, or entry identities.
 5. Implement aggregate multi-producer projection and retrieval provenance.

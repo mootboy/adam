@@ -6,7 +6,7 @@ Status: approved design; implementation is incremental.
 
 ## Authority and boundaries
 
-Pi session JSONL and hook-located Claude transcript streams are authoritative for their respective sources. adam reads persisted sessions but never modifies or overwrites an existing source file. Neo4j is an eventually consistent replica and a rebuildable derived index.
+Pi session JSONL and hook-located Claude transcript streams are authoritative for their respective host sources. Producer-owned memory sidecars defined by [`memory-protocol-contract.md`](memory-protocol-contract.md) are a separate authority for external memory events. adam reads these persisted logs but never modifies or overwrites an existing source file. Neo4j is an eventually consistent replica and a rebuildable derived index.
 
 ```text
 Pi
@@ -20,7 +20,7 @@ Pi
     └── explicit query surfaces
 ```
 
-The persisted log is the integration protocol. Separate extensions need no shared process state, package dependency, or direct event channel.
+Persisted logs are the integration protocol. Pi producers may embed supported entries in authoritative session JSONL; external producers append protocol-v1 sidecars. Separate extensions need no shared process state, package dependency, or direct event channel.
 
 ### Memory producers own
 
@@ -99,6 +99,8 @@ Unknown custom entries are ignored. Malformed or unsupported producer entries pr
 
 The first adapter is implemented structurally in `src/adam/sources/pi_observational_memory/` without importing the producer package. It preserves first-valid-record semantics, dropped-observation tombstones, source-entry provenance, and reflection support links. The resulting `AdamObservation` and `AdamReflection` nodes are rebuilt transactionally with the file-evidence projection; adapter diagnostics expose only producer, entry ID, and reason.
 
+Adam 0.4 protocol v1 additionally defines producer/session sidecars with `observations.recorded`, `reflections.recorded`, `observations.dropped`, and content-free `source.covered` events. The contract fixes safe paths, lossless JSONL framing, RFC 8785 replay identity, stream-qualified citations, and source-coverage recovery before scanner/storage implementation. Sidecar ingestion will normalize through the same provider-neutral memory model without turning Adam into a producer.
+
 ## Repository and file evidence
 
 Only explicit file tools provide evidence. Pi recognizes `read`, `edit`, and `write` calls with a non-empty `path`; the Claude adapter recognizes `Read`, `Edit`, and `Write` calls with a non-empty `input.file_path`. Matching results are linked structurally rather than inferred from output or prose.
@@ -150,7 +152,7 @@ Agent tool in Pi and Claude Code:
 
 - `adam_file_context({ path, origin? })`
 
-The Claude Code plugin launches the read-only stdio MCP server from `mcp.js` and bounded lifecycle hooks from `hook.js`. Hooks wake `worker.js`, which serializes transcript synchronization and file-evidence projection independently of Claude's interactive lifecycle. Retrieval shares query semantics and identity with Pi; ingestion still produces no observations or reflections.
+The Claude Code plugin launches the read-only stdio MCP server from `mcp.js` and bounded lifecycle hooks from `hook.js`. Hooks wake `worker.js`, which serializes transcript synchronization and file-evidence projection independently of Claude's interactive lifecycle. Retrieval shares query semantics and identity with Pi. The implemented 0.3 ingestion path still produces no observations or reflections; the 0.4 sidecar contract is approved but its ingestion and reference producer remain staged work.
 
 Environment:
 

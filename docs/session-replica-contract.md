@@ -61,6 +61,13 @@ urn:adam:observation:<userUuid>:pi:<piSessionId>:<memoryId>
 urn:adam:reflection:<userUuid>:pi:<piSessionId>:<memoryId>
 ```
 
+The approved 0.4 memory protocol migrates only observation/reflection identity to include immutable producer identity:
+
+```text
+urn:adam:observation:<userUuid>:<sourceKind>:<sourceSessionId>:<producerId>:<memoryId>
+urn:adam:reflection:<userUuid>:<sourceKind>:<sourceSessionId>:<producerId>:<memoryId>
+```
+
 Session and entry IDs are user- and source-scoped so copied files or equal host-local IDs cannot create accidental cross-user or cross-host ownership and lineage. Before normal synchronization, the versioned 0.3 migration transactionally rewrites earlier unqualified Pi session, entry, observation, reflection, parent, and denormalized session identities while preserving raw payloads, relationships, checkpoints, and remote-only sessions. Its user marker is written last in the same transaction, and effective-version checks reject stale dependent identity even when a newer marker exists. Repositories with equivalent credential-free SSH or HTTPS origins converge across users, sessions, machines, checkouts, and registered worktrees. Originless repositories retain isolated user-scoped local identities and cannot be queried by origin.
 
 ## JSONL validation
@@ -96,6 +103,16 @@ Claude `SessionStart`, `Stop`, `SubagentStop`, and `SessionEnd` hooks accept bou
 
 One filesystem lease serializes workers. Repeated notifications for the same session/stream locator coalesce; notifications are removed only after lossless stream synchronization and derived file-evidence handling succeed. Parent and explicitly supplied subagent locators are retained in an owner-only per-session manifest for complete subsequent rebuilds. Backend or source failures retain notifications and retry with exponential backoff. A dead worker PID or old incomplete lease can be recovered, while a concurrent live worker prevents duplicate processing.
 
+## Producer memory sidecars
+
+The normative 0.4 file boundary is [`memory-protocol-contract.md`](memory-protocol-contract.md). One producer/source session owns one append-only sidecar under XDG data storage. It uses four event kinds: recorded observations, recorded reflections, dropped-observation tombstones, and content-free source coverage.
+
+`source.covered` commits a successful no-memory result without inventing a memory. Producer restart recovery folds source coverage from the sidecar, so a crash after durable append does not repay indefinitely for a range the model already declined. Event replay compares SHA-256 hashes of RFC 8785 canonical JSON; an equal repeated event is idempotent and a changed payload under the same event ID conflicts.
+
+Each event carries a complete stream-qualified source checkpoint. It is producer provenance and producer replay authority only. Adam must not compare it with independently observed Pi or Claude synchronization checkpoints. Source citations may remain unresolved until later host-source reconciliation.
+
+The physical stream uses owner-only, non-symlink, single-writer UTF-8 JSONL with a 1 MiB record bound. Complete malformed records are retained with diagnostics; a non-LF tail is deferred. Sidecar shrinkage or committed-prefix mutation conflicts only that memory stream. Scanner, graph storage, and reconciliation are staged after the contract increment.
+
 ## Fork lineage
 
 Pi's header `parentSession` path is retained as provenance but is not canonical identity. adam reads the referenced parent header with a bounded reader and derives the parent session URN from its Pi session ID.
@@ -108,7 +125,7 @@ Child-first and parent-first synchronization must converge on one edge. Missing,
 
 ## Neo4j graph
 
-Uniqueness constraints cover `id` on:
+Uniqueness constraints currently cover `id` on:
 
 - `AdamUser`
 - `AdamIdentity`
@@ -119,6 +136,8 @@ Uniqueness constraints cover `id` on:
 - `AdamCodeFile`
 - `AdamObservation`
 - `AdamReflection`
+
+The staged 0.4 lossless sidecar implementation adds `AdamMemoryStream` and `AdamMemoryRecord` uniqueness after the protocol contract, not as part of this documentation increment.
 
 A composite range index on `AdamEntry(sessionId, entryId)` supports bounded per-session evidence and memory projection lookups without scanning the complete replicated entry graph.
 

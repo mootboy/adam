@@ -1,0 +1,2 @@
+{"protocolVersion":1,"eventId":"01JQ7M6N0FK3AH1X7N6DK0D812","kind":"source.covered","producer":{"id":"org.example.claude-memory","version":"0.1.0"},"source":{"kind":"claude-code","sessionId":"session-123"},"sourceCheckpoint":{"streams":[{"streamId":"main","committedBytes":600,"prefixSha256":"1111111111111111111111111111111111111111111111111111111111111111","selectedLeafEntryId":"entry-6"}]},"recordedAt":"2026-09-30T12:05:00.000Z"}
+{"protocolVersion":1,"eventId":"unfinished
