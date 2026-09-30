@@ -40,6 +40,7 @@
             "r-read" "r-write" "sa-read" "sa-result"]
            (mapv :entry-id (:entry-file-evidence projection))))
     (is (= {:entry-id "a-request-1"
+            :stream-id "main"
             :file-id (:id (common-evidence/resolve-repository-file
                            repository "/work/repo" "src/read.cljs"))
             :commit "main-head" :branch "main" :dirty? false}

@@ -717,6 +717,7 @@
 
 (defn- evidence-properties [evidence]
   (let [properties #js {:entryId (:entry-id evidence)
+                        :streamId (or (:stream-id evidence) "main")
                         :fileId (:file-id evidence)
                         :commit (:commit evidence)
                         :dirty (= true (:dirty? evidence))}]
@@ -724,11 +725,16 @@
       (aset properties "branch" branch))
     properties))
 
+(defn- citation-properties [citation]
+  #js {:streamId (:stream-id citation)
+       :entryId (:entry-id citation)})
+
 (defn- observation-properties [observation]
   #js {:id (:id observation)
        :sourceKind (:source-kind observation)
        :sourceSessionId (:source-session-id observation)
        :producer (:producer observation)
+       :producerVersion (:producer-version observation)
        :adapterVersion (:adapter-version observation)
        :memoryId (:memory-id observation)
        :content (:content observation)
@@ -736,7 +742,10 @@
        :relevance (:relevance observation)
        :tokenCount (:token-count observation)
        :recordingEntryId (:recording-entry-id observation)
+       :recordingEventId (:recording-event-id observation)
+       :recordingMemoryRecordId (:recording-memory-record-id observation)
        :sourceEntryIds (clj->js (:source-entry-ids observation))
+       :sourceEntries (clj->js (mapv citation-properties (:source-entries observation)))
        :fileIds (clj->js (:file-ids observation))
        :dropped (= true (:dropped? observation))})
 
@@ -745,60 +754,145 @@
        :sourceKind (:source-kind reflection)
        :sourceSessionId (:source-session-id reflection)
        :producer (:producer reflection)
+       :producerVersion (:producer-version reflection)
        :adapterVersion (:adapter-version reflection)
        :memoryId (:memory-id reflection)
        :content (:content reflection)
        :tokenCount (:token-count reflection)
        :recordingEntryId (:recording-entry-id reflection)
+       :recordingEventId (:recording-event-id reflection)
+       :recordingMemoryRecordId (:recording-memory-record-id reflection)
        :supportingObservationIds
        (clj->js (:supporting-observation-ids reflection))})
 
-(defn- index-file-evidence-transaction! [^js tx projection]
+(defn- replace-memory-projection! [^js tx projection]
+  (-> (.run
+       tx
+       "MATCH (s:AdamSession {id: $sessionId})
+        OPTIONAL MATCH (s)-[:HAS_MEMORY]->(memory)
+        DETACH DELETE memory"
+       #js {:sessionId (:session-id projection)})
+      (.then
+       (fn [_]
+         (.run
+          tx
+          "UNWIND $observations AS input
+           MATCH (s:AdamSession {id: $sessionId})
+           MERGE (observation:AdamObservation {id: input.id})
+           SET observation.sourceKind = input.sourceKind,
+               observation.sourceSessionId = input.sourceSessionId,
+               observation.producer = input.producer,
+               observation.producerVersion = input.producerVersion,
+               observation.adapterVersion = input.adapterVersion,
+               observation.memoryId = input.memoryId,
+               observation.content = input.content,
+               observation.timestamp = input.timestamp,
+               observation.relevance = input.relevance,
+               observation.tokenCount = input.tokenCount,
+               observation.recordingEntryId = input.recordingEntryId,
+               observation.recordingEventId = input.recordingEventId,
+               observation.recordingMemoryRecordId = input.recordingMemoryRecordId,
+               observation.sourceEntryIds = input.sourceEntryIds,
+               observation.dropped = input.dropped,
+               observation.extractorVersion = $extractorVersion
+           MERGE (s)-[:HAS_MEMORY]->(observation)
+           WITH observation, input
+           UNWIND input.sourceEntries AS sourceEntry
+           MATCH (source:AdamEntry {sessionId: $sessionId, entryId: sourceEntry.entryId})
+           WHERE coalesce(source.streamId, 'main') = sourceEntry.streamId
+           MERGE (observation)-[:SOURCED_FROM]->(source)"
+          #js {:sessionId (:session-id projection)
+               :observations (clj->js (mapv observation-properties
+                                            (:observations projection)))
+               :extractorVersion (:extractor-version projection)})))
+      (.then
+       (fn [_]
+         (.run
+          tx
+          "UNWIND $observations AS input
+           MATCH (observation:AdamObservation {id: input.id})
+           UNWIND input.fileIds AS fileId
+           MATCH (file:AdamCodeFile {id: fileId})
+           MERGE (observation)-[about:ABOUT]->(file)
+           SET about.basis = 'source_tool_path',
+               about.extractorVersion = $extractorVersion"
+          #js {:observations (clj->js (mapv observation-properties
+                                            (:observations projection)))
+               :extractorVersion (:extractor-version projection)})))
+      (.then
+       (fn [_]
+         (.run
+          tx
+          "UNWIND $reflections AS input
+           MATCH (s:AdamSession {id: $sessionId})
+           MERGE (reflection:AdamReflection {id: input.id})
+           SET reflection.sourceKind = input.sourceKind,
+               reflection.sourceSessionId = input.sourceSessionId,
+               reflection.producer = input.producer,
+               reflection.producerVersion = input.producerVersion,
+               reflection.adapterVersion = input.adapterVersion,
+               reflection.memoryId = input.memoryId,
+               reflection.content = input.content,
+               reflection.tokenCount = input.tokenCount,
+               reflection.recordingEntryId = input.recordingEntryId,
+               reflection.recordingEventId = input.recordingEventId,
+               reflection.recordingMemoryRecordId = input.recordingMemoryRecordId,
+               reflection.supportingObservationIds = input.supportingObservationIds,
+               reflection.extractorVersion = $extractorVersion
+           MERGE (s)-[:HAS_MEMORY]->(reflection)
+           WITH reflection, input
+           UNWIND input.supportingObservationIds AS observationId
+           MATCH (observation:AdamObservation {memoryId: observationId,
+                                                 producer: input.producer})
+                 <-[:HAS_MEMORY]-(:AdamSession {id: $sessionId})
+           MERGE (reflection)-[:SUPPORTED_BY]->(observation)"
+          #js {:sessionId (:session-id projection)
+               :reflections (clj->js (mapv reflection-properties
+                                           (:reflections projection)))
+               :extractorVersion (:extractor-version projection)})))))
+
+(defn- clear-file-evidence-transaction! [^js tx projection]
+  (-> (.run
+       tx
+       "MATCH (s:AdamSession {id: $sessionId})-[:HAS_ENTRY]->(entry)
+        OPTIONAL MATCH (entry)-[touch:TOUCHES]->()
+        DELETE touch"
+       #js {:sessionId (:session-id projection)})
+      (.then
+       (fn [_]
+         (.run
+          tx
+          "MATCH (s:AdamSession {id: $sessionId})
+           OPTIONAL MATCH (s)-[old:WORKED_ON]->()
+           DELETE old
+           SET s.codeMemoryVersion = $extractorVersion"
+          #js {:sessionId (:session-id projection)
+               :extractorVersion (:extractor-version projection)})))))
+
+(defn- write-file-evidence-transaction! [^js tx projection]
   (let [repository (:repository projection)]
     (-> (.run
          tx
          "MATCH (s:AdamSession {id: $sessionId})
-          OPTIONAL MATCH (s)-[:HAS_MEMORY]->(memory)
-          DETACH DELETE memory"
-         #js {:sessionId (:session-id projection)})
-        (.then
-         (fn [_]
-           (.run
-            tx
-            "MATCH (s:AdamSession {id: $sessionId})-[:HAS_ENTRY]->(entry)
-             OPTIONAL MATCH (entry)-[touch:TOUCHES]->()
-             DELETE touch"
-            #js {:sessionId (:session-id projection)})))
-        (.then
-         (fn [_]
-           (.run
-            tx
-            "MATCH (s:AdamSession {id: $sessionId})
-             OPTIONAL MATCH (s)-[old:WORKED_ON]->()
-             DELETE old
-             SET s.codeMemoryVersion = $extractorVersion
-             WITH s
-             MERGE (repository:AdamRepository {id: $repository.id})
-             SET repository.normalizedOrigin = $repository.normalizedOrigin
-             REMOVE repository.root, repository.normalizedRemote
-             WITH s, repository
-             OPTIONAL MATCH (:AdamUser)-[legacyOwnership:OWNS]->(repository)
-             DELETE legacyOwnership
-             WITH s, repository
-             MERGE (s)-[worked:WORKED_ON]->(repository)
-             SET worked.root = $root,
-                 worked.commit = $commit,
-                 worked.branch = $branch,
-                 worked.dirty = $dirty,
-                 worked.extractorVersion = $extractorVersion,
-                 worked.indexedAt = datetime()"
-            #js {:sessionId (:session-id projection)
-                 :repository (repository-properties repository)
-                 :root (:root repository)
-                 :commit (:commit repository)
-                 :branch (:branch repository)
-                 :dirty (= true (:dirty? repository))
-                 :extractorVersion (:extractor-version projection)})))
+          MERGE (repository:AdamRepository {id: $repository.id})
+          SET repository.normalizedOrigin = $repository.normalizedOrigin
+          REMOVE repository.root, repository.normalizedRemote
+          WITH s, repository
+          OPTIONAL MATCH (:AdamUser)-[legacyOwnership:OWNS]->(repository)
+          DELETE legacyOwnership
+          WITH s, repository
+          MERGE (s)-[worked:WORKED_ON]->(repository)
+          SET worked.root = $root,
+              worked.commit = $commit,
+              worked.branch = $branch,
+              worked.dirty = $dirty,
+              worked.extractorVersion = $extractorVersion,
+              worked.indexedAt = datetime()"
+         #js {:sessionId (:session-id projection)
+              :repository (repository-properties repository)
+              :root (:root repository) :commit (:commit repository)
+              :branch (:branch repository) :dirty (= true (:dirty? repository))
+              :extractorVersion (:extractor-version projection)})
         (.then
          (fn [_]
            (.run
@@ -817,6 +911,7 @@
             tx
             "UNWIND $evidence AS input
              MATCH (entry:AdamEntry {sessionId: $sessionId, entryId: input.entryId})
+             WHERE coalesce(entry.streamId, 'main') = input.streamId
              MATCH (file:AdamCodeFile {id: input.fileId})
              MERGE (entry)-[touch:TOUCHES]->(file)
              SET touch.basis = 'tool_path',
@@ -827,78 +922,16 @@
             #js {:sessionId (:session-id projection)
                  :evidence (clj->js (mapv evidence-properties
                                            (:entry-file-evidence projection)))
-                 :extractorVersion (:extractor-version projection)})))
-        (.then
-         (fn [_]
-           (.run
-            tx
-            "UNWIND $observations AS input
-             MATCH (s:AdamSession {id: $sessionId})
-             MERGE (observation:AdamObservation {id: input.id})
-             SET observation.sourceKind = input.sourceKind,
-                 observation.sourceSessionId = input.sourceSessionId,
-                 observation.producer = input.producer,
-                 observation.adapterVersion = input.adapterVersion,
-                 observation.memoryId = input.memoryId,
-                 observation.content = input.content,
-                 observation.timestamp = input.timestamp,
-                 observation.relevance = input.relevance,
-                 observation.tokenCount = input.tokenCount,
-                 observation.recordingEntryId = input.recordingEntryId,
-                 observation.sourceEntryIds = input.sourceEntryIds,
-                 observation.dropped = input.dropped,
-                 observation.extractorVersion = $extractorVersion
-             MERGE (s)-[:HAS_MEMORY]->(observation)
-             WITH observation, input
-             UNWIND input.sourceEntryIds AS sourceEntryId
-             MATCH (source:AdamEntry {sessionId: $sessionId, entryId: sourceEntryId})
-             MERGE (observation)-[:SOURCED_FROM]->(source)"
-            #js {:sessionId (:session-id projection)
-                 :observations (clj->js (mapv observation-properties
-                                              (:observations projection)))
-                 :extractorVersion (:extractor-version projection)})))
-        (.then
-         (fn [_]
-           (.run
-            tx
-            "UNWIND $observations AS input
-             MATCH (observation:AdamObservation {id: input.id})
-             UNWIND input.fileIds AS fileId
-             MATCH (file:AdamCodeFile {id: fileId})
-             MERGE (observation)-[about:ABOUT]->(file)
-             SET about.basis = 'source_tool_path',
-                 about.extractorVersion = $extractorVersion"
-            #js {:observations (clj->js (mapv observation-properties
-                                              (:observations projection)))
-                 :extractorVersion (:extractor-version projection)})))
-        (.then
-         (fn [_]
-           (.run
-            tx
-            "UNWIND $reflections AS input
-             MATCH (s:AdamSession {id: $sessionId})
-             MERGE (reflection:AdamReflection {id: input.id})
-             SET reflection.sourceKind = input.sourceKind,
-                 reflection.sourceSessionId = input.sourceSessionId,
-                 reflection.producer = input.producer,
-                 reflection.adapterVersion = input.adapterVersion,
-                 reflection.memoryId = input.memoryId,
-                 reflection.content = input.content,
-                 reflection.tokenCount = input.tokenCount,
-                 reflection.recordingEntryId = input.recordingEntryId,
-                 reflection.supportingObservationIds = input.supportingObservationIds,
-                 reflection.extractorVersion = $extractorVersion
-             MERGE (s)-[:HAS_MEMORY]->(reflection)
-             WITH reflection, input
-             UNWIND input.supportingObservationIds AS observationId
-             MATCH (observation:AdamObservation {memoryId: observationId,
-                                                   producer: input.producer})
-                   <-[:HAS_MEMORY]-(:AdamSession {id: $sessionId})
-             MERGE (reflection)-[:SUPPORTED_BY]->(observation)"
-            #js {:sessionId (:session-id projection)
-                 :reflections (clj->js (mapv reflection-properties
-                                             (:reflections projection)))
                  :extractorVersion (:extractor-version projection)}))))))
+
+(defn- index-file-evidence-transaction! [^js tx projection]
+  (-> (clear-file-evidence-transaction! tx projection)
+      (.then
+       (fn [_]
+         (if (:repository projection)
+           (write-file-evidence-transaction! tx projection)
+           (js/Promise.resolve nil))))
+      (.then (fn [_] (replace-memory-projection! tx projection)))))
 
 (defn- session-summary [properties]
   {:id (str (aget properties "id"))
@@ -917,24 +950,47 @@
    :complete? (and (some? (aget properties "entryCount"))
                    (some? (aget properties "logHash")))})
 
+(defn- decoded-memory-record [^js node]
+  (let [properties (.-properties node)]
+    {:id (str (aget properties "id"))
+     :ordinal (neo-integer (aget properties "ordinal"))
+     :raw-json (str (aget properties "rawJson"))
+     :payload-hash (str (aget properties "payloadHash"))
+     :semantic-status (keyword (str (aget properties "semanticStatus")))
+     :diagnostics (mapv keyword
+                        (array-seq (or (aget properties "diagnostics") #js [])))}))
+
 (defn- file-memory-record [record]
   (let [memory (.-properties (record-get record "memory"))
         stored-session (.-properties (record-get record "s"))
+        entries (or (record-get record "sourceEntries") #js [])
         contexts (or (record-get record "sourceContexts") #js [])]
     {:kind (keyword (str (record-get record "kind")))
      :memory-id (str (aget memory "memoryId"))
      :content (str (aget memory "content"))
+     :producer (str (aget memory "producer"))
+     :source-kind (str (aget stored-session "sourceKind"))
+     :source-session-id (str (aget stored-session "sourceSessionId"))
      :session-id (str (aget stored-session "id"))
-     :pi-session-id (str (aget stored-session "piSessionId"))
+     :pi-session-id (when-let [value (aget stored-session "piSessionId")] (str value))
      :source-entry-ids (->> (or (record-get record "sourceEntryIds") #js [])
                             array-seq (mapv str) sort vec)
+     :source-entries
+     (->> (array-seq entries)
+          (keep (fn [entry]
+                  (let [stream-id (aget entry "streamId")
+                        entry-id (aget entry "entryId")]
+                    (when (and (string? stream-id) (string? entry-id))
+                      {:stream-id stream-id :entry-id entry-id}))))
+          (sort-by (juxt :stream-id :entry-id)) vec)
      :source-contexts
      (->> (array-seq contexts)
           (keep (fn [context]
                   (let [entry-id (aget context "entryId")
                         commit (aget context "commit")]
                     (when (and (string? entry-id) (string? commit))
-                      (cond-> {:entry-id entry-id
+                      (cond-> {:stream-id (or (aget context "streamId") "main")
+                               :entry-id entry-id
                                :commit commit
                                :dirty? (= true (aget context "dirty"))}
                         (string? (aget context "branch"))
@@ -1381,16 +1437,36 @@
                   #js {:streamId stream-id})
             (.then
              (fn [result]
+               (mapv #(decoded-memory-record (record-get % "record"))
+                     (records result))))))))
+
+  knowledge-store/AggregateMemoryStore
+  (read-session-memory-streams! [_ user-id session-id]
+    (with-session!
+      driver database
+      (fn [session]
+        (-> (.run
+             session
+             "MATCH (:AdamUser {id: $userId})-[:OWNS]->(:AdamSession {id: $sessionId})-[:HAS_MEMORY_STREAM]->(stream:AdamMemoryStream)
+              OPTIONAL MATCH (stream)-[:HAS_RECORD]->(record:AdamMemoryRecord)
+              WITH stream, record ORDER BY record.ordinal
+              RETURN stream, collect(record) AS records
+              ORDER BY stream.producerId"
+             #js {:userId user-id :sessionId session-id})
+            (.then
+             (fn [result]
                (mapv
                 (fn [row]
-                  (let [properties (.-properties (record-get row "record"))]
-                    {:id (str (aget properties "id"))
-                     :ordinal (neo-integer (aget properties "ordinal"))
-                     :raw-json (str (aget properties "rawJson"))
-                     :payload-hash (str (aget properties "payloadHash"))
-                     :semantic-status (keyword (str (aget properties "semanticStatus")))
-                     :diagnostics (mapv keyword
-                                        (array-seq (or (aget properties "diagnostics") #js [])))}))
+                  (let [stream (.-properties (record-get row "stream"))]
+                    {:id (str (aget stream "id"))
+                     :producer-id (str (aget stream "producerId"))
+                     :source-kind (str (aget stream "sourceKind"))
+                     :source-session-id (str (aget stream "sourceSessionId"))
+                     :conflicted? (= true (aget stream "conflicted"))
+                     :conflict-class (when-let [value (aget stream "conflictClass")]
+                                       (keyword (str value)))
+                     :records (mapv decoded-memory-record
+                                    (array-seq (or (record-get row "records") #js [])))}))
                 (records result))))))))
 
   knowledge-store/FileEvidenceStore
@@ -1417,8 +1493,8 @@
            (-> (.run
                 tx
                 "MATCH (s:AdamSession {id: $sessionId})
-                 OPTIONAL MATCH (s)-[:HAS_MEMORY]->(memory)
-                 DETACH DELETE memory"
+                 OPTIONAL MATCH (s)-[:HAS_MEMORY]->(memory)-[about:ABOUT]->()
+                 DELETE about"
                 #js {:sessionId session-id})
                (.then
                 (fn [_]
@@ -1454,19 +1530,21 @@
                 OPTIONAL MATCH (observation)-[:SOURCED_FROM]->(source:AdamEntry)
                 OPTIONAL MATCH (source)-[touch:TOUCHES]->(file)
                 WITH observation, s, collect(DISTINCT source.entryId) AS sourceEntryIds,
-                     [context IN collect(DISTINCT CASE WHEN touch IS NULL THEN null ELSE {entryId: source.entryId, commit: touch.commit, branch: touch.branch, dirty: touch.dirty} END) WHERE context IS NOT NULL] AS sourceContexts
-                RETURN 'observation' AS kind, observation AS memory, s, sourceEntryIds, sourceContexts
+                     [entry IN collect(DISTINCT CASE WHEN source IS NULL THEN null ELSE {streamId: coalesce(source.streamId, 'main'), entryId: source.entryId} END) WHERE entry IS NOT NULL] AS sourceEntries,
+                     [context IN collect(DISTINCT CASE WHEN touch IS NULL THEN null ELSE {streamId: coalesce(source.streamId, 'main'), entryId: source.entryId, commit: touch.commit, branch: touch.branch, dirty: touch.dirty} END) WHERE context IS NOT NULL] AS sourceContexts
+                RETURN 'observation' AS kind, observation AS memory, s, sourceEntryIds, sourceEntries, sourceContexts
                 UNION ALL
                 MATCH (repository:AdamRepository {id: $repositoryId})-[:CONTAINS]->(file:AdamCodeFile {relativePath: $relativePath})
                 MATCH (:AdamUser {id: $userId})-[:OWNS]->(s:AdamSession)-[:HAS_MEMORY]->(reflection:AdamReflection)-[:SUPPORTED_BY]->(observation:AdamObservation)-[:ABOUT]->(file)
                 OPTIONAL MATCH (observation)-[:SOURCED_FROM]->(source:AdamEntry)
                 OPTIONAL MATCH (source)-[touch:TOUCHES]->(file)
                 WITH reflection, s, collect(DISTINCT source.entryId) AS sourceEntryIds,
-                     [context IN collect(DISTINCT CASE WHEN touch IS NULL THEN null ELSE {entryId: source.entryId, commit: touch.commit, branch: touch.branch, dirty: touch.dirty} END) WHERE context IS NOT NULL] AS sourceContexts
-                RETURN 'reflection' AS kind, reflection AS memory, s, sourceEntryIds, sourceContexts
+                     [entry IN collect(DISTINCT CASE WHEN source IS NULL THEN null ELSE {streamId: coalesce(source.streamId, 'main'), entryId: source.entryId} END) WHERE entry IS NOT NULL] AS sourceEntries,
+                     [context IN collect(DISTINCT CASE WHEN touch IS NULL THEN null ELSE {streamId: coalesce(source.streamId, 'main'), entryId: source.entryId, commit: touch.commit, branch: touch.branch, dirty: touch.dirty} END) WHERE context IS NOT NULL] AS sourceContexts
+                RETURN 'reflection' AS kind, reflection AS memory, s, sourceEntryIds, sourceEntries, sourceContexts
               }
-              RETURN kind, memory, s, sourceEntryIds, sourceContexts
-              ORDER BY kind, memory.memoryId, s.piSessionId
+              RETURN kind, memory, s, sourceEntryIds, sourceEntries, sourceContexts
+              ORDER BY kind, memory.memoryId, memory.producer, s.sourceKind, s.sourceSessionId
               LIMIT $limit"
              #js {:userId user-id
                   :repositoryId repository-id

@@ -214,7 +214,7 @@ Adam does not claim that legacy Pi entries literally contain every sidecar envel
 
 ### Aggregate session projection
 
-Replace the current single-adapter assumption with one deterministic aggregate snapshot per source session. Before writing derived memory state, Adam assembles:
+The implemented aggregate layer replaces the previous single-adapter assumption with one deterministic snapshot per source session. Before writing derived memory state, Adam assembles:
 
 1. normalized embedded memory events, such as Pi custom entries;
 2. every successfully mirrored sidecar producer stream;
@@ -364,7 +364,7 @@ The scope is one 0.4.0 milestone, not one implementation PR. Track each numbered
 2. **Complete:** commit [`memory-protocol-contract.md`](memory-protocol-contract.md) with fixtures for valid events, replay and JCS edge canonicalization, malformed complete records, incomplete tails, source-checkpoint regressions, unresolved citations, tombstones, duplicate IDs, prefix changes, and source/producer mismatch.
 3. **Complete:** implement lossless memory-stream scanning, raw-record storage, checkpoints, and live round-trip tests.
 4. **Complete:** implement the graph-native producer-scoped memory-identity migration without changing session, stream, or entry identities.
-5. Implement aggregate multi-producer projection and retrieval provenance.
+5. **Complete:** implement aggregate multi-producer projection and retrieval provenance.
 6. Implement the distinct durable memory-notification spool and host-neutral reconciliation service.
 7. Build the reference producer and complete the cross-host tracer bullet.
 8. Prepare and merge the sole 0.4.0 release PR through the protected-main flow, then cut over Pi and Claude installations to the same tagged artifact.

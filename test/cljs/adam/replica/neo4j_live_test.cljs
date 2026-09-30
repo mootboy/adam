@@ -195,8 +195,8 @@
                    (is (= :reflection (:kind reflection)))
                    (is (= "bbbbbbbbbbbb" (:memory-id reflection)))
                    (is (= ["result-live"] (:source-entry-ids reflection)))
-                   (is (= [{:entry-id "result-live" :commit "live-commit"
-                            :branch "live" :dirty? true}]
+                   (is (= [{:stream-id "main" :entry-id "result-live"
+                            :commit "live-commit" :branch "live" :dirty? true}]
                           (:source-contexts reflection))))
                  (.run query-session
                        "MATCH (o:AdamObservation {memoryId: 'aaaaaaaaaaaa'})-[:SOURCED_FROM]->(source:AdamEntry {entryId: 'result-live'})
@@ -1243,5 +1243,158 @@
                (fn [records]
                  (is (= 5 (count records))
                      "conflicting producer streams do not alter the healthy stream")
+                 (finish! nil)))
+              (.catch finish!)))))))
+
+(deftest live-aggregate-memory-projection-keeps-producers-distinct
+  (async done
+    (let [uri (environment "ADAM_TEST_NEO4J_URI")
+          username (environment "ADAM_TEST_NEO4J_USERNAME")
+          password (environment "ADAM_TEST_NEO4J_PASSWORD")
+          database (or (environment "ADAM_TEST_NEO4J_DATABASE") "neo4j")]
+      (if-not (and uri username password)
+        (do (is false "ADAM_TEST_NEO4J_URI, USERNAME, and PASSWORD are required") (done))
+        (let [user-uuid (randomUUID)
+              user-id (identity/user-urn user-uuid)
+              auth-token (.basic (.-auth neo4j) username password)
+              ^js driver ((.-driver neo4j) uri auth-token)
+              replica (adam-neo4j/replica-with-driver driver database)
+              ^js query-session (.session driver #js {:database database})
+              root (mkdtempSync (join (tmpdir) "adam-live-aggregate-memory-"))
+              first-path (join root "producer-a.jsonl")
+              second-path (join root "producer-b.jsonl")
+              transcript-path (join (.cwd js/process) "test/fixtures/claude/main.jsonl")
+              repository (evidence/build-repository
+                          {:user-uuid user-uuid :root "/work/repo"
+                           :remote (str "git@example.com:" user-uuid "/aggregate.git")
+                           :commit "main-head" :branch "main" :dirty? false})
+              event-json
+              (fn [producer content]
+                (js/JSON.stringify
+                 #js {:protocolVersion 1 :eventId (str "event-" producer)
+                      :kind "observations.recorded"
+                      :recordedAt "2026-01-01T00:00:00.000Z"
+                      :producer #js {:id producer :version "1.0.0"}
+                      :source #js {:kind "claude-code" :sessionId "claude-session-1"}
+                      :sourceCheckpoint
+                      #js {:streams #js [#js {:streamId "main" :committedBytes 1
+                                              :prefixSha256 (apply str (repeat 64 "a"))
+                                              :selectedLeafEntryId "a-request-1"}]}
+                      :observations
+                      #js [#js {:id "aaaaaaaaaaaa" :content content
+                                :timestamp "2026-01-01T00:00:00.000Z"
+                                :relevance "high" :tokenCount 2
+                                :sourceEntries #js [#js {:streamId "main"
+                                                        :entryId "a-request-1"}]}]}))
+              reconcile-with!
+              (fn [resolved-repository]
+                (claude-reconcile/reconcile!
+                 {:locator-options {:config-home root}
+                  :notification {:event "Stop" :session-id "claude-session-1"
+                                 :transcript-path transcript-path :cwd "/work/repo"}
+                  :user-uuid user-uuid :store replica
+                  :resolve-repository!
+                  (fn [_ _] (js/Promise.resolve resolved-repository))}))
+              reconcile! #(reconcile-with! repository)
+              finish!
+              (fn [error]
+                (-> (.run query-session
+                          "MATCH (file:AdamCodeFile {repositoryId: $repositoryId}) DETACH DELETE file"
+                          #js {:repositoryId (:id repository)})
+                    (.then (fn [_]
+                             (.run query-session
+                                   "MATCH (repository:AdamRepository {id: $repositoryId}) DETACH DELETE repository"
+                                   #js {:repositoryId (:id repository)})))
+                    (.then (fn [_]
+                             (.run query-session
+                                   "MATCH (n) WHERE n.id CONTAINS $userUuid DETACH DELETE n"
+                                   #js {:userUuid user-uuid})))
+                    (.catch (fn [_] nil))
+                    (.finally
+                     (fn []
+                       (rmSync root #js {:recursive true :force true})
+                       (-> (.close query-session)
+                           (.then (fn [_] (store/close! replica)))
+                           (.finally
+                            (fn []
+                              (when error (is false (.-stack error)))
+                              (done))))))))]
+          (writeFileSync first-path (str (event-json "producer-a" "memory a") "\n")
+                         #js {:encoding "utf8" :mode 384})
+          (writeFileSync second-path (str (event-json "producer-b" "memory b") "\n")
+                         #js {:encoding "utf8" :mode 384})
+          (-> (store/initialize! replica {:id user-id})
+              (.then (fn [_] (reconcile!)))
+              (.then
+               (fn [_]
+                 (memory-sync/sync-sidecar-file!
+                  {:store replica :user-uuid user-uuid :path first-path
+                   :source-kind "claude-code" :source-session-id "claude-session-1"
+                   :producer-id "producer-a"})))
+              (.then
+               (fn [_]
+                 (memory-sync/sync-sidecar-file!
+                  {:store replica :user-uuid user-uuid :path second-path
+                   :source-kind "claude-code" :source-session-id "claude-session-1"
+                   :producer-id "producer-b"})))
+              (.then (fn [_] (reconcile!)))
+              (.then
+               (fn [result]
+                 (is (= :projected (:projection-status result)))
+                 (knowledge-store/query-file-memory!
+                  replica user-id (:id repository) "src/read.cljs" 10)))
+              (.then
+               (fn [memories]
+                 (is (= [["producer-a" "memory a"] ["producer-b" "memory b"]]
+                        (mapv (juxt :producer :content) memories)))
+                 (is (every? #(= "claude-code" (:source-kind %)) memories))
+                 (is (every? #(= [{:stream-id "main" :entry-id "a-request-1"}]
+                                 (:source-entries %)) memories))
+                 (is (every? #(= "main" (get-in % [:source-contexts 0 :stream-id]))
+                             memories))
+                 (.run query-session
+                       "MATCH (:AdamSession {sourceKind: 'claude-code', sourceSessionId: 'claude-session-1'})-[:HAS_MEMORY]->(memory:AdamObservation)
+                        WHERE memory.memoryId = 'aaaaaaaaaaaa'
+                        RETURN count(memory) AS memories, count(DISTINCT memory.producer) AS producers"
+                       #js {})))
+              (.then
+               (fn [^js result]
+                 (let [^js record (first (array-seq (.-records result)))]
+                   (is (= 2 (.toNumber (.get record "memories"))))
+                   (is (= 2 (.toNumber (.get record "producers")))))
+                 (-> (memory-store/mark-memory-stream-conflict!
+                      replica
+                      {:stream-id (identity/memory-stream-urn
+                                   user-uuid "claude-code" "claude-session-1" "producer-a")
+                       :conflict-class :semantic
+                       :reason :immutable-event-conflict
+                       :source-file first-path})
+                     (.then
+                      (fn [_]
+                        (rmSync first-path)
+                        (reconcile-with! nil))))))
+              (.then
+               (fn [result]
+                 (is (= :projected (:projection-status result)))
+                 (.run query-session
+                       "MATCH (:AdamSession {sourceKind: 'claude-code', sourceSessionId: 'claude-session-1'})-[:HAS_MEMORY]->(memory:AdamObservation)
+                        OPTIONAL MATCH (memory)-[:ABOUT]->(file)
+                        RETURN count(DISTINCT memory) AS memories, count(DISTINCT file) AS files"
+                       #js {})))
+              (.then
+               (fn [^js result]
+                 (let [^js record (first (array-seq (.-records result)))]
+                   (is (= 2 (.toNumber (.get record "memories")))
+                       "aggregate memory retains a conflicted producer with a missing sidecar")
+                   (is (zero? (.toNumber (.get record "files")))))
+                 (reconcile!)))
+              (.then
+               (fn [_]
+                 (knowledge-store/query-file-memory!
+                  replica user-id (:id repository) "src/read.cljs" 10)))
+              (.then
+               (fn [memories]
+                 (is (= 2 (count memories))
+                     "later repository reconciliation restores file links")
                  (finish! nil)))
               (.catch finish!)))))))

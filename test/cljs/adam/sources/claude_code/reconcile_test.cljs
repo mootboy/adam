@@ -1,5 +1,6 @@
 (ns adam.sources.claude-code.reconcile-test
   (:require [adam.knowledge.evidence :as common-evidence]
+            [adam.knowledge.store :as knowledge-store]
             [adam.sources.claude-code.reconcile :as reconcile]
             [adam.sources.claude-code.scanner :as scanner]
             [cljs.test :refer-macros [async deftest is]]
@@ -48,10 +49,10 @@
              (rmSync root #js {:recursive true :force true})
              (done)))))))
 
-(deftest repository-less-reconciliation-clears-stale-derived-evidence
+(deftest repository-less-reconciliation-projects-memory-without-file-evidence
   (async done
     (let [root (mkdtempSync (join (tmpdir) "adam-reconcile-test-"))
-          cleared (atom nil)]
+          projection (atom nil)]
       (-> (reconcile/reconcile!
            {:locator-options {:config-home root}
             :notification {:event "Stop"
@@ -62,15 +63,17 @@
             :store :store
             :sync! (fn [_] (js/Promise.resolve {:status :unchanged}))
             :resolve-repository! (fn [_ _] (js/Promise.resolve nil))
-            :clear-file-evidence! (fn [_ session-id version]
-                                    (reset! cleared [session-id version])
+            :ensure-file-schema! (fn [_] (js/Promise.resolve nil))
+            :index-file-evidence! (fn [_ value]
+                                    (reset! projection value)
                                     (js/Promise.resolve nil))})
           (.then
            (fn [result]
-             (is (= :cleared (:projection-status result)))
-             (is (= ["urn:adam:session:00000000-0000-4000-8000-000000000001:claude-code:claude-session-1"
-                     common-evidence/extractor-version]
-                    @cleared))))
+             (is (= :projected (:projection-status result)))
+             (is (= "urn:adam:session:00000000-0000-4000-8000-000000000001:claude-code:claude-session-1"
+                    (:session-id @projection)))
+             (is (nil? (:repository @projection)))
+             (is (empty? (:entry-file-evidence @projection)))))
           (.catch #(is false (str %)))
           (.finally
            (fn []
@@ -130,6 +133,58 @@
                (is (= 8 (count (:entry-file-evidence with-file))))
                (is (= (:entry-file-evidence with-file) (:entry-file-evidence without-file)))
                (is (= (:files with-file) (:files without-file))))))
+          (.catch #(is false (str %)))
+          (.finally
+           (fn []
+             (rmSync root #js {:recursive true :force true})
+             (done)))))))
+
+(deftest reconciliation-aggregates-retained-sidecar-memory-with-file-evidence
+  (async done
+    (let [root (mkdtempSync (join (tmpdir) "adam-reconcile-test-"))
+          projection (atom nil)
+          event
+          #js {:protocolVersion 1 :eventId "event-1" :kind "observations.recorded"
+               :recordedAt "2026-01-01T00:00:00.000Z"
+               :producer #js {:id "claude-memory" :version "1.0.0"}
+               :source #js {:kind "claude-code" :sessionId "claude-session-1"}
+               :sourceCheckpoint
+               #js {:streams #js [#js {:streamId "main" :committedBytes 1
+                                       :prefixSha256 (apply str (repeat 64 "a"))
+                                       :selectedLeafEntryId "a-request-1"}]}
+               :observations
+               #js [#js {:id "aaaaaaaaaaaa" :content "sidecar memory"
+                          :timestamp "2026-01-01T00:00:00.000Z" :relevance "high"
+                          :tokenCount 2
+                          :sourceEntries #js [#js {:streamId "main"
+                                                  :entryId "a-request-1"}]}]}
+          aggregate-store
+          (reify knowledge-store/AggregateMemoryStore
+            (read-session-memory-streams! [_ _ _]
+              (js/Promise.resolve
+               [{:producer-id "claude-memory"
+                 :records [{:id "record-1" :ordinal 0 :semantic-status :accepted
+                            :raw-json (js/JSON.stringify event)}]}])))]
+      (-> (reconcile/reconcile!
+           {:locator-options {:config-home root}
+            :notification {:event "Stop" :session-id "claude-session-1"
+                           :transcript-path main-fixture :cwd "/work/repo"}
+            :user-uuid user-uuid :store aggregate-store
+            :sync! (fn [_] (js/Promise.resolve {:status :mirrored}))
+            :resolve-repository! (fn [_ _] (js/Promise.resolve repository))
+            :ensure-file-schema! (fn [_] (js/Promise.resolve nil))
+            :index-file-evidence! (fn [_ value]
+                                    (reset! projection value)
+                                    (js/Promise.resolve nil))})
+          (.then
+           (fn [result]
+             (is (= :projected (:projection-status result)))
+             (is (= "claude-memory" (get-in @projection [:observations 0 :producer])))
+             (is (= ["src/read.cljs"]
+                    (mapv (fn [file-id]
+                            (:relative-path
+                             (first (filter #(= file-id (:id %)) (:files @projection)))))
+                          (get-in @projection [:observations 0 :file-ids]))))))
           (.catch #(is false (str %)))
           (.finally
            (fn []

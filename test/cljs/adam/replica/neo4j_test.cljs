@@ -253,6 +253,26 @@
              (is false (.-stack error))
              (done)))))))
 
+(deftest reads-all-retained-memory-streams-for-an-owned-session
+  (async done
+    (let [{:keys [driver calls closes]} (recording-driver)
+          replica (neo4j/replica-with-driver driver "neo4j")]
+      (-> (knowledge-store/read-session-memory-streams!
+           replica "urn:adam:user:user-1"
+           "urn:adam:session:user-1:claude-code:session-1")
+          (.then
+           (fn [streams]
+             (is (empty? streams))
+             (let [query (:query (first (filter :query @calls)))]
+               (is (re-find #"\[:OWNS\].*\[:HAS_MEMORY_STREAM\]" query))
+               (is (re-find #"collect\(record\)" query)))
+             (is (= 1 @closes))
+             (done)))
+          (.catch
+           (fn [error]
+             (is false (.-stack error))
+             (done)))))))
+
 (deftest writes-entry-tree-and-checkpoint-in-one-transaction
   (async done
     (let [{:keys [driver calls closes]} (transactional-driver)
@@ -464,7 +484,8 @@
           (.then
            (fn [_]
              (let [queries (mapv :query (filter :query @calls))]
-               (is (some #(re-find #"HAS_MEMORY" %) queries))
+               (is (some #(re-find #"HAS_MEMORY.*ABOUT" %) queries))
+               (is (not-any? #(re-find #"DETACH DELETE memory" %) queries))
                (is (some #(re-find #"TOUCHES" %) queries))
                (is (some #(re-find #"DELETE worked" %) queries))
                (is (some #(re-find #"s.codeMemoryVersion = \$extractorVersion" %) queries))
@@ -529,7 +550,7 @@
                             query))
                ;; The bound applies to the combined result: both branches sit in a
                ;; CALL subquery and ordering/limiting happen after it.
-               (is (re-find #"CALL \{[\s\S]*UNION ALL[\s\S]*\}\s+RETURN kind, memory, s, sourceEntryIds, sourceContexts\s+ORDER BY kind, memory\.memoryId, s\.piSessionId\s+LIMIT \$limit" query))
+               (is (re-find #"CALL \{[\s\S]*UNION ALL[\s\S]*\}\s+RETURN kind, memory, s, sourceEntryIds, sourceEntries, sourceContexts\s+ORDER BY kind, memory\.memoryId, memory\.producer, s\.sourceKind, s\.sourceSessionId\s+LIMIT \$limit" query))
                ;; A reflection stays retrievable even when its support was dropped.
                (is (re-find #"AdamReflection\)-\[:SUPPORTED_BY\]->\(observation:AdamObservation\)" reflection-branch))
                (is (not (re-find #"dropped" reflection-branch)))
