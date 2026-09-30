@@ -1,0 +1,26 @@
+{
+  "description": "Content-free opt-in producer characterization probe",
+  "hooks": {
+    "SessionStart": [{
+      "hooks": [{
+        "type": "command",
+        "command": "\"${CLAUDE_PLUGIN_ROOT}/hook.mjs\"",
+        "timeout": 10
+      }]
+    }],
+    "Stop": [{
+      "hooks": [{
+        "type": "command",
+        "command": "\"${CLAUDE_PLUGIN_ROOT}/hook.mjs\"",
+        "timeout": 10
+      }]
+    }],
+    "SessionEnd": [{
+      "hooks": [{
+        "type": "command",
+        "command": "\"${CLAUDE_PLUGIN_ROOT}/hook.mjs\"",
+        "timeout": 10
+      }]
+    }]
+  }
+}

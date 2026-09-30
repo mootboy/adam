@@ -315,7 +315,7 @@ Native `Read`, `Edit`, and `Write` activity may be cited. Bash commands, MCP cal
 
 ### Producer characterization before implementation
 
-The initial characterization is recorded in [`claude-memory-producer-contract.md`](claude-memory-producer-contract.md). It approves fast locator-only hooks, a detached serialized worker, an explicitly enabled safe-mode Claude CLI adapter for the tracer bullet, sidecar-derived replay, bounded structured output, source-progress scheduling, and explicit background-processing consent. A future direct-provider adapter may require separate credentials.
+The initial characterization is recorded in [`claude-memory-producer-contract.md`](claude-memory-producer-contract.md). It approves fast locator-only hooks, a detached serialized worker, a repeatable explicitly enabled safe-mode Claude CLI tracer bullet, sidecar-derived replay, bounded structured output, source-progress scheduling, and explicit background-processing consent. Step 2 must still decide how no-memory coverage is committed and must default to an explicit-credential adapter unless inherited-login background use is confirmed to comply with the applicable subscription terms.
 
 The characterization covered:
 

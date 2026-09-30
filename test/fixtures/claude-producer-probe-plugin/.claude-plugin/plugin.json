@@ -1,0 +1,9 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "adam-producer-probe",
+  "version": "1.0.0",
+  "description": "Content-free opt-in lifecycle and detached-worker probe",
+  "author": {
+    "name": "mootboy"
+  }
+}

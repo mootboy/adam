@@ -14,7 +14,7 @@ Adam provides a full [Pi](https://pi.dev) extension and a [Claude Code](https://
 - [`docs/claude-transcript-contract.md`](docs/claude-transcript-contract.md) — observed Claude transcript authority, continuity, file evidence, and subagent semantics.
 - [`docs/claude-memory-producer-contract.md`](docs/claude-memory-producer-contract.md) — characterized non-blocking lifecycle, model isolation, replay, cost, and consent requirements for the planned reference producer.
 - [`docs/plan-0.3.3.md`](docs/plan-0.3.3.md) — active file-memory retrieval.
-- [`docs/plan-0.4.0.md`](docs/plan-0.4.0.md) — draft plan for provider-neutral memory production.
+- [`docs/plan-0.4.0.md`](docs/plan-0.4.0.md) — active milestone plan for provider-neutral memory production.
 - [`docs/acceptance-matrix.md`](docs/acceptance-matrix.md) — deterministic and live acceptance cases for incremental delivery.
 - [`docs/issues/`](docs/issues/) — repository-local issue tracker and issue template.
 
@@ -41,7 +41,7 @@ ADAM_TEST_NEO4J_PASSWORD='your-password' \
 npm run test:neo4j
 ```
 
-The opt-in Claude Code probe starts a real interactive session under a pseudo-terminal with the installed tarball as `--plugin-dir` and requires a logged-in `claude` on `PATH`:
+The opt-in Claude Code probes require a logged-in `claude` on `PATH`. They start an interactive packaged-plugin session and a separate content-free producer-characterization session whose detached worker makes a bounded model call. The latter incurs provider usage and currently validates Linux process-detachment behavior:
 
 ```bash
 ADAM_TEST_CLAUDE=1 npm run test:claude
