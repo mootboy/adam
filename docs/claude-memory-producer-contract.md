@@ -6,7 +6,7 @@ This contract records the evidence and decisions that gate Adam 0.4.0's referenc
 
 ## Characterization evidence
 
-A disposable Claude Code 2.1.285 plugin was exercised on 2026-09-30. The probe retained only event names, field names, boolean credential-presence checks, process liveness, timings, exit state, and fixed test responses. It did not retain transcript content, credential values, or private prompts.
+A disposable Claude Code 2.1.285 plugin was exercised on 2026-09-30. The probe retained only event names, field names, boolean credential-presence checks, process liveness, timings, exit state, and fixed test responses. It did not retain transcript content, credential values, or private prompts. A content-free version is retained under `test/fixtures/claude-producer-probe-plugin` and runs with `ADAM_TEST_CLAUDE=1 npm run test:claude` so future Claude Code versions can be re-characterized.
 
 ### Hook boundary
 
@@ -26,7 +26,7 @@ The hook environment contained `CLAUDECODE` and `CLAUDE_PLUGIN_ROOT`. Neither `A
 
 The disposable `SessionEnd` hook spawned an unreferenced detached Node worker and returned. Process ancestry identified the hook shell's parent as the Claude process. After a 1.5-second delay, the worker observed that this Claude process no longer existed, then launched a bounded model request. Repeated requests completed successfully in approximately 2.4–4.6 seconds and returned the fixed expected response.
 
-The worker inherited `CLAUDECODE`, but this did not prevent a nested non-interactive invocation when the child used:
+The exploratory worker inherited `CLAUDECODE`, but this did not prevent a nested non-interactive invocation when the child used:
 
 ```text
 claude --safe-mode --restricted --strict-mcp-config \
@@ -37,7 +37,9 @@ claude --safe-mode --restricted --strict-mcp-config \
 
 `--safe-mode` disabled hooks and other customizations while retaining normal Claude authentication. The probe recorded only the parent plugin's three lifecycle events, so the child did not recursively invoke producer hooks. With no API-key environment variables present, the child still authenticated through the user's existing Claude login.
 
-By contrast, `--bare` failed without an explicit API key and reported that login was required. The reference producer therefore uses `--safe-mode` for its initial Claude CLI adapter. A future direct-provider adapter may require its own explicit credentials but is not required for the tracer bullet.
+The repeatable probe deliberately removes `CLAUDECODE` from the model child's environment before spawning it. The producer must do the same rather than relying on nested-invocation behavior observed in one Claude Code version.
+
+By contrast, `--bare` failed without an explicit API key and reported that login was required. Safe mode is therefore a viable CLI tracer-bullet adapter, but not yet the default unattended adapter. A seat-based Claude login may have terms distinct from explicit API credentials. Unless the applicable subscription terms are confirmed to permit this background use, the implementation contract must default to an explicit-credential provider adapter and expose inherited-login CLI execution only as a separately acknowledged opt-in fallback.
 
 ### Structured output and budget behavior
 
@@ -91,6 +93,13 @@ Crash rules are:
 
 Protocol v1 must make event identity and immutable-payload comparison deterministic for those retries.
 
+A model may validly decline to emit memory for a covered source range. The three event kinds currently proposed for protocol v1 cannot commit that outcome, and a disposable producer checkpoint cannot advance beyond sidecar authority. The step-2 protocol contract must therefore choose one of two explicit semantics before implementation:
+
+1. add a content-free coverage event such as `source.covered`, carrying the committed stream-qualified `sourceCheckpoint`; or
+2. accept model re-generation after a crash and bound the repeated cost through the retry ceiling.
+
+Until that choice is made, a no-memory outcome does not advance authoritative coverage.
+
 ## Scheduling
 
 Hooks are wake signals, not one-model-call-per-hook triggers.
@@ -108,7 +117,7 @@ The initial reference policy is source-progress based rather than wall-clock bas
 - reflections become eligible after approximately 20,000 newly covered source tokens and run only after committed observations exist;
 - tests may lower thresholds to complete the tracer bullet deterministically.
 
-Thresholds are producer configuration, not memory-protocol fields. A model may return no durable memory; source coverage can still advance through an explicit valid no-op outcome in producer state rather than an invented observation.
+Thresholds are producer configuration, not memory-protocol fields. A model may return no durable memory, but authoritative advancement for that outcome is deliberately left to the step-2 protocol decision in [Source progress and replay](#source-progress-and-replay); the producer must not invent an observation.
 
 ## Model and cost controls
 
@@ -122,7 +131,7 @@ Memory production is disabled until the user explicitly enables it. Configuratio
 - observation and reflection thresholds;
 - retry ceiling/backoff and worker diagnostics.
 
-The initial CLI adapter uses safe mode, restricted tools, strict MCP configuration, no session persistence, no permission prompts, a fixed JSON schema, and no file or shell tools. It records bounded usage totals and failure categories, not prompts or generated memory text, in operational diagnostics. One worker call runs at a time, and one failed model request cannot block unrelated source sessions indefinitely.
+The characterized CLI adapter uses safe mode, restricted tools, strict MCP configuration, no session persistence, no permission prompts, a fixed JSON schema, no file or shell tools, and an environment with `CLAUDECODE` removed. It records bounded usage totals and failure categories, not prompts or generated memory text, in operational diagnostics. One worker call runs at a time, and one failed model request cannot block unrelated source sessions indefinitely. Explicit-provider credentials remain the default implementation direction unless inherited-login background use is confirmed to comply with the applicable subscription terms.
 
 Cancellation is process-based: terminating the worker may abandon uncommitted generation, which is retried later. Once a complete sidecar event is durable, cancellation cannot retract it; the producer must recover from the sidecar and finish notification.
 
@@ -140,7 +149,7 @@ The producer:
 - provides a documented disable/stop procedure;
 - does not insert generated memories into prompts automatically.
 
-Users remain responsible for whether the configured provider may receive repository and conversation content. Corporate or regulated environments may require a direct approved provider adapter rather than inherited Claude login.
+Users remain responsible for whether the configured provider may receive repository and conversation content. Corporate or regulated environments may require a direct approved provider adapter rather than inherited Claude login. Successful authentication through an existing Claude seat is technical evidence only, not evidence that unattended background use is permitted by that subscription's terms.
 
 ## Consequences for Adam 0.4.0
 
@@ -148,4 +157,4 @@ Users remain responsible for whether the configured provider may receive reposit
 - Adam must not require producer model credentials.
 - Adam's durable memory notification spool closes the final-hook ordering race; it does not schedule model generation.
 - Parent and subagent citations require stream-qualified source references.
-- The reference producer can use the Claude CLI tracer bullet without importing Adam, while provider abstraction beyond that tracer bullet remains deferred.
+- The reference producer can use the Claude CLI for an explicitly enabled tracer bullet without importing Adam, but the step-2 contract must settle no-memory coverage and credential/subscription defaults before implementation.

@@ -13,6 +13,7 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 | Claude loads the packaged plugin | `.mcp.json` starts the packaged MCP executable and the bundled skill is available |
 | Packaged `.mcp.json` is resolved like a Claude plugin | Only the literal `${CLAUDE_PLUGIN_ROOT}` placeholder is needed; the spawned command completes an MCP initialize from a foreign cwd |
 | Interactive Claude Code starts with the installed package as `--plugin-dir` (**opt-in**, `ADAM_TEST_CLAUDE=1`) | `plugin:adam:adam` connects without `--mcp-config` or a manual `CLAUDE_PLUGIN_ROOT` |
+| Content-free producer characterization runs (**opt-in**, `ADAM_TEST_CLAUDE=1`, Linux) | Hooks expose bounded locators, return before generation, and launch a detached worker which outlives Claude, clears `CLAUDECODE`, avoids recursive hooks, and validates bounded structured output |
 | `/adam:status` is invoked | Configuration, connection, identity, active-session, last-sync, and bounded error state are displayed |
 | Java is absent at runtime | Both committed ESM outputs still load and execute |
 | npm package is inspected | Pi and MCP runtime boundaries, compiled outputs, plugin metadata, skill, changelog, and docs are present; source compilation is not required |
