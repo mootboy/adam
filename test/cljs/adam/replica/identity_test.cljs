@@ -16,7 +16,13 @@
   (is (= "urn:adam:observation:user-1:pi:session-1:memory-1"
          (identity/observation-urn "user-1" "pi" "session-1" "memory-1")))
   (is (= "urn:adam:reflection:user-1:pi:session-1:memory-1"
-         (identity/reflection-urn "user-1" "pi" "session-1" "memory-1"))))
+         (identity/reflection-urn "user-1" "pi" "session-1" "memory-1")))
+  (let [stream-id (identity/memory-stream-urn
+                   "user-1" "claude-code" "session-1" "org.example.memory")]
+    (is (= "urn:adam:memory-stream:user-1:claude-code:session-1:org.example.memory"
+           stream-id))
+    (is (= "urn:adam:memory-record:423ed55f84938edca9ce82f080ad49465a4aea461d04545a1d8972ad8f782124"
+           (identity/memory-record-urn stream-id 0)))))
 
 (deftest git-email-normalization-preserves-display-spelling
   (is (= {:id "urn:adam:identity:git-email:09eafe4c2b195fc27f6f2dbeaf7f15aec6b293a22356951db37b56ca8c3e7c7e"

@@ -23,6 +23,14 @@
   (str "urn:adam:stream:" user-uuid ":" source-kind ":" source-session-id
        ":" stream-id))
 
+(defn memory-stream-urn [user-uuid source-kind source-session-id producer-id]
+  (str "urn:adam:memory-stream:" user-uuid ":" source-kind ":"
+       source-session-id ":" producer-id))
+
+(defn memory-record-urn [memory-stream-id ordinal]
+  (str "urn:adam:memory-record:"
+       (sha-256 (str memory-stream-id "\u0000" ordinal))))
+
 (defn entry-urn
   ([user-uuid pi-session-id entry-id]
    (entry-urn user-uuid pi-source-kind pi-session-id entry-id))

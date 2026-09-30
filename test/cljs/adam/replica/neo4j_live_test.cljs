@@ -4,6 +4,8 @@
             [adam.knowledge.store :as knowledge-store]
             [adam.knowledge.surfaces :as knowledge-surfaces]
             [adam.knowledge.tool :as knowledge-tool]
+            [adam.memory.store :as memory-store]
+            [adam.memory.sync :as memory-sync]
             [adam.replica.identity :as identity]
             [adam.replica.migration :as replica-migration]
             [adam.replica.neo4j :as adam-neo4j]
@@ -17,9 +19,9 @@
             [cljs.test :refer [async deftest is]]
             ["neo4j-driver" :as neo4j]
             ["node:crypto" :refer [randomUUID]]
-            ["node:fs" :refer [appendFileSync copyFileSync mkdtempSync readFileSync rmSync writeFileSync]]
+            ["node:fs" :refer [appendFileSync chmodSync copyFileSync mkdtempSync readFileSync rmSync writeFileSync]]
             ["node:os" :refer [tmpdir]]
-            ["node:path" :refer [join]]))
+            ["node:path" :as node-path :refer [join]]))
 
 (defn- environment [key]
   (aget js/process.env key))
@@ -886,5 +888,159 @@
                  (is (re-find #"Active memory" content))
                  (is (re-find #"Reflection over dropped support" content))
                  (is (not (re-find #"Dropped memory" content)))
+                 (finish! nil)))
+              (.catch finish!)))))))
+
+(deftest live-memory-sidecar-round-trip-and-resume
+  (async done
+    (let [uri (environment "ADAM_TEST_NEO4J_URI")
+          username (environment "ADAM_TEST_NEO4J_USERNAME")
+          password (environment "ADAM_TEST_NEO4J_PASSWORD")
+          database (or (environment "ADAM_TEST_NEO4J_DATABASE") "neo4j")]
+      (if-not (and uri username password)
+        (do
+          (is false "ADAM_TEST_NEO4J_URI, USERNAME, and PASSWORD are required")
+          (done))
+        (let [user-uuid (randomUUID)
+              user-id (identity/user-urn user-uuid)
+              auth-token (.basic (.-auth neo4j) username password)
+              ^js driver ((.-driver neo4j) uri auth-token)
+              replica (adam-neo4j/replica-with-driver driver database)
+              ^js query-session (.session driver #js {:database database})
+              directory (mkdtempSync (join (tmpdir) "adam-memory-live-"))
+              transcript-path (join directory "session.jsonl")
+              sidecar-path (join directory "events.jsonl")
+              conflict-path (join directory "conflict.jsonl")
+              transcript-fixture (.resolve node-path "test/fixtures/claude/main.jsonl")
+              memory-root (.resolve node-path "docs/fixtures/memory-protocol-v1")
+              locator {:source-kind "claude-code"
+                       :source-session-id "session-123"
+                       :producer-id "org.example.claude-memory"}
+              stream-id (identity/memory-stream-urn
+                         user-uuid "claude-code" "session-123"
+                         "org.example.claude-memory")
+              conflict-stream-id (identity/memory-stream-urn
+                                  user-uuid "claude-code" "session-123"
+                                  "org.example.conflict")
+              source-lines (atom nil)
+              finish!
+              (fn [error]
+                (-> (.run query-session
+                          "MATCH (stream:AdamMemoryStream {userId: $userId})
+                           OPTIONAL MATCH (stream)-[:HAS_RECORD]->(record:AdamMemoryRecord)
+                           DETACH DELETE record, stream"
+                          #js {:userId user-id})
+                    (.then
+                     (fn [_]
+                       (.run query-session
+                             "MATCH (n) WHERE n.id CONTAINS $userUuid DETACH DELETE n"
+                             #js {:userUuid user-uuid})))
+                    (.catch (fn [_] nil))
+                    (.finally
+                     (fn []
+                       (rmSync directory #js {:recursive true :force true})
+                       (-> (.close query-session)
+                           (.then (fn [_] (store/close! replica)))
+                           (.finally
+                            (fn []
+                              (when error (is false (.-stack error)))
+                              (done))))))))]
+          (writeFileSync
+           transcript-path
+           (.replaceAll (readFileSync transcript-fixture "utf8")
+                        "claude-session-1" "session-123")
+           #js {:encoding "utf8" :mode 384})
+          (writeFileSync
+           sidecar-path
+           (readFileSync (join memory-root "valid-events.jsonl") "utf8")
+           #js {:encoding "utf8" :mode 384})
+          (writeFileSync
+           conflict-path
+           (-> (readFileSync (join memory-root "conflicting-event-id.jsonl") "utf8")
+               (.replaceAll "org.example.claude-memory" "org.example.conflict"))
+           #js {:encoding "utf8" :mode 384})
+          (reset! source-lines (vec (.split (.trimEnd (readFileSync sidecar-path "utf8")) "\n")))
+          (-> (store/initialize! replica {:id user-id})
+              (.then
+               (fn [_]
+                 (claude-sync/sync-session-scan!
+                  {:store replica :user-uuid user-uuid
+                   :scan (claude-scanner/scan-session
+                          {:session-id "session-123"
+                           :transcript-path transcript-path
+                           :subagents []})})))
+              (.then
+               (fn [_]
+                 (memory-sync/sync-sidecar-file!
+                  (merge locator {:store replica :user-uuid user-uuid
+                                  :path sidecar-path :batch-bytes 900}))))
+              (.then
+               (fn [result]
+                 (is (= :mirrored (:status result)))
+                 (is (= 4 (:records-written result)))
+                 (memory-store/read-memory-records! replica stream-id)))
+              (.then
+               (fn [records]
+                 (is (= @source-lines (mapv :raw-json records)))
+                 (memory-sync/sync-sidecar-file!
+                  (merge locator {:store replica :user-uuid user-uuid
+                                  :path sidecar-path}))))
+              (.then
+               (fn [result]
+                 (is (= :unchanged (:status result)))
+                 (let [next-event
+                       (js/JSON.stringify
+                        #js {:protocolVersion 1
+                             :eventId "event-live-append"
+                             :kind "source.covered"
+                             :producer #js {:id "org.example.claude-memory"
+                                            :version "0.1.0"}
+                             :source #js {:kind "claude-code" :sessionId "session-123"}
+                             :sourceCheckpoint
+                             #js {:streams
+                                  #js [#js {:streamId "main" :committedBytes 500
+                                            :prefixSha256
+                                            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                                            :selectedLeafEntryId "entry-5"}]}
+                             :recordedAt "2026-09-30T12:04:00.000Z"})]
+                   (appendFileSync sidecar-path (str next-event "\n") "utf8")
+                   (swap! source-lines conj next-event)
+                   (memory-sync/sync-sidecar-file!
+                    (merge locator {:store replica :user-uuid user-uuid
+                                    :path sidecar-path})))))
+              (.then
+               (fn [result]
+                 (is (= :mirrored (:status result)))
+                 (is (= 1 (:records-written result)))
+                 (appendFileSync sidecar-path "{\"eventId\":\"partial" "utf8")
+                 (memory-sync/sync-sidecar-file!
+                  (merge locator {:store replica :user-uuid user-uuid
+                                  :path sidecar-path}))))
+              (.then
+               (fn [result]
+                 (is (= :unchanged (:status result)))
+                 (memory-store/read-memory-records! replica stream-id)))
+              (.then
+               (fn [records]
+                 (is (= @source-lines (mapv :raw-json records)))
+                 (memory-sync/sync-sidecar-file!
+                  {:store replica :user-uuid user-uuid :path conflict-path
+                   :source-kind "claude-code" :source-session-id "session-123"
+                   :producer-id "org.example.conflict"})))
+              (.then
+               (fn [result]
+                 (is (= :conflict (:status result)))
+                 (is (= :immutable-event-conflict
+                        (get-in result [:conflict :reason])))
+                 (is (= 2 (:records-written result)))
+                 (memory-store/read-memory-records! replica conflict-stream-id)))
+              (.then
+               (fn [records]
+                 (is (= 2 (count records)))
+                 (memory-store/read-memory-records! replica stream-id)))
+              (.then
+               (fn [records]
+                 (is (= 5 (count records))
+                     "a conflicting producer stream does not alter the healthy stream")
                  (finish! nil)))
               (.catch finish!)))))))

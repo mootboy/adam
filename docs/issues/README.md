@@ -14,6 +14,7 @@ This directory is adam's repository-local issue tracker. Use one Markdown file p
 - [`008`](008-worker-stalls-on-missing-transcripts.md) — Worker stalls on missing transcripts (`done`, bug)
 - [`009`](009-characterize-claude-memory-producer.md) — Characterize the reference Claude memory producer (`done`)
 - [`010`](010-freeze-memory-protocol-v1.md) — Freeze memory protocol v1 (`done`)
+- [`011`](011-ingest-memory-sidecar-streams.md) — Ingest producer memory sidecar streams losslessly (`in-progress`)
 
 ## Naming
 

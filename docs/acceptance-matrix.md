@@ -67,7 +67,7 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 
 ## Memory protocol v1
 
-These contract/fixture cases are deterministic and precede production sidecar ingestion.
+These protocol cases run deterministically in the normal suite. Lossless scanning and checkpoint planning are implemented without Neo4j; raw graph round-trip and resume behavior are covered by opt-in live validation. Aggregate memory projection remains staged.
 
 | Case | Expected result |
 | --- | --- |
@@ -87,6 +87,9 @@ These contract/fixture cases are deterministic and precede production sidecar in
 | Sidecar shrinks or committed prefix changes | Only that memory stream conflicts; other source/producer work continues |
 | Event source or producer differs from sidecar locator | Raw record is retained, identity mismatch is diagnosed, and it has no semantic effect |
 | Protocol fixtures run in the normal suite | Contract conformance needs no Neo4j, model, or host transcript |
+| Explicit sidecar is mirrored, rerun unchanged, then appended | Raw records round-trip byte-for-byte, unchanged synchronization writes nothing, and only the suffix is added |
+| Semantic event conflict appears after valid records | Every complete physical record is mirrored before that memory stream is marked conflicted |
+| One memory stream conflicts | Its source session, transcript/file evidence, and other producer streams remain available |
 
 ## Claude transcript ingestion
 

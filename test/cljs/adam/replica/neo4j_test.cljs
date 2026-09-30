@@ -1,5 +1,6 @@
 (ns adam.replica.neo4j-test
   (:require [adam.knowledge.store :as knowledge-store]
+            [adam.memory.store :as memory-store]
             [adam.replica.neo4j :as neo4j]
             [adam.replica.store :as store]
             [adam.sources.claude-code.store :as claude-store]
@@ -38,12 +39,25 @@
                 (fn [query params]
                   (swap! calls conj {:query query :params params})
                   (cond
+                    (re-find #"RETURN stream\.id AS streamId" query)
+                    (js/Promise.resolve
+                     #js {:records #js [(fake-record {"streamId" (aget params "streamId")})]})
+
                     (re-find #"RETURN (?:e|entry)\.entryId" query)
                     (let [^js input (first (array-seq (.-entries params)))]
                       (js/Promise.resolve
                        #js {:records
                             #js [(fake-record
                                   {"entryId" (.-entryId input)
+                                   "expectedHash" (if mismatch? "stored-hash" (.-payloadHash input))
+                                   "actualHash" (.-payloadHash input)})]}))
+
+                    (re-find #"RETURN record\.id AS recordId" query)
+                    (let [^js input (first (array-seq (aget params "records")))]
+                      (js/Promise.resolve
+                       #js {:records
+                            #js [(fake-record
+                                  {"recordId" (.-id input)
                                    "expectedHash" (if mismatch? "stored-hash" (.-payloadHash input))
                                    "actualHash" (.-payloadHash input)})]}))
 
@@ -81,6 +95,23 @@
                (is (re-find #"MERGE \(u:AdamUser" (nth queries 4)))
                (is (re-find #"MERGE \(i:AdamIdentity" (nth queries 5)))
                (is (= 2 @closes))
+               (done))))
+          (.catch
+           (fn [error]
+             (is false (.-stack error))
+             (done)))))))
+
+(deftest initializes-memory-stream-and-record-constraints
+  (async done
+    (let [{:keys [driver calls]} (recording-driver)
+          replica (neo4j/replica-with-driver driver "neo4j")]
+      (-> (memory-store/ensure-memory-schema! replica)
+          (.then
+           (fn [_]
+             (let [queries (map :query (filter :query @calls))]
+               (is (= 2 (count queries)))
+               (is (some #(re-find #"AdamMemoryStream" %) queries))
+               (is (some #(re-find #"AdamMemoryRecord" %) queries))
                (done))))
           (.catch
            (fn [error]
@@ -153,6 +184,43 @@
                (is (some #(re-find #"HAS_STREAM" %) queries))
                (is (some #(re-find #"LOGICAL_PARENT" %) queries))
                (is (some #(re-find #"stream.completeThroughByteOffset" %) queries))
+               (done))))
+          (.catch
+           (fn [error]
+             (is false (.-stack error))
+             (done)))))))
+
+(deftest writes-memory-record-and-checkpoint-in-one-transaction
+  (async done
+    (let [{:keys [driver calls]} (transactional-driver)
+          replica (neo4j/replica-with-driver driver "neo4j")
+          stream {:id "urn:adam:memory-stream:user-1:claude-code:session-1:producer"
+                  :user-id "urn:adam:user:user-1"
+                  :session-id "urn:adam:session:user-1:claude-code:session-1"
+                  :source-kind "claude-code"
+                  :source-session-id "session-1"
+                  :producer-id "producer"
+                  :path "/memory/events.jsonl"}
+          record {:id "urn:adam:memory-record:hash"
+                  :stream-id (:id stream)
+                  :ordinal 0 :byte-offset 0 :next-byte-offset 101
+                  :raw-json "{\"eventId\":\"event-1\"}"
+                  :payload-hash "payload" :payload-bytes 100
+                  :prefix-hash "prefix" :event-id "event-1"
+                  :event-hash "event-hash" :kind "source.covered"
+                  :semantic-status :accepted :diagnostics []}]
+      (-> (memory-store/write-memory-record-batch!
+           replica {:stream stream :records [record]
+                    :checkpoint {:complete-through-ordinal 0
+                                 :complete-through-byte-offset 101
+                                 :committed-prefix-hash "prefix"}})
+          (.then
+           (fn [_]
+             (let [queries (map :query @calls)]
+               (is (some #(re-find #"AdamMemoryStream" %) queries))
+               (is (some #(re-find #"AdamMemoryRecord" %) queries))
+               (is (some #(re-find #"HAS_MEMORY_STREAM" %) queries))
+               (is (some #(re-find #"HAS_RECORD" %) queries))
                (done))))
           (.catch
            (fn [error]
