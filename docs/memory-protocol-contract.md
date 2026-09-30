@@ -305,15 +305,16 @@ A producer can generate a fresh event ID after an uncommitted crash. Once an eve
 
 Protocol processing distinguishes:
 
-- **physical conflict**: invalid UTF-8, oversize record, unsafe path or permissions, file shrinkage, or committed-prefix mutation; commit only the safe prefix and stop this stream;
+- **physical conflict**: invalid UTF-8, oversize record, file shrinkage, or committed-prefix mutation; commit only the safe prefix and stop this stream;
 - **stream identity conflict**: locator mismatch or changed payload for an existing event ID; retain raw data, continue mirroring later physical records as `blocked`, and stop semantic advancement for this stream;
 - **record diagnostic**: malformed JSON, unsupported version/kind, malformed supported shape, `checkpoint-regression`, duplicate memory definition, or unresolved reference; retain raw data and continue when framing remains safe;
 - **incomplete append**: defer bytes after the final LF without a diagnostic until completed;
+- **notification-terminal source rejection**: missing sidecar, unsafe path, non-regular file, or unsafe permissions; acknowledge and log that notification without reading the source or marking the stream conflicted, so a later notification can ingest a repaired or recreated sidecar;
 - **transient scan failure**: concurrent file change or a source session not yet mirrored; preserve the notification and retry after source reconciliation without marking a stream conflict.
 
 The current owner-only mode validation depends on POSIX file modes, so sidecar ingestion is supported on Linux and macOS only. Other platforms fail closed until an equivalent owner-only check is implemented.
 
-One memory stream's failure MUST NOT invalidate its source session, file evidence, another producer stream, or host operation. A missing sidecar preserves the last mirrored prefix and derived contribution; local deletion is not propagated. `AdamMemoryStream` attachment requires its source-scoped `AdamSession` to exist; a missing source session is transient, and a worker MUST reconcile a pending host transcript before its memory notifications for the same session.
+One memory stream's failure MUST NOT invalidate its source session, file evidence, another producer stream, or host operation. A missing sidecar preserves the last mirrored prefix and derived contribution; local deletion is not propagated. Its notification is acknowledged like a missing host transcript rather than retried indefinitely. `AdamMemoryStream` attachment requires its source-scoped `AdamSession` to exist; a missing source session is transient, and a worker MUST reconcile a pending host transcript before its memory notifications for the same session.
 
 Diagnostics may contain locator identity, event or memory IDs, ordinals, offsets, hashes, and reason classes. They MUST NOT contain memory text, source transcript content, credentials, or raw JSON.
 

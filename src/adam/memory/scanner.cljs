@@ -10,9 +10,11 @@
 
 (defn failure-class [reason]
   (cond
-    (contains? #{:unsafe-path :unsafe-permissions :record-too-large :invalid-utf8}
-               reason)
-    :terminal
+    (contains? #{:unsafe-path :unsafe-permissions :missing-sidecar} reason)
+    :notification-terminal
+
+    (contains? #{:record-too-large :invalid-utf8} reason)
+    :physical-conflict
 
     (= :concurrent-change reason) :transient
     :else :unknown))
@@ -38,7 +40,13 @@
               :source-session-id source-session-id
               :producer-id producer-id})
     (throw (js/Error. "memory sidecar source and producer identity are invalid")))
-  (let [metadata (lstatSync path)]
+  (let [metadata (try
+                   (lstatSync path)
+                   (catch :default error
+                     (if (= "ENOENT" (.-code error))
+                       (throw (sidecar-error path nil "sidecar does not exist"
+                                             :missing-sidecar))
+                       (throw error))))]
     (when (.isSymbolicLink metadata)
       (throw (sidecar-error path nil "symbolic links are not allowed" :unsafe-path)))
     (when-not (.isFile metadata)
@@ -168,7 +176,7 @@
                      (contains? #{:record-too-large :invalid-utf8} reason))
               (reset! physical-conflict {:reason reason
                                          :line-number line-number
-                                         :failure-class :terminal})
+                                         :failure-class :physical-conflict})
               (throw error)))))
       (finally
         (closeSync file-descriptor)))

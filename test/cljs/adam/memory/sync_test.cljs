@@ -139,30 +139,86 @@
              (rmSync directory #js {:recursive true :force true})
              (done)))))))
 
-(deftest terminal-safety-failures-mark-the-stream-conflicted
+(deftest unsafe-sidecar-is-acknowledged-without-poisoning-a-repaired-stream
   (async done
     (let [directory (mkdtempSync (.join node-path (tmpdir) "adam-memory-unsafe-sync-"))
           path (.join node-path directory "events.jsonl")
+          writes (atom [])
           conflicts (atom [])
-          replica (->FakeMemoryStore (atom nil) (atom []) (atom []) conflicts)]
-      (writeFileSync path "{}\n" #js {:encoding "utf8" :mode 420})
-      (-> (sync/sync-sidecar-file!
-           {:store replica
-            :user-uuid "00000000-0000-4000-8000-000000000001"
-            :path path :source-kind "claude-code"
-            :source-session-id "session-123"
-            :producer-id "org.example.claude-memory"})
+          replica (->FakeMemoryStore (atom nil) writes (atom []) conflicts)
+          options {:store replica
+                   :user-uuid "00000000-0000-4000-8000-000000000001"
+                   :path path :source-kind "claude-code"
+                   :source-session-id "session-123"
+                   :producer-id "org.example.claude-memory"}]
+      (copyFileSync valid-fixture path)
+      (chmodSync path 420)
+      (-> (sync/sync-sidecar-file! options)
           (.then
            (fn [result]
-             (is (= :conflict (:status result)))
-             (is (= :unsafe-permissions (get-in result [:conflict :reason])))
-             (is (= :physical (get-in result [:conflict :conflict-class])))
-             (is (= 1 (count @conflicts)))))
+             (is (= :not-ingested (:status result)))
+             (is (= :acknowledge (:notification-disposition result)))
+             (is (= :unsafe-permissions (:reason result)))
+             (is (empty? @conflicts))
+             (is (empty? @writes))
+             (chmodSync path 384)
+             (sync/sync-sidecar-file! options)))
+          (.then
+           (fn [result]
+             (is (= :mirrored (:status result)))
+             (is (= 4 (:records-written result)))
+             (is (empty? @conflicts))))
           (.catch (fn [error] (is false (.-stack error))))
           (.finally
            (fn []
              (rmSync directory #js {:recursive true :force true})
              (done)))))))
+
+(deftest missing-sidecar-is-acknowledged-and-can-resume-from-the-last-prefix
+  (async done
+    (let [directory (mkdtempSync (.join node-path (tmpdir) "adam-memory-missing-sync-"))
+          path (.join node-path directory "events.jsonl")
+          conflicts (atom [])
+          completions (atom [])
+          options {:user-uuid "00000000-0000-4000-8000-000000000001"
+                   :path path :source-kind "claude-code"
+                   :source-session-id "session-123"
+                   :producer-id "org.example.claude-memory"}]
+      (copyFileSync valid-fixture path)
+      (chmodSync path 384)
+      (let [scan (scanner/scan-sidecar (dissoc options :user-uuid))
+            committed (last (:records scan))
+            checkpoint (atom {:complete-through-ordinal (:ordinal committed)
+                              :complete-through-byte-offset (:next-byte-offset committed)
+                              :committed-prefix-hash (:prefix-hash committed)
+                              :entry-count (:record-count scan)
+                              :log-hash (:log-hash scan)})
+            writes (atom [])
+            replica (->FakeMemoryStore checkpoint writes completions conflicts)
+            sync-options (assoc options :store replica)]
+        (rmSync path)
+        (-> (sync/sync-sidecar-file! sync-options)
+            (.then
+             (fn [result]
+               (is (= :not-ingested (:status result)))
+               (is (= :acknowledge (:notification-disposition result)))
+               (is (= :missing-sidecar (:reason result)))
+               (is (empty? @writes))
+               (is (empty? @conflicts))
+               (copyFileSync valid-fixture path)
+               (chmodSync path 384)
+               (sync/sync-sidecar-file! sync-options)))
+            (.then
+             (fn [result]
+               (is (= :unchanged (:status result)))
+               (is (empty? @writes))
+               (is (empty? @conflicts))
+               (is (= 1 (count @completions)))))
+            (.catch (fn [error] (is false (.-stack error))))
+            (.finally
+             (fn []
+               (rmSync directory #js {:recursive true :force true})
+               (done))))))))
 
 (deftest refuses-a-mutated-committed-sidecar-prefix
   (async done

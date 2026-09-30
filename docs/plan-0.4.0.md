@@ -275,7 +275,7 @@ This spool is a public file protocol, not reuse of Claude's private hook payload
 - `${XDG_CONFIG_HOME:-~/.config}/adam/inbox/` retains the implemented 0.3 Claude lifecycle notifications that locate authoritative parent and subagent transcripts;
 - `${XDG_STATE_HOME:-~/.local/state}/adam/memory-inbox/` contains protocol-v1 producer notifications that locate authoritative memory sidecars.
 
-They have different schemas, authorities, coalescing keys, and acknowledgement conditions even if one worker lease eventually drains both. A transcript notification is acknowledged after host-source synchronization and evidence projection; a memory notification is acknowledged only after the named sidecar prefix is mirrored and included in an aggregate memory projection. The existing Claude inbox is not exposed as a producer API, and migrating its location is deferred.
+They have different schemas, authorities, coalescing keys, and acknowledgement conditions even if one worker lease eventually drains both. A transcript notification is acknowledged after host-source synchronization and evidence projection; a memory notification is normally acknowledged only after the named sidecar prefix is mirrored and included in an aggregate memory projection. Missing, unsafe, or non-regular sidecars are notification-terminal exceptions: Adam logs and acknowledges that notification without marking the stream conflicted, preserving prior mirrored state and allowing a later notification to ingest a repaired source. The existing Claude inbox is not exposed as a producer API, and migrating its location is deferred.
 
 ### Worker behavior
 
@@ -286,11 +286,11 @@ One Adam lease serializes memory-stream graph writes. The worker:
 3. mirrors the relevant sidecars independently;
 4. loads retained records for absent known streams;
 5. assembles one aggregate session projection;
-6. acknowledges only notifications covered by successful processing;
+6. acknowledges notifications covered by successful processing, plus notification-terminal missing or unsafe sources after logging them;
 7. continues healthy groups when another stream fails;
 8. retries transient failures with capped backoff.
 
-A malformed supported record is a bounded adapter diagnostic and does not poison source-session replication. Prefix mutation physically stops only that memory stream. Immutable-event conflict stops semantic advancement while later raw suffix records continue mirroring as blocked; either case preserves the last committed projection.
+A malformed supported record is a bounded adapter diagnostic and does not poison source-session replication. Prefix mutation physically stops only that memory stream. Immutable-event conflict stops semantic advancement while later raw suffix records continue mirroring as blocked; either case preserves the last committed projection. Missing or unsafe source files never create a permanent graph conflict, so repaired sidecars remain ingestible on a later notification.
 
 Both Pi and Claude composition roots use this host-neutral memory reconciliation service. If v1 sidecars are intentionally implemented only for Claude, the contract must say so; the preferred 0.4.0 outcome is that any known source session can own a protocol sidecar.
 

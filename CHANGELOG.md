@@ -7,7 +7,7 @@ All notable changes to adam are documented here.
 ### Added
 
 - A normative producer-neutral memory protocol v1 contract with content-free source coverage, deterministic replay/conflict rules, stream-qualified provenance, and executable JSONL conformance fixtures for the staged Adam 0.4 implementation.
-- Lossless producer-memory sidecar ingestion with UTF-8-byte-bounded streaming validation, restart-safe append checkpoints, byte-for-byte `AdamMemoryStream`/`AdamMemoryRecord` persistence, safe-prefix commits before physical conflicts, and continued blocked raw mirroring after semantic conflicts.
+- Lossless producer-memory sidecar ingestion with UTF-8-byte-bounded streaming validation, restart-safe append checkpoints, byte-for-byte `AdamMemoryStream`/`AdamMemoryRecord` persistence, safe-prefix commits before physical conflicts, continued blocked raw mirroring after semantic conflicts, and non-poisoning acknowledgement of missing or unsafe sidecars.
 
 ## [0.3.3] - 2026-09-28
 
