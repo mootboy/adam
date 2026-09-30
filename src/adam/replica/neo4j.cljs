@@ -1,5 +1,6 @@
 (ns adam.replica.neo4j
   (:require [adam.knowledge.store :as knowledge-store]
+            [adam.memory.store :as memory-store]
             [adam.replica.store :as store]
             [adam.sources.claude-code.store :as claude-store]
             [clojure.string :as string]
@@ -149,6 +150,9 @@
 (defn- record-get [^js record key]
   (.get record key))
 
+(defn- record-has? [^js record key]
+  (and record (fn? (.-has record)) (.has record key)))
+
 (defn- neo-integer [value]
   (let [^js candidate value]
     (cond
@@ -168,14 +172,21 @@
      :reflection-prefix (str "urn:adam:reflection:" user-uuid ":pi:")}))
 
 (defn- checkpoint-from-record [record]
-  (when (and record (some? (record-get record "byteOffset")))
-    (cond-> {:complete-through-ordinal (neo-integer (record-get record "ordinal"))
-             :complete-through-byte-offset (neo-integer (record-get record "byteOffset"))
-             :committed-prefix-hash (str (record-get record "prefixHash"))}
-      (some? (record-get record "entryCount"))
-      (assoc :entry-count (neo-integer (record-get record "entryCount")))
-      (some? (record-get record "logHash"))
-      (assoc :log-hash (str (record-get record "logHash"))))))
+  (when record
+    (let [byte-offset (record-get record "byteOffset")
+          conflicted? (and (record-has? record "conflicted")
+                           (= true (record-get record "conflicted")))]
+      (when (or (some? byte-offset) conflicted?)
+        (cond-> {}
+          (some? byte-offset)
+          (assoc :complete-through-ordinal (neo-integer (record-get record "ordinal"))
+                 :complete-through-byte-offset (neo-integer byte-offset)
+                 :committed-prefix-hash (str (record-get record "prefixHash")))
+          (some? (record-get record "entryCount"))
+          (assoc :entry-count (neo-integer (record-get record "entryCount")))
+          (some? (record-get record "logHash"))
+          (assoc :log-hash (str (record-get record "logHash")))
+          conflicted? (assoc :conflicted true))))))
 
 (defn- merge-session! [^js tx session]
   (-> (.run
@@ -516,6 +527,169 @@
            (reject-stream-checkpoint! tx (:id stream)
                                       (:complete-through-byte-offset checkpoint))
            nil)))))
+
+(defn- memory-stream-properties [stream]
+  #js {:id (:id stream)
+       :userId (:user-id stream)
+       :sessionId (:session-id stream)
+       :sourceKind (:source-kind stream)
+       :sourceSessionId (:source-session-id stream)
+       :producerId (:producer-id stream)
+       :sidecarPath (:path stream)})
+
+(defn- memory-record-properties [record]
+  (let [properties #js {:id (:id record)
+                        :streamId (:stream-id record)
+                        :ordinal (:ordinal record)
+                        :byteOffset (:byte-offset record)
+                        :nextByteOffset (:next-byte-offset record)
+                        :rawJson (:raw-json record)
+                        :payloadHash (:payload-hash record)
+                        :payloadBytes (:payload-bytes record)
+                        :prefixHash (:prefix-hash record)
+                        :semanticStatus (name (:semantic-status record))
+                        :diagnostics (clj->js (mapv name (:diagnostics record)))}]
+    (doseq [[key value] [["eventId" (:event-id record)]
+                         ["eventHash" (:event-hash record)]
+                         ["kind" (:kind record)]]]
+      (when (some? value) (aset properties key value)))
+    properties))
+
+(defn- merge-memory-stream! [^js tx stream]
+  (-> (.run tx
+            "MATCH (:AdamUser {id: $userId})-[:OWNS]->(session:AdamSession {id: $sessionId})
+             MERGE (stream:AdamMemoryStream {id: $streamId})
+             SET stream += $stream
+             MERGE (session)-[:HAS_MEMORY_STREAM]->(stream)
+             RETURN stream.id AS streamId"
+            #js {:userId (:user-id stream)
+                 :sessionId (:session-id stream)
+                 :streamId (:id stream)
+                 :stream (memory-stream-properties stream)})
+      (.then
+       (fn [result]
+         (when (empty? (records result))
+           (throw (ex-info "memory sidecar source session is not mirrored"
+                           {:type :missing-source-session
+                            :session-id (:session-id stream)})))))))
+
+(defn- memory-stream-checkpoint-in-transaction! [^js tx stream-id]
+  (-> (.run tx
+            "MATCH (stream:AdamMemoryStream {id: $streamId})
+             RETURN stream.completeThroughOrdinal AS ordinal,
+                    stream.completeThroughByteOffset AS byteOffset,
+                    stream.committedPrefixHash AS prefixHash,
+                    stream.recordCount AS entryCount,
+                    stream.logHash AS logHash,
+                    stream.conflicted AS conflicted"
+            #js {:streamId stream-id})
+      (.then (fn [result] (checkpoint-from-record (first (records result)))))))
+
+(defn- reject-memory-checkpoint! [tx stream-id actual-offset]
+  (-> (memory-stream-checkpoint-in-transaction! tx stream-id)
+      (.then
+       (fn [current]
+         (throw (store/checkpoint-conflict
+                 (or (:complete-through-byte-offset current) -1)
+                 actual-offset))))))
+
+(defn- write-memory-record-batch-transaction!
+  [^js tx {:keys [stream checkpoint] memory-records :records}]
+  (let [properties (mapv memory-record-properties memory-records)]
+    (-> (merge-memory-stream! tx stream)
+        (.then
+         (fn [_]
+           (.run tx
+                 "UNWIND $records AS input
+                  MERGE (record:AdamMemoryRecord {id: input.id})
+                  ON CREATE SET record += input
+                  RETURN record.id AS recordId,
+                         record.payloadHash AS expectedHash,
+                         input.payloadHash AS actualHash"
+                 #js {:records (clj->js properties)})))
+        (.then
+         (fn [result]
+           (doseq [record (records result)]
+             (store/assert-entry-compatible!
+              {:entry-id (str (record-get record "recordId"))
+               :payload-hash (str (record-get record "expectedHash"))}
+              {:entry-id (str (record-get record "recordId"))
+               :payload-hash (str (record-get record "actualHash"))}))))
+        (.then
+         (fn [_]
+           (.run tx
+                 "MATCH (stream:AdamMemoryStream {id: $streamId})
+                  UNWIND $records AS input
+                  MATCH (record:AdamMemoryRecord {id: input.id})
+                  MERGE (stream)-[:HAS_RECORD]->(record)"
+                 #js {:streamId (:id stream) :records (clj->js properties)})))
+        (.then
+         (fn [_]
+           (.run tx
+                 "MATCH (stream:AdamMemoryStream {id: $streamId})
+                  WHERE stream.completeThroughByteOffset IS NULL
+                     OR stream.completeThroughByteOffset < $byteOffset
+                     OR (stream.completeThroughByteOffset = $byteOffset
+                         AND stream.committedPrefixHash = $prefixHash)
+                  SET stream.completeThroughOrdinal = $ordinal,
+                      stream.completeThroughByteOffset = $byteOffset,
+                      stream.committedPrefixHash = $prefixHash,
+                      stream.recordCount = null,
+                      stream.logHash = null,
+                      stream.logBytes = null,
+                      stream.lastMirroredAt = datetime()
+                  RETURN stream.completeThroughByteOffset AS byteOffset"
+                 #js {:streamId (:id stream)
+                      :ordinal (:complete-through-ordinal checkpoint)
+                      :byteOffset (:complete-through-byte-offset checkpoint)
+                      :prefixHash (:committed-prefix-hash checkpoint)})))
+        (.then
+         (fn [result]
+           (when (empty? (records result))
+             (reject-memory-checkpoint!
+              tx (:id stream) (:complete-through-byte-offset checkpoint))))))))
+
+(defn- complete-memory-stream-transaction!
+  [^js tx {:keys [stream checkpoint log-bytes source-bytes incomplete-tail-bytes
+                  largest-record-bytes has-final-newline? semantic-conflict]}]
+  (-> (merge-memory-stream! tx stream)
+      (.then
+       (fn [_]
+         (.run tx
+               "MATCH (stream:AdamMemoryStream {id: $streamId})
+                WHERE stream.completeThroughByteOffset IS NULL
+                   OR (stream.completeThroughByteOffset = $byteOffset
+                       AND stream.committedPrefixHash = $prefixHash)
+                SET stream.completeThroughOrdinal = $ordinal,
+                    stream.completeThroughByteOffset = $byteOffset,
+                    stream.committedPrefixHash = $prefixHash,
+                    stream.recordCount = $recordCount,
+                    stream.logHash = $logHash,
+                    stream.logBytes = $logBytes,
+                    stream.sourceBytes = $sourceBytes,
+                    stream.incompleteTailBytes = $incompleteTailBytes,
+                    stream.largestRecordBytes = $largestRecordBytes,
+                    stream.hasFinalNewline = $hasFinalNewline,
+                    stream.lastMirroredAt = datetime(),
+                    stream.conflicted = $conflicted
+                RETURN stream.completeThroughByteOffset AS byteOffset"
+               #js {:streamId (:id stream)
+                    :ordinal (:complete-through-ordinal checkpoint)
+                    :byteOffset (:complete-through-byte-offset checkpoint)
+                    :prefixHash (:committed-prefix-hash checkpoint)
+                    :recordCount (:entry-count checkpoint)
+                    :logHash (:log-hash checkpoint)
+                    :logBytes log-bytes
+                    :sourceBytes source-bytes
+                    :incompleteTailBytes incomplete-tail-bytes
+                    :largestRecordBytes largest-record-bytes
+                    :hasFinalNewline has-final-newline?
+                    :conflicted (boolean semantic-conflict)})))
+      (.then
+       (fn [result]
+         (when (empty? (records result))
+           (reject-memory-checkpoint!
+            tx (:id stream) (:complete-through-byte-offset checkpoint)))))))
 
 (defn- repository-properties [repository]
   (let [properties #js {:id (:id repository)}]
@@ -994,6 +1168,76 @@
          (fn [tx]
            (-> (merge-session! tx session)
                (.then (fn [_] (update-current-leaf! tx session)))))))))
+
+  memory-store/MemoryStreamStore
+  (ensure-memory-schema! [_]
+    (ensure-label-constraints! driver database ["AdamMemoryStream" "AdamMemoryRecord"]))
+
+  (get-memory-stream-checkpoint! [_ stream-id]
+    (with-session!
+      driver database
+      (fn [session]
+        (memory-stream-checkpoint-in-transaction! session stream-id))))
+
+  (write-memory-record-batch! [_ request]
+    (with-session!
+      driver database
+      (fn [^js session]
+        (.executeWrite session
+                       (fn [tx]
+                         (write-memory-record-batch-transaction! tx request))))))
+
+  (complete-memory-stream! [_ request]
+    (with-session!
+      driver database
+      (fn [^js session]
+        (.executeWrite session
+                       (fn [tx]
+                         (complete-memory-stream-transaction! tx request))))))
+
+  (mark-memory-stream-conflict! [_ conflict]
+    (with-session!
+      driver database
+      (fn [^js session]
+        (.executeWrite
+         session
+         (fn [tx]
+           (let [mark!
+                 (fn []
+                   (.run tx
+                         "MATCH (stream:AdamMemoryStream {id: $streamId})
+                          SET stream.conflicted = true,
+                              stream.conflictReason = $reason,
+                              stream.conflictSourceFile = $sourceFile,
+                              stream.conflictDetectedAt = datetime()"
+                         #js {:streamId (:stream-id conflict)
+                              :reason (name (:reason conflict))
+                              :sourceFile (:source-file conflict)}))]
+             (if-let [stream (:stream conflict)]
+               (-> (merge-memory-stream! tx stream) (.then mark!))
+               (mark!))))))))
+
+  (read-memory-records! [_ stream-id]
+    (with-session!
+      driver database
+      (fn [session]
+        (-> (.run session
+                  "MATCH (:AdamMemoryStream {id: $streamId})-[:HAS_RECORD]->(record:AdamMemoryRecord)
+                   RETURN record ORDER BY record.ordinal"
+                  #js {:streamId stream-id})
+            (.then
+             (fn [result]
+               (mapv
+                (fn [row]
+                  (let [properties (.-properties (record-get row "record"))]
+                    {:id (str (aget properties "id"))
+                     :ordinal (neo-integer (aget properties "ordinal"))
+                     :raw-json (str (aget properties "rawJson"))
+                     :payload-hash (str (aget properties "payloadHash"))
+                     :semantic-status (keyword (str (aget properties "semanticStatus")))
+                     :diagnostics (mapv keyword
+                                        (array-seq (or (aget properties "diagnostics") #js [])))}))
+                (records result))))))))
 
   knowledge-store/FileEvidenceStore
   (ensure-file-evidence-schema! [_]

@@ -361,7 +361,7 @@ The scope is one 0.4.0 milestone, not one implementation PR. Track each numbered
 
 1. **Complete:** characterize the reference Claude producer and record the non-blocking generation/privacy contract in [`claude-memory-producer-contract.md`](claude-memory-producer-contract.md).
 2. **Complete:** commit [`memory-protocol-contract.md`](memory-protocol-contract.md) with fixtures for valid events, replay and JCS edge canonicalization, malformed complete records, incomplete tails, source-checkpoint regressions, unresolved citations, tombstones, duplicate IDs, prefix changes, and source/producer mismatch.
-3. Implement lossless memory-stream scanning, raw-record storage, checkpoints, and live round-trip tests.
+3. **Complete:** implement lossless memory-stream scanning, raw-record storage, checkpoints, and live round-trip tests.
 4. Implement the graph-native producer-scoped memory-identity migration without changing session, stream, or entry identities.
 5. Implement aggregate multi-producer projection and retrieval provenance.
 6. Implement the distinct durable memory-notification spool and host-neutral reconciliation service.
