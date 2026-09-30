@@ -296,6 +296,9 @@
               new-reflection-id
               (identity/reflection-urn
                user-uuid "pi" "child" "pi-observational-memory" "bbbbbbbbbbbb")
+              new-defaulted-observation-id
+              (identity/observation-urn
+               user-uuid "pi" "child" "pi-observational-memory" "cccccccccccc")
               repository-id (str "urn:adam:repository:local:" user-uuid ":legacy")
               file-id (str "urn:adam:file:" user-uuid)
               auth-token (.basic (.-auth neo4j) username password)
@@ -401,6 +404,14 @@
                           (aget entry "rawJson")))
                    (is (= "pi" (aget observation "sourceKind")))
                    (is (= true (aget observation "dropped"))))
+                 (.run
+                  query-session
+                  "MATCH (:AdamSession {id: $childId})-[:HAS_MEMORY]->(invalid:AdamObservation {id: $invalidObservationId})
+                   SET invalid.sourceKind = 'claude-code'"
+                  #js {:childId new-child-id
+                       :invalidObservationId source-invalid-observation-id})))
+              (.then
+               (fn [_]
                  (knowledge-store/memory-identity-version! replica user-id)))
               (.then
                (fn [version]
@@ -438,7 +449,7 @@
                  (.run
                   query-session
                   "MATCH (:AdamSession {id: $childId})-[:HAS_MEMORY]->(invalid:AdamObservation {id: $invalidObservationId})
-                   SET invalid.producer = 'pi-observational-memory'"
+                   SET invalid.sourceKind = 'pi'"
                   #js {:childId new-child-id
                        :invalidObservationId source-invalid-observation-id})))
               (.then
@@ -452,27 +463,32 @@
                   query-session
                   "MATCH (child:AdamSession {id: $childId})-[:HAS_MEMORY]->(observation:AdamObservation {id: $observationId})
                    MATCH (child)-[:HAS_MEMORY]->(reflection:AdamReflection {id: $reflectionId})
+                   MATCH (child)-[:HAS_MEMORY]->(defaulted:AdamObservation {id: $defaultedObservationId})
                    MATCH (child)-[:HAS_ENTRY]->(entry:AdamEntry {id: $entryId})
                    MATCH (entry)-[:TOUCHES]->(file:AdamCodeFile {id: $fileId})
                    MATCH (observation)-[:SOURCED_FROM]->(entry)
                    MATCH (observation)-[:ABOUT]->(file)
                    MATCH (reflection)-[:SUPPORTED_BY]->(observation)
-                   RETURN child, entry, observation, reflection"
+                   RETURN child, entry, observation, reflection, defaulted"
                   #js {:childId new-child-id
                        :entryId new-entry-id
                        :observationId new-observation-id
                        :reflectionId new-reflection-id
+                       :defaultedObservationId new-defaulted-observation-id
                        :fileId file-id})))
               (.then
                (fn [^js result]
                  (let [records (array-seq (.-records result))
                        ^js record (first records)
                        observation (.-properties (.get record "observation"))
-                       reflection (.-properties (.get record "reflection"))]
+                       reflection (.-properties (.get record "reflection"))
+                       defaulted (.-properties (.get record "defaulted"))]
                    (is (= 1 (count records)))
                    (is (= true (aget observation "dropped")))
                    (is (= "pi-observational-memory" (aget observation "producer")))
-                   (is (= "pi-observational-memory" (aget reflection "producer"))))
+                   (is (= "pi-observational-memory" (aget reflection "producer")))
+                   (is (= "pi-observational-memory" (aget defaulted "producer"))
+                       "producerless Pi memory receives the legacy producer default"))
                  (memory-migration/migrate-if-needed!
                   {:store replica :user-id user-id})))
               (.then

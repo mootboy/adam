@@ -947,7 +947,12 @@
   (let [kind (keyword (str (aget value "kind")))
         source-kind (aget value "sourceKind")
         source-session-id (aget value "sourceSessionId")
-        producer (aget value "producer")
+        stored-producer (aget value "producer")
+        producer (if (and (= "pi" source-kind)
+                          (or (not (string? stored-producer))
+                              (string/blank? stored-producer)))
+                   "pi-observational-memory"
+                   stored-producer)
         memory-id (aget value "memoryId")
         valid? (every? #(and (string? %) (not (string/blank? %)))
                        [source-kind source-session-id producer memory-id])
