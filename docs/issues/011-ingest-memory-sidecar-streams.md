@@ -41,7 +41,7 @@ Given an explicit validated sidecar locator, Adam scans the authoritative JSONL 
 - [x] `checkpoint-regression` skips semantic acceptance without conflicting physical synchronization.
 - [x] Sidecar shrinkage and committed-prefix mutation are detected before suffix writes.
 - [x] Invalid UTF-8 or oversize records commit the preceding safe prefix before physically conflicting the stream.
-- [x] Unsafe files are terminal conflicts, concurrent file changes are transient, and protocol string bounds use UTF-8 bytes.
+- [x] Missing or unsafe files are notification-terminal without poisoning stream state, concurrent file changes are transient, and protocol string bounds use UTF-8 bytes.
 - [x] Synchronization resumes from committed checkpoints in byte-bounded batches and repeated unchanged synchronization is idempotent.
 - [x] Neo4j round-trip returns the exact mirrored raw records in physical order.
 - [x] Normal tests remain independent of Neo4j; live coverage is opt-in.
@@ -51,9 +51,9 @@ Given an explicit validated sidecar locator, Adam scans the authoritative JSONL 
 
 Implemented on `feat/memory-stream-ingestion`.
 
-- `npm test`: 119 ClojureScript tests with 469 assertions; 20 Node tests passed and 3 opt-in tests skipped.
-- Live Neo4j validation: 7 ClojureScript tests with 94 assertions plus the worker outage-repair test.
-- The live memory-stream case proves byte-for-byte raw round-trip, unchanged idempotency, append-only suffix resume, partial-tail deferral, raw blocked-suffix mirroring after semantic conflict, safe-prefix persistence before physical conflict, and isolation of a healthy producer stream.
+- `npm test`: 120 ClojureScript tests with 485 assertions; 20 Node tests passed and 3 opt-in tests skipped.
+- Live Neo4j validation: 7 ClojureScript tests with 102 assertions plus the worker outage-repair test.
+- The live memory-stream case proves byte-for-byte raw round-trip, unchanged idempotency, append-only suffix resume, partial-tail deferral, raw blocked-suffix mirroring after semantic conflict, safe-prefix persistence before physical conflict, non-poisoning unsafe/missing source handling, and isolation of a healthy producer stream.
 - Release build, package dry-run, generated-runtime drift check, and `git diff --check` passed.
 
 ## Notes

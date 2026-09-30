@@ -912,6 +912,7 @@
               sidecar-path (join directory "events.jsonl")
               conflict-path (join directory "conflict.jsonl")
               physical-path (join directory "physical.jsonl")
+              unsafe-path (join directory "unsafe.jsonl")
               transcript-fixture (.resolve node-path "test/fixtures/claude/main.jsonl")
               memory-root (.resolve node-path "docs/fixtures/memory-protocol-v1")
               locator {:source-kind "claude-code"
@@ -926,6 +927,9 @@
               physical-stream-id (identity/memory-stream-urn
                                   user-uuid "claude-code" "session-123"
                                   "org.example.physical")
+              unsafe-stream-id (identity/memory-stream-urn
+                                user-uuid "claude-code" "session-123"
+                                "org.example.unsafe")
               source-lines (atom nil)
               finish!
               (fn [error]
@@ -972,6 +976,11 @@
                            (str physical-valid "\n"
                                 (.repeat "x" (inc (* 1024 1024))) "\n")
                            #js {:encoding "utf8" :mode 384}))
+          (writeFileSync
+           unsafe-path
+           (-> (readFileSync (join memory-root "valid-events.jsonl") "utf8")
+               (.replaceAll "org.example.claude-memory" "org.example.unsafe"))
+           #js {:encoding "utf8" :mode 420})
           (reset! source-lines (vec (.split (.trimEnd (readFileSync sidecar-path "utf8")) "\n")))
           (-> (store/initialize! replica {:id user-id})
               (.then
@@ -1084,6 +1093,42 @@
                (fn [records]
                  (is (= 1 (count records))
                      "records before a physical conflict remain mirrored")
+                 (memory-sync/sync-sidecar-file!
+                  {:store replica :user-uuid user-uuid :path unsafe-path
+                   :source-kind "claude-code" :source-session-id "session-123"
+                   :producer-id "org.example.unsafe"})))
+              (.then
+               (fn [result]
+                 (is (= :not-ingested (:status result)))
+                 (is (= :unsafe-permissions (:reason result)))
+                 (memory-store/read-memory-records! replica unsafe-stream-id)))
+              (.then
+               (fn [records]
+                 (is (empty? records)
+                     "an unsafe source does not create a permanent graph conflict")
+                 (chmodSync unsafe-path 384)
+                 (memory-sync/sync-sidecar-file!
+                  {:store replica :user-uuid user-uuid :path unsafe-path
+                   :source-kind "claude-code" :source-session-id "session-123"
+                   :producer-id "org.example.unsafe"})))
+              (.then
+               (fn [result]
+                 (is (= :mirrored (:status result)))
+                 (is (= 4 (:records-written result)))
+                 (rmSync unsafe-path)
+                 (memory-sync/sync-sidecar-file!
+                  {:store replica :user-uuid user-uuid :path unsafe-path
+                   :source-kind "claude-code" :source-session-id "session-123"
+                   :producer-id "org.example.unsafe"})))
+              (.then
+               (fn [result]
+                 (is (= :not-ingested (:status result)))
+                 (is (= :missing-sidecar (:reason result)))
+                 (memory-store/read-memory-records! replica unsafe-stream-id)))
+              (.then
+               (fn [records]
+                 (is (= 4 (count records))
+                     "a missing source preserves its last mirrored prefix")
                  (memory-store/read-memory-records! replica stream-id)))
               (.then
                (fn [records]

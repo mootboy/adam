@@ -113,26 +113,19 @@
                         :source-session-id (:source-session-id options)
                         :producer-id (:producer-id options)}))))
     (catch :default error
-      (let [{:keys [type reason failure-class]} (ex-data error)]
-        (if (and (= :memory-sidecar-error type)
-                 (= :terminal failure-class))
-          (let [{:keys [stream]}
-                (model/from-scan
-                 user-uuid {:path path
-                            :source-kind (:source-kind options)
-                            :source-session-id (:source-session-id options)
-                            :producer-id (:producer-id options)
-                            :records []})
-                conflict {:stream stream
-                          :stream-id (:id stream)
-                          :source-file path
-                          :reason reason
-                          :conflict-class :physical}]
-            (-> (store/ensure-memory-schema! store)
-                (.then (fn [_] (store/mark-memory-stream-conflict! store conflict)))
-                (.then (fn [_]
-                         {:status :conflict
-                          :records-written 0
-                          :batches-written 0
-                          :conflict conflict}))))
+      (let [{:keys [type reason failure-class]} (ex-data error)
+            missing? (= "ENOENT" (.-code error))
+            reason (if missing? :missing-sidecar reason)
+            notification-terminal?
+            (or missing?
+                (and (= :memory-sidecar-error type)
+                     (= :notification-terminal failure-class)))]
+        (if notification-terminal?
+          (js/Promise.resolve
+           {:status :not-ingested
+            :notification-disposition :acknowledge
+            :reason reason
+            :source-file path
+            :records-written 0
+            :batches-written 0})
           (js/Promise.reject error))))))

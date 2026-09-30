@@ -90,7 +90,8 @@ These protocol cases run deterministically in the normal suite. Lossless scannin
 | Explicit sidecar is mirrored, rerun unchanged, then appended | Raw records round-trip byte-for-byte, unchanged synchronization writes nothing, and only the suffix is added |
 | Semantic event conflict appears after valid records, then more records append | The conflicting record is mirrored; later complete suffix records continue mirroring as `blocked` while semantic advancement remains stopped (**live**) |
 | Invalid UTF-8 or an oversized record follows valid records | Valid preceding records commit, the offending record does not, and the stream becomes physically conflicted (**live**) |
-| Sidecar path or owner-only permissions are unsafe | The stream is terminally conflicted instead of retried forever; POSIX mode enforcement supports Linux/macOS only |
+| Sidecar path or owner-only permissions are unsafe | The notification is acknowledged and logged without marking the stream conflicted; after repair, a later notification ingests normally; POSIX mode enforcement supports Linux/macOS only |
+| Notified sidecar no longer exists | The notification is acknowledged and logged, and the last mirrored prefix and derived contribution remain intact |
 | Sidecar changes during scanning | The scan is transiently rejected and may retry without marking a conflict |
 | Memory notification arrives before its source session | The missing-session failure remains transient; the worker reconciles transcript notifications first for that session |
 | One memory stream conflicts | Its source session, transcript/file evidence, and other producer streams remain available |

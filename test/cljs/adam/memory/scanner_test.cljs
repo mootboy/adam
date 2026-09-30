@@ -146,9 +146,12 @@
                     :source-session-id "session-123"
                     :producer-id "org.example.claude-memory"}))))))
 
-(deftest classifies-terminal-and-transient-scan-failures
-  (is (= :terminal (scanner/failure-class :unsafe-path)))
-  (is (= :terminal (scanner/failure-class :unsafe-permissions)))
+(deftest classifies-scan-failures-by-reconciliation-disposition
+  (is (= :notification-terminal (scanner/failure-class :unsafe-path)))
+  (is (= :notification-terminal (scanner/failure-class :unsafe-permissions)))
+  (is (= :notification-terminal (scanner/failure-class :missing-sidecar)))
+  (is (= :physical-conflict (scanner/failure-class :record-too-large)))
+  (is (= :physical-conflict (scanner/failure-class :invalid-utf8)))
   (is (= :transient (scanner/failure-class :concurrent-change))))
 
 (deftest rejects-unsafe-sidecar-files
