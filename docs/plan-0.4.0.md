@@ -315,7 +315,9 @@ Native `Read`, `Edit`, and `Write` activity may be cited. Bash commands, MCP cal
 
 ### Producer characterization before implementation
 
-Before choosing a model client, package shape, hook schedule, or background-worker policy, characterize and document the following. Producer implementation does not begin until this evidence is reviewed; credentials, consent, or detached-process constraints may change the proposed lifecycle:
+The initial characterization is recorded in [`claude-memory-producer-contract.md`](claude-memory-producer-contract.md). It approves fast locator-only hooks, a detached serialized worker, an explicitly enabled safe-mode Claude CLI adapter for the tracer bullet, sidecar-derived replay, bounded structured output, source-progress scheduling, and explicit background-processing consent. A future direct-provider adapter may require separate credentials.
+
+The characterization covered:
 
 - credentials and model-provider configuration;
 - whether generation can run detached after Claude exits;
@@ -356,7 +358,7 @@ The end-to-end proof is:
 
 The scope is one 0.4.0 milestone, not one implementation PR. Track each numbered increment with a repository issue and deliver it through one or more small, independently reviewable PRs. Intermediate PRs land on `main` without changing the released package version. Only the final release-preparation PR bumps the package and plugin versions to 0.4.0, finalizes the changelog, rebuilds all committed runtimes, and activates the protected-main tag/release pipeline.
 
-1. Characterize the reference Claude producer and record the non-blocking generation/privacy contract. Treat the result as a gate that may revise later producer scheduling.
+1. **Complete:** characterize the reference Claude producer and record the non-blocking generation/privacy contract in [`claude-memory-producer-contract.md`](claude-memory-producer-contract.md).
 2. Commit `docs/memory-protocol-contract.md` with fixtures for valid events, replay, malformed complete records, incomplete tails, unresolved citations, tombstones, duplicate IDs, prefix changes, and source/producer mismatch.
 3. Implement lossless memory-stream scanning, raw-record storage, checkpoints, and live round-trip tests.
 4. Implement the graph-native producer-scoped memory-identity migration without changing session, stream, or entry identities.

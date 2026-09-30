@@ -12,6 +12,7 @@ This directory is adam's repository-local issue tracker. Use one Markdown file p
 - [`005`](005-reconcile-claude-transcripts.md) — Reconcile Claude transcripts without blocking Claude (`done`)
 - [`006`](006-release-and-cut-over-0.3.0.md) — Release and cut over Adam 0.3.0 (`done`)
 - [`007`](007-load-plugin-mcp-server-from-released-checkout.md) — Load the plugin MCP server from a released checkout (`done`, bug)
+- [`009`](009-characterize-claude-memory-producer.md) — Characterize the reference Claude memory producer (`done`)
 
 ## Naming
 
