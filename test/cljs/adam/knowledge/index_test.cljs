@@ -7,16 +7,13 @@
             ["node:os" :refer [tmpdir]]
             ["node:path" :refer [join]]))
 
-(defrecord RecordingEvidenceStore [projections clears streams]
+(defrecord RecordingEvidenceStore [projections streams]
   store/AggregateMemoryStore
   (read-session-memory-streams! [_ _ _] (js/Promise.resolve @streams))
   store/FileEvidenceStore
   (ensure-file-evidence-schema! [_] (js/Promise.resolve nil))
   (index-file-evidence! [_ projection]
     (swap! projections conj projection)
-    (js/Promise.resolve nil))
-  (clear-file-evidence! [_ session-id extractor-version]
-    (swap! clears conj [session-id extractor-version])
     (js/Promise.resolve nil)))
 
 (deftest workspace-session-discovers-repository-from-selected-explicit-file-evidence
@@ -49,7 +46,7 @@
             "{\"type\":\"message\",\"id\":\"assistant-1\",\"parentId\":null,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"call-1\",\"name\":\"edit\",\"arguments\":{\"path\":\"/work/trees/feature/src/a.cljs\"}}]}}\n")
        "utf8")
       (-> (index/index-session!
-           {:store (->RecordingEvidenceStore projections (atom []) (atom []))
+           {:store (->RecordingEvidenceStore projections (atom []))
             :path path
             :user-uuid "user-1"
             :resolve-repository resolve-repository
@@ -125,7 +122,7 @@
                   :records [{:id "memory-record-1" :ordinal 0
                              :semantic-status :accepted
                              :raw-json (js/JSON.stringify stream-event)}]}])
-          memory-store (->RecordingEvidenceStore projections (atom []) streams)
+          memory-store (->RecordingEvidenceStore projections streams)
           repository {:id "urn:adam:repository:user-1:hash"
                       :root "/work/repo" :commit "head" :branch "main" :dirty? false
                       :worktrees [{:root "/work/repo" :commit "head"
@@ -174,8 +171,7 @@
     (let [directory (mkdtempSync (join (tmpdir) "adam-evidence-clear-"))
           path (join directory "session.jsonl")
           projections (atom [])
-          clears (atom [])
-          memory-store (->RecordingEvidenceStore projections clears (atom []))]
+          memory-store (->RecordingEvidenceStore projections (atom []))]
       (writeFileSync
        path
        "{\"type\":\"session\",\"id\":\"session-clear\",\"cwd\":\"/not-git\"}\n"
@@ -199,7 +195,6 @@
           (.then
            (fn [resolved]
              (is (nil? resolved))
-             (is (empty? @clears))
              (is (= "urn:adam:session:user-1:pi:session-clear"
                     (:session-id (first @projections))))
              (is (nil? (:repository (first @projections))))

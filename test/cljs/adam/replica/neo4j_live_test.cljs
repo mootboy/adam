@@ -83,7 +83,6 @@
                     :parentSession parent-first-path})
               child-after-parent-entry "{\"type\":\"message\",\"id\":\"entry-after-parent\",\"parentId\":null}"
               child-session-id (identity/session-urn user-uuid "child-live")
-              parent-session-id (identity/session-urn user-uuid "parent-live")
               materialized-path (join directory "materialized-child.jsonl")
               child-after-parent-session-id
               (identity/session-urn user-uuid "child-after-parent-live")
@@ -176,8 +175,9 @@
               (.then
                (fn [version]
                  (is (= 0 version))
-                 (knowledge-store/clear-file-evidence!
-                  replica parent-session-id 3)))
+                 (knowledge-index/index-session!
+                  {:store replica :path parent-path :user-uuid user-uuid
+                   :repository repository})))
               (.then
                (fn [_]
                  (knowledge-store/code-memory-version! replica user-id)))
@@ -1264,34 +1264,51 @@
               first-path (join root "producer-a.jsonl")
               second-path (join root "producer-b.jsonl")
               transcript-path (join (.cwd js/process) "test/fixtures/claude/main.jsonl")
+              subagent-path (join (.cwd js/process) "test/fixtures/claude/subagent.jsonl")
               repository (evidence/build-repository
                           {:user-uuid user-uuid :root "/work/repo"
                            :remote (str "git@example.com:" user-uuid "/aggregate.git")
-                           :commit "main-head" :branch "main" :dirty? false})
+                           :commit "main-head" :branch "main" :dirty? false
+                           :worktrees [{:root "/work/repo" :commit "main-head"
+                                       :branch "main" :dirty? false}
+                                      {:root "/work/tree" :commit "agent-head"
+                                       :branch "agent" :dirty? false}]})
               event-json
               (fn [producer content]
-                (js/JSON.stringify
-                 #js {:protocolVersion 1 :eventId (str "event-" producer)
-                      :kind "observations.recorded"
-                      :recordedAt "2026-01-01T00:00:00.000Z"
-                      :producer #js {:id producer :version "1.0.0"}
-                      :source #js {:kind "claude-code" :sessionId "claude-session-1"}
-                      :sourceCheckpoint
-                      #js {:streams #js [#js {:streamId "main" :committedBytes 1
-                                              :prefixSha256 (apply str (repeat 64 "a"))
-                                              :selectedLeafEntryId "a-request-1"}]}
-                      :observations
-                      #js [#js {:id "aaaaaaaaaaaa" :content content
-                                :timestamp "2026-01-01T00:00:00.000Z"
-                                :relevance "high" :tokenCount 2
-                                :sourceEntries #js [#js {:streamId "main"
-                                                        :entryId "a-request-1"}]}]}))
+                (let [subagent-producer? (= producer "producer-a")
+                      streams (cond-> [{:streamId "main" :committedBytes 1
+                                        :prefixSha256 (apply str (repeat 64 "a"))
+                                        :selectedLeafEntryId "a-request-1"}]
+                                subagent-producer?
+                                (conj {:streamId "agent:agent-1" :committedBytes 1
+                                       :prefixSha256 (apply str (repeat 64 "b"))
+                                       :selectedLeafEntryId "sa-read"}))
+                      streams (vec (sort-by :streamId streams))
+                      source-entries
+                      (cond-> [{:streamId "main" :entryId "a-request-1"}]
+                        subagent-producer?
+                        (conj {:streamId "agent:agent-1" :entryId "sa-read"}))]
+                  (js/JSON.stringify
+                   (clj->js
+                    {:protocolVersion 1 :eventId (str "event-" producer)
+                     :kind "observations.recorded"
+                     :recordedAt "2026-01-01T00:00:00.000Z"
+                     :producer {:id producer :version "1.0.0"}
+                     :source {:kind "claude-code" :sessionId "claude-session-1"}
+                     :sourceCheckpoint {:streams streams}
+                     :observations
+                     [{:id "aaaaaaaaaaaa" :content content
+                       :timestamp "2026-01-01T00:00:00.000Z"
+                       :relevance "high" :tokenCount 2
+                       :sourceEntries source-entries}]}))))
               reconcile-with!
               (fn [resolved-repository]
                 (claude-reconcile/reconcile!
                  {:locator-options {:config-home root}
-                  :notification {:event "Stop" :session-id "claude-session-1"
-                                 :transcript-path transcript-path :cwd "/work/repo"}
+                  :notification {:event "SubagentStop" :session-id "claude-session-1"
+                                 :parent-transcript-path transcript-path
+                                 :transcript-path subagent-path :cwd "/work/repo"
+                                 :agent-id "agent-1"}
                   :user-uuid user-uuid :store replica
                   :resolve-repository!
                   (fn [_ _] (js/Promise.resolve resolved-repository))}))
@@ -1348,9 +1365,15 @@
                  (is (= [["producer-a" "memory a"] ["producer-b" "memory b"]]
                         (mapv (juxt :producer :content) memories)))
                  (is (every? #(= "claude-code" (:source-kind %)) memories))
-                 (is (every? #(= [{:stream-id "main" :entry-id "a-request-1"}]
-                                 (:source-entries %)) memories))
-                 (is (every? #(= "main" (get-in % [:source-contexts 0 :stream-id]))
+                 (is (= {"producer-a"
+                         #{{:stream-id "main" :entry-id "a-request-1"}
+                           {:stream-id "agent:agent-1" :entry-id "sa-read"}}
+                         "producer-b"
+                         #{{:stream-id "main" :entry-id "a-request-1"}}}
+                        (into {} (map (juxt :producer
+                                           #(set (:source-entries %))) memories))))
+                 (is (every? #(= #{"main"}
+                                  (set (map :stream-id (:source-contexts %))))
                              memories))
                  (.run query-session
                        "MATCH (:AdamSession {sourceKind: 'claude-code', sourceSessionId: 'claude-session-1'})-[:HAS_MEMORY]->(memory:AdamObservation)
@@ -1362,6 +1385,17 @@
                  (let [^js record (first (array-seq (.-records result)))]
                    (is (= 2 (.toNumber (.get record "memories"))))
                    (is (= 2 (.toNumber (.get record "producers")))))
+                 (.run query-session
+                       "MATCH (observation:AdamObservation {producer: 'producer-a', memoryId: 'aaaaaaaaaaaa'})-[:SOURCED_FROM]->(entry:AdamEntry {streamId: 'agent:agent-1', entryId: 'sa-read'})-[:TOUCHES]->(file:AdamCodeFile {relativePath: 'src/subagent.cljs'})
+                        MATCH (observation)-[:ABOUT]->(file)
+                        WHERE observation.id CONTAINS $userUuid
+                        RETURN count(*) AS resolved"
+                       #js {:userUuid user-uuid})))
+              (.then
+               (fn [^js result]
+                 (let [^js record (first (array-seq (.-records result)))]
+                   (is (= 1 (.toNumber (.get record "resolved")))
+                       "a canonical subagent citation resolves SOURCED_FROM and ABOUT"))
                  (-> (memory-store/mark-memory-stream-conflict!
                       replica
                       {:stream-id (identity/memory-stream-urn

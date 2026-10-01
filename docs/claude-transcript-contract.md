@@ -23,7 +23,7 @@ urn:adam:session:<userUuid>:pi:<piSessionId>
 urn:adam:session:<userUuid>:claude-code:<claudeSessionId>
 ```
 
-A Claude parent transcript and its subagent streams share one `AdamSession`. Subagent stream identity is carried separately by `agentId`; it does not create another user session.
+A Claude parent transcript and its subagent streams share one `AdamSession`. The parent stream ID is exactly `main`; each subagent stream ID is exactly `agent:<agentId>` using the host-supplied agent ID. Subagent stream identity is also carried separately by `agentId`; it does not create another user session.
 
 UUID-bearing records retain `uuid` and `parentUuid`. UUID-less records receive deterministic stream-local identities during scanning and remain part of the lossless replica even when they do not participate in the UUID tree.
 

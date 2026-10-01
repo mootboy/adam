@@ -228,7 +228,7 @@ test("checkpoint regressions skip events without conflicting the stream", async 
 test("unresolved entry and support citations remain structurally valid", async () => {
   const events = (await readCompleteLines("unresolved-citations.jsonl")).map(JSON.parse);
   assert.deepEqual(events[0].observations[0].sourceEntries,
-    [{ streamId: "agent-a", entryId: "not-mirrored-yet" }]);
+    [{ streamId: "agent:a", entryId: "not-mirrored-yet" }]);
   assert.deepEqual(events[1].reflections[0].supportingObservationIds,
     ["999999999999"]);
 });

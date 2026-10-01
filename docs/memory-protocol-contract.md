@@ -163,12 +163,14 @@ The informative machine-readable schema is [`fixtures/memory-protocol-v1/event.s
 
 Each stream contains:
 
-- `streamId`: the host stream identity (`main` for a single main stream; explicit child IDs for subagents);
+- `streamId`: the host stream identity. For Claude Code it MUST be `main` for the parent transcript and `agent:<agentId>` for a subagent transcript, exactly matching Adam's `AdamTranscriptStream.streamId`; producers MUST NOT invent another child-stream spelling;
 - `committedBytes`: source bytes the producer treated as complete;
 - `prefixSha256`: SHA-256 of exactly those source bytes;
 - `selectedLeafEntryId`: the selected source leaf used for context, or `null` when the host has none.
 
 A producer folding accepted events carries this full snapshot forward. Once present, a stream MUST NOT disappear from later snapshots. `committedBytes` MUST NOT decrease. Equal byte offsets MUST retain the same prefix hash. A selected leaf MAY change as host context changes.
+
+For Claude Code, `agentId` is the exact non-empty identifier supplied by the host hook/transcript metadata; the canonical child stream for agent ID `a` is therefore `agent:a`.
 
 Adam compares each event with the last accepted source checkpoint for that sidecar. A disappearing stream, decreasing `committedBytes`, or changed `prefixSha256` at an equal offset is a `checkpoint-regression` record diagnostic. Adam retains the raw record, skips every semantic effect of that event (including coverage and memory changes), keeps the previous accepted checkpoint, and continues with later records. It does not mark the memory stream conflicted. A later event is compared with the same last accepted checkpoint until one passes. Newly appearing streams and a changed hash at a larger offset are allowed because this checkpoint is producer provenance rather than Adam's independent source validation.
 

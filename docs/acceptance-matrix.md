@@ -210,6 +210,7 @@ These cases define the implemented 0.3 scanner, graph-storage, file-evidence, an
 | Tombstone precedes or follows an observation definition | Producer-local observation remains projected as dropped |
 | Reflection supports an observation with the same producer | `SUPPORTED_BY` is created; another producer's equal memory ID is not linked |
 | Citation names a source stream and entry | `SOURCED_FROM` resolves only the matching owned session entry and `ABOUT` follows its `TOUCHES` evidence (**live**) |
+| Claude citation names a subagent entry | Canonical `agent:<agentId>` resolves to the mirrored child entry and its file evidence (**live**) |
 | Citation target is not mirrored yet | Memory remains projected with an `unresolved-reference` diagnostic and links appear after a later rebuild |
 | Producer stream is physically or semantically conflicted | Its accepted retained prefix remains in the aggregate while later invalid/blocked records do not apply |
 | Sidecar disappears after successful mirroring | Retained `AdamMemoryRecord` data preserves the producer's derived contribution (**live**) |

@@ -50,10 +50,10 @@ Adam deterministically folds embedded Pi memory and every mirrored protocol-v1 p
 
 Implemented on `feat/aggregate-memory-projection`.
 
-- Deterministic ClojureScript suite: 131 tests with 534 assertions.
+- Deterministic ClojureScript suite: 130 tests with 527 assertions.
 - Node boundary/package suite: 20 passing tests with 3 expected opt-in skips.
-- Ephemeral Neo4j 5.26 suite: 8 tests with 126 assertions plus the worker outage-repair test.
-- Live coverage mirrors two producers with the same memory ID, resolves stream-qualified citations and revision provenance, retains a semantically conflicted producer after its sidecar disappears, preserves memory through repository-less projection, and restores file links on later reconciliation.
+- Ephemeral Neo4j 5.26 suite: 8 tests with 127 assertions plus the worker outage-repair test.
+- Live coverage mirrors two producers with the same memory ID, resolves parent and canonical `agent:<agentId>` subagent citations into `SOURCED_FROM`/`ABOUT` provenance, retains a semantically conflicted producer after its sidecar disappears, preserves memory through repository-less projection, and restores file links on later reconciliation.
 - Release build, exact-tarball package boundary, committed-dist drift, package dry-run, and diff checks are required before proposal.
 
 ## Notes

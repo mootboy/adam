@@ -37,10 +37,6 @@
       (do
         (swap! projections conj projection)
         (js/Promise.resolve nil))))
-  (clear-file-evidence! [_ _session-id _extractor-version]
-    (if (= :fail @projections)
-      (js/Promise.reject (js/Error. "evidence unavailable"))
-      (js/Promise.resolve nil)))
 
   knowledge-store/CodeMemoryMigrationStore
   (code-memory-version! [_ _user-id]

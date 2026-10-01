@@ -1482,38 +1482,6 @@
                        (fn [tx]
                          (index-file-evidence-transaction! tx projection))))))
 
-  (clear-file-evidence! [_ session-id extractor-version]
-    (with-session!
-      driver
-      database
-      (fn [^js session]
-        (.executeWrite
-         session
-         (fn [tx]
-           (-> (.run
-                tx
-                "MATCH (s:AdamSession {id: $sessionId})
-                 OPTIONAL MATCH (s)-[:HAS_MEMORY]->(memory)-[about:ABOUT]->()
-                 DELETE about"
-                #js {:sessionId session-id})
-               (.then
-                (fn [_]
-                  (.run
-                   tx
-                   "MATCH (s:AdamSession {id: $sessionId})-[:HAS_ENTRY]->(entry)
-                    OPTIONAL MATCH (entry)-[touch:TOUCHES]->()
-                    DELETE touch"
-                   #js {:sessionId session-id})))
-               (.then
-                (fn [_]
-                  (.run
-                   tx
-                   "MATCH (s:AdamSession {id: $sessionId})
-                    OPTIONAL MATCH (s)-[worked:WORKED_ON]->()
-                    DELETE worked
-                    SET s.codeMemoryVersion = $extractorVersion"
-                   #js {:sessionId session-id
-                        :extractorVersion extractor-version})))))))))
 
   knowledge-store/FileMemoryQueryStore
   (query-file-memory! [_ user-id repository-id relative-path limit]
