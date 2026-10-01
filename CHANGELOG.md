@@ -9,7 +9,7 @@ All notable changes to adam are documented here.
 - A normative producer-neutral memory protocol v1 contract with content-free source coverage, deterministic replay/conflict rules, stream-qualified provenance, and executable JSONL conformance fixtures for the staged Adam 0.4 implementation.
 - Lossless producer-memory sidecar ingestion with UTF-8-byte-bounded streaming validation, restart-safe append checkpoints, byte-for-byte `AdamMemoryStream`/`AdamMemoryRecord` persistence, safe-prefix commits before physical conflicts, continued blocked raw mirroring after semantic conflicts, and non-poisoning acknowledgement of missing or unsafe sidecars.
 - Canonical producer-scoped observation and reflection identities with a restart-safe graph-native migration that preserves remote-only memories, tombstones, support links, and file provenance.
-- Aggregate source-session memory projection across embedded Pi records and retained sidecar producers, with stream-qualified citations, producer-local support and tombstones, unresolved-reference repair, repository-less retention, and source/producer retrieval provenance.
+- Aggregate source-session memory projection across embedded Pi records and retained sidecar producers, with canonical `main`/`agent:<agentId>` Claude stream citations, producer-local support and tombstones, unresolved-reference repair, repository-less retention, and source/producer retrieval provenance.
 
 ## [0.3.3] - 2026-09-28
 

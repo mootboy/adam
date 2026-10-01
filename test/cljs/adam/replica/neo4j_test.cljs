@@ -475,26 +475,6 @@
              (is false (.-stack error))
              (done)))))))
 
-(deftest clears-stale-file-evidence-and-marks-the-session-version
-  (async done
-    (let [{:keys [driver calls closes]} (recording-driver)
-          replica (neo4j/replica-with-driver driver "neo4j")]
-      (-> (knowledge-store/clear-file-evidence!
-           replica "urn:adam:session:user-1:session-1" 3)
-          (.then
-           (fn [_]
-             (let [queries (mapv :query (filter :query @calls))]
-               (is (some #(re-find #"HAS_MEMORY.*ABOUT" %) queries))
-               (is (not-any? #(re-find #"DETACH DELETE memory" %) queries))
-               (is (some #(re-find #"TOUCHES" %) queries))
-               (is (some #(re-find #"DELETE worked" %) queries))
-               (is (some #(re-find #"s.codeMemoryVersion = \$extractorVersion" %) queries))
-               (is (= 1 @closes))
-               (done))))
-          (.catch
-           (fn [error]
-             (is false (.-stack error))
-             (done)))))))
 
 (deftest persists-code-memory-rebuild-version-after-removing-legacy-ownership
   (async done

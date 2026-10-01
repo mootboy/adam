@@ -103,7 +103,13 @@ claude --plugin-dir "$HOME/.pi/agent/git/github.com/mootboy/adam"
 
 No `--mcp-config` or manual `CLAUDE_PLUGIN_ROOT` is needed; Claude substitutes `${CLAUDE_PLUGIN_ROOT}` in the bundled `.mcp.json` and registers the server as `plugin:adam:adam`.
 
-The plugin starts the packaged stdio MCP server and exposes `adam_file_context` with the same origin lookup, user isolation, provenance rendering, and output bounds as Pi. Its bundled skill recommends explicit retrieval for a known file and does not inject memories automatically.
+The plugin starts the packaged stdio MCP server and exposes `adam_file_context` with the same origin lookup, user isolation, provenance rendering, and output bounds as Pi. Its bundled skill recommends explicit retrieval for a known file and does not inject memories automatically. Results include source, producer, stream-qualified entries, and revision context:
+
+```text
+[observation aaaaaaaaaaaa] Keep subagent evidence stream-qualified.
+  Source: claude-code/session-123; producer: org.example.claude-memory; entries: agent:a:sa-read
+  Observed: agent:a · main @ 1a2b3c4
+```
 
 `SessionStart`, `Stop`, `SubagentStop`, and `SessionEnd` hooks atomically enqueue bounded locator-only notifications under `${XDG_CONFIG_HOME:-~/.config}/adam/inbox/` and return without waiting for Neo4j. A detached, single-lease worker scans the authoritative parent and explicitly located subagent streams, resumes their checkpoints, and rebuilds native `Read`/`Edit`/`Write` file evidence. Successful work acknowledges notifications; outages and interrupted work retain them for exponential-backoff retry or a later hook wake-up, without blocking other streams, and the worker's diagnostics append to `${XDG_CONFIG_HOME:-~/.config}/adam/worker.log`. Claude ingestion creates no observations or reflections.
 

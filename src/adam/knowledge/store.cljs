@@ -2,8 +2,7 @@
 
 (defprotocol FileEvidenceStore
   (ensure-file-evidence-schema! [store])
-  (index-file-evidence! [store projection])
-  (clear-file-evidence! [store session-id extractor-version]))
+  (index-file-evidence! [store projection]))
 
 (defprotocol AggregateMemoryStore
   (read-session-memory-streams! [store user-id session-id]))
