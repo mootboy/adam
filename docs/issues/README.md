@@ -17,6 +17,7 @@ This directory is adam's repository-local issue tracker. Use one Markdown file p
 - [`011`](011-ingest-memory-sidecar-streams.md) — Ingest producer memory sidecar streams losslessly (`done`)
 - [`012`](012-migrate-producer-scoped-memory-identities.md) — Migrate memories to producer-scoped identities (`done`)
 - [`013`](013-project-aggregate-multi-producer-memory.md) — Project aggregate multi-producer memory (`done`)
+- [`014`](014-reconcile-memory-notifications.md) — Reconcile durable producer memory notifications (`in-progress`)
 
 ## Naming
 
