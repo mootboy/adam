@@ -2,6 +2,8 @@
 
 Status: implemented on the unreleased Adam 0.4 development line (delivery step 6). The public spool, shared serialized worker, Pi/Claude composition, explicit repair paths, and deterministic/live acceptance are implemented. The separate reference producer and 0.4 release remain later increments.
 
+**Producer-independence correction (2026-10-02):** this is documentation of existing spool mechanics, not a requirement that memory producers know Adam exists. The reference producer must not write this spool, discover Adam's installation, or start Adam's worker. Adam-owned discovery/adapters may use queued locators internally; native log ingestion must work without producer notifications. The reader/discovery implementation remains planned in [`plan-0.4.0.md`](plan-0.4.0.md). This revision makes no runtime, envelope, or recovery-semantic change.
+
 ## Authority and location
 
 Notifications are durable discovery hints, not memory authority. The producer sidecar remains authoritative under `docs/memory-protocol-contract.md`. Notification loss cannot invalidate an already committed sidecar; producers can enqueue a fresh notification for the same locator.

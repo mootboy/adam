@@ -1,8 +1,10 @@
 # Adam memory protocol v1
 
-Status: normative contract; ingestion implementation is deferred to later Adam 0.4 increments.
+Status: normative contract for the implemented protocol-v1 input format on the unreleased Adam 0.4 line.
 
-This document defines the file protocol through which an independent memory producer publishes observations, reflections, tombstones, and content-free source coverage for Adam. Producers do not import Adam, modify host transcripts, or write Neo4j. Adam remains transport, provenance, indexing, and retrieval infrastructure; it does not decide what should become memory.
+**Architectural scope correction (2026-10-02):** these frozen rules describe one supported input format; they are not a mandatory native persistence contract for standalone producers. Adam must not rely on producers knowing it exists. The reference Claude producer owns its native format and location; Adam owns a separate read-only discovery/adapter path, still to be implemented. Producers never have to export this format, populate Adam's inbox, or start its worker. See [`plan-0.4.0.md`](plan-0.4.0.md). Existing fixture/validator/storage behavior remains unchanged.
+
+This document defines a file format for observations, reflections, tombstones, and content-free source coverage accepted by Adam. Producers do not import Adam, modify host transcripts, or write Neo4j. Adam remains transport, provenance, indexing, and retrieval infrastructure; it does not decide what should become memory.
 
 The terms **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 

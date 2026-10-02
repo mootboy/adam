@@ -1,8 +1,17 @@
 # Reference Claude memory producer contract
 
-Status: characterized; implementation deferred to a separate package.
+Status: characterized; standalone producer design revised 2026-10-02; implementation deferred to a separate package.
 
-This contract records the evidence and decisions that gate Adam 0.4.0's reference Claude memory producer. The producer remains separate from Adam: it decides what becomes memory and writes protocol-v1 sidecars, while Adam losslessly mirrors and indexes those records.
+The producer must work without knowing Adam exists. It owns generation, native memory persistence, source coverage/replay, listing, and recall. Adam independently discovers and structurally adapts its persisted output, as it does Pi observational memory. This revision supersedes earlier requirements to write Adam protocol-v1 sidecars, enqueue Adam notifications, or know how to start Adam's worker. It does not change the characterization evidence or existing Adam runtime.
+
+## Standalone boundary
+
+- No Adam runtime/package dependency, environment/configuration, identity, filesystem paths, schema requirement, spool writes, export obligation, or worker command.
+- Producer hooks start only the producer's own detached worker.
+- The producer's repository defines its versioned native append-only JSONL, documented owner-only data location, stable native memory/event IDs, source citations, coverage semantics, and independent listing/recall surface. Exact names and schema are not selected by this Adam plan.
+- Native citations must retain enough Claude session/parent/subagent provenance for the producer's own recall. Adam maps those documented citations to its source-scoped entry/stream identities; the producer need not understand Adam URNs or deterministic entry IDs.
+- Adam owns format detection, lossless raw reads, normalization, discovery, reconciliation scheduling, and any polling needed for lower latency. Native logs are not rewritten into Adam format or copied into an Adam path by the producer.
+- Standalone acceptance must run with Adam absent, not merely mocked or import-free. Adam integration is tested afterward against the same unchanged native logs.
 
 ## Characterization evidence
 
@@ -56,7 +65,9 @@ A separate request configured with `--max-budget-usd 0.02` terminated as `error_
 1. read and validate bounded locator-only input;
 2. atomically enqueue producer work;
 3. best-effort wake one detached worker;
-4. return without waiting for transcript scanning, model generation, sidecar writes, or Adam.
+4. return without waiting for transcript scanning, model generation, or native memory-log writes.
+
+There is no Adam-related hook, notification, or wake action.
 
 A hook failure cannot modify a Claude transcript. Queue records contain locators and scheduling metadata, never transcript or memory content.
 
@@ -67,33 +78,30 @@ One recoverable producer lease serializes work. The worker:
 1. coalesces notifications by source session and stream;
 2. updates an owner-only parent/subagent locator registry;
 3. scans only explicitly located streams;
-4. reconstructs selected context using Adam's documented Claude transcript semantics;
-5. folds the producer's existing sidecar before consulting disposable checkpoint state;
+4. reconstructs selected Claude context using characterized tree, compaction, parallel-request, and subagent behavior, without importing Adam;
+5. folds its own native memory log before consulting disposable checkpoint state;
 6. generates at most the configured bounded observation/reflection work for the drain;
-7. durably appends a protocol event under one sidecar writer lease;
-8. writes Adam's locator-only memory notification only after the sidecar append commits;
-9. acknowledges producer work only after that commit;
-10. retries transient failures with capped exponential backoff.
+7. durably appends a native event under its own writer lease;
+8. acknowledges producer work only after that commit;
+9. retries transient failures with capped exponential backoff.
+
+Independent listing and recall read the producer's own persisted state. Disabling, uninstalling, or failing Adam cannot affect these operations or require different producer configuration.
 
 Detached execution is proven on Linux. Windows command-hook packaging can be implemented, but detached-worker survival requires its own boundary test before being claimed as supported.
 
 ## Source progress and replay
 
-The sidecar is the producer's commit log. Each event records producer-supplied, provenance-only source checkpoints for every covered parent or subagent stream. Adam does not compare those values with its independently observed transcript checkpoints.
-
-On startup, the producer folds valid sidecar events to recover committed source coverage. A separate local checkpoint is only a scanning optimization and cannot advance beyond sidecar authority.
+The native memory log is the producer's commit authority. The producer specifies its own source-progress representation for parent/subagent streams and selected context. On startup it folds committed native events before consulting disposable scanning checkpoints. Separate checkpoints cannot claim generation progress beyond the log. Adam adapters preserve this as producer provenance, not Adam synchronization authority or invented literal protocol-v1 fields.
 
 Crash rules are:
 
 - before model completion: no event exists; retry may call the model again;
 - after model completion but before append: no event exists; retry may regenerate;
-- during an incomplete append: the writer seals the tail as malformed with the protocol recovery marker and LF, then writes a fresh event; it never completes or rewrites the partial payload;
-- after a complete durable append but before local acknowledgement: folding the sidecar finds the committed event, so retry does not generate a second logical result;
-- after sidecar commit but before Adam notification: the producer rewrites the idempotent locator-only notification without rewriting the event.
+- during an incomplete append: the native persistence contract defines safe append-only recovery and tests it; Adam's protocol-specific recovery marker is not imposed on the producer;
+- after a complete durable append but before local acknowledgement: folding the native log finds the committed event, so retry does not generate a second logical result;
+- after commit with Adam absent or stopped: no producer action is necessary. Adam must rediscover committed data on its next reconciliation.
 
-Protocol v1 makes event identity and immutable-payload comparison deterministic through RFC 8785 canonical JSON and SHA-256.
-
-A model may validly decline to emit memory for a covered source range. Protocol v1 commits that successful no-memory result as a content-free `source.covered` event carrying only the stream-qualified `sourceCheckpoint`. Folding the sidecar therefore avoids paying again after a post-append crash without inventing an observation. Model/provider failures and cancelled generation do not commit coverage.
+The producer's native contract must define stable event identities and replay/conflict handling, without requiring Adam's JCS or envelope fields. A valid no-memory result must durably commit source coverage without inventing an observation or paying again after restart. Model/provider failures and cancellation never commit coverage. Adam's existing `source.covered` provides an analogous normalized meaning; its spelling and shape do not constrain native storage.
 
 ## Scheduling
 
@@ -112,7 +120,7 @@ The initial reference policy is source-progress based rather than wall-clock bas
 - reflections become eligible after approximately 20,000 newly covered source tokens and run only after committed observations exist;
 - tests may lower thresholds to complete the tracer bullet deterministically.
 
-Thresholds are producer configuration, not memory-protocol fields. A model may return no durable memory; the producer advances authoritative coverage with `source.covered` rather than inventing an observation.
+Thresholds are producer configuration, not memory-protocol fields. A model may return no durable memory; the producer advances authoritative native coverage rather than inventing an observation.
 
 ## Model and cost controls
 
@@ -128,7 +136,7 @@ Memory production is disabled until the user explicitly enables it. Configuratio
 
 The characterized CLI adapter uses safe mode, restricted tools, strict MCP configuration, no session persistence, no permission prompts, a fixed JSON schema, no file or shell tools, and an environment with `CLAUDECODE` removed. It records bounded usage totals and failure categories, not prompts or generated memory text, in operational diagnostics. One worker call runs at a time, and one failed model request cannot block unrelated source sessions indefinitely. Explicit-provider credentials remain the default implementation direction unless inherited-login background use is confirmed to comply with the applicable subscription terms.
 
-Cancellation is process-based: terminating the worker may abandon uncommitted generation, which is retried later. Once a complete sidecar event is durable, cancellation cannot retract it; the producer must recover from the sidecar and finish notification.
+Cancellation is process-based: terminating the worker may abandon uncommitted generation, which is retried later. Once a complete native event is durable, cancellation cannot retract it; the producer recovers committed progress from its own log. No Adam notification remains to finish.
 
 ## Privacy and consent
 
@@ -139,7 +147,7 @@ The producer:
 - never obtains or logs raw Claude credentials;
 - never sends unknown operational records merely because they are present in the transcript;
 - never treats Bash, compact-summary prose, subagent handback prose, or path-looking text as deterministic file evidence;
-- stores authoritative memory text only in the owner-only sidecar;
+- stores authoritative memory text in its own owner-only native log;
 - keeps queue, checkpoint, lease, and diagnostics files content-free and owner-only;
 - provides a documented disable/stop procedure;
 - does not insert generated memories into prompts automatically.
@@ -148,8 +156,18 @@ Users remain responsible for whether the configured provider may receive reposit
 
 ## Consequences for Adam 0.4.0
 
-- The memory protocol contract may assume producer work is asynchronous and replayed from a producer-owned commit log.
-- Adam must not require producer model credentials.
-- Adam's durable memory notification spool closes the final-hook ordering race; it does not schedule model generation.
-- Parent and subagent citations require stream-qualified source references.
-- The reference producer can use the Claude CLI for an explicitly enabled tracer bullet without importing Adam; explicit provider credentials remain the default unless applicable subscription terms are confirmed to permit inherited-login background use.
+- Adam depends on producer-owned persistence, never on producer awareness of Adam. The protocol-v1 scanner/spool remain existing ingestion infrastructure, not mandatory producer integration.
+- Adam must implement its native reader/adapter and documented/configured discovery roots before claiming cross-host ingestion for this producer. It must preserve exact native raw records and adapter-derived provenance.
+- Adam startup/lifecycle/explicit repair rereads discoverable native logs even if they committed after the final host hook. Initial visibility is next reconciliation; any low-latency polling/watch worker is Adam-owned and separately specified.
+- Parent/subagent citation mapping belongs to Adam's adapter. Unsupported native schemas fail safely without asking the producer to export Adam files.
+- Adam must not require producer model credentials. Explicit provider credentials remain the producer default unless applicable subscription terms permit separately acknowledged inherited-login background use.
+
+## Required standalone and integration proof
+
+1. With Adam uninstalled/unconfigured, hooks return promptly and background generation saves native memories; independent listing/recall works.
+2. Restart/crash replay and valid no-memory coverage do not duplicate committed generation or cost.
+3. Enabling Adam later discovers the existing native file, without an export, producer append, notification, or worker command supplied by the producer.
+4. Adam reads/normalizes it and both Pi/Claude retrieve the same provenance-bearing file memory.
+5. Reverse final-hook ordering, stop/restart Adam, and simulate Neo4j outage: producer behavior stays unchanged and next Adam reconciliation repairs ingestion.
+
+The native schema, data path, listing/recall interface, and precise background polling policy remain design work; this document does not claim they are implemented.
