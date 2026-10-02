@@ -76,7 +76,10 @@
               (when memory-notifications
                 (str "Memory notifications: " (:acknowledged memory-notifications) " acknowledged, "
                      (:pending memory-notifications) " pending, " (:failed memory-notifications) " failed; "
-                     (:source-expired memory-notifications) " source notifications expired; "
+                     (:source-expired memory-notifications) " source notifications expired/parked; "
+                     (:recovered memory-notifications) " parked locators recovered; "
+                     (when (contains? memory-notifications :parked-pending)
+                       (str (:parked-pending memory-notifications) " parked remaining at explicit repair; "))
                      (:records-written memory-notifications) " records appended; "
                      (:streams-synchronized memory-notifications) " streams, "
                      (:conflicts memory-notifications) " conflicts, "
@@ -444,7 +447,7 @@
                         :active-session-file nil)
                  (js/Promise.resolve nil)))))
          drain-notifications!
-         (fn [replica user]
+         (fn [replica user recover-expired?]
            (if (satisfies? knowledge-store/MemoryReconciliationStore replica)
              (memory-service/drain-after-transcripts!
                #(notification-worker/drain-once!
@@ -456,7 +459,8 @@
                                   :resolve-repository! (fn [cwd _] (resolve-repository! cwd (:user-uuid user)))}))})
                #(-> (memory-service/drain!
                        {:store replica :user-uuid (:user-uuid user)
-                        :inbox-options (:memory-inbox-options options)})
+                        :inbox-options (:memory-inbox-options options)
+                        :recover-expired? recover-expired?})
                     (.then (fn [result]
                              (swap! runtime-state assoc :memory-notifications result :memory-notifications-error nil)
                              result))))
@@ -491,7 +495,8 @@
                                (-> (.then (js/Promise.resolve nil)
                                      (fn [_]
                                        (when (and (:enabled? resolved-config)
-                                                  (or (session-file ctx)
+                                                  (or (= event :reconcile)
+                                                      (session-file ctx)
                                                       (seq (memory-inbox/pending (:memory-inbox-options options)))
                                                       (seq (memory-inbox/rejections (:memory-inbox-options options)))
                                                       (seq (transcript-inbox/pending (:worker-inbox-options options)))))
@@ -506,7 +511,7 @@
                                                        (:worker-inbox-options options)
                                                        #(-> (get-user!)
                                                             (.then (fn [user]
-                                                                     (drain-notifications! replica user)))))))))))))
+                                                                     (drain-notifications! replica user (= event :reconcile))))))))))))))
                                    (.catch (fn [error]
                                              (swap! runtime-state assoc :memory-notifications-error
                                                     (if (= :worker-busy (:reason (ex-data error)))
@@ -573,7 +578,7 @@
        :get-user! get-user!
        :list-sessions! (:list-sessions options)})
      (invoke pi "registerCommand" "adam:reconcile"
-             #js {:description "Reconcile durable transcript and memory notifications once"
+             #js {:description "Reconcile notifications and recover parked locators with owned sources once"
                   :handler (fn [_args ctx]
                              (-> (synchronize! ctx :reconcile)
                                  (.then (fn [_]

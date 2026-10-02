@@ -92,11 +92,14 @@
                  (.catch (fn [_] nil)))
              (js/Promise.resolve nil)))]
      {:process! process!
-      :drain-memory! (fn []
-                       (-> (get-runtime!)
-                           (.then (fn [runtime]
-                                    (memory-service/drain!
-                                      (assoc runtime
-                                        :inbox-options (:memory-inbox-options options)
-                                        :log! #(js/console.error (str "adam memory: " (pr-str %)))))))))
+      :drain-memory! (fn drain-memory!
+                       ([] (drain-memory! {}))
+                       ([repair-options]
+                        (-> (get-runtime!)
+                            (.then (fn [runtime]
+                                     (memory-service/drain!
+                                       (assoc runtime
+                                         :inbox-options (:memory-inbox-options options)
+                                         :recover-expired? (true? (:recover-expired? repair-options))
+                                         :log! #(js/console.error (str "adam memory: " (pr-str %))))))))))
       :close! close!})))

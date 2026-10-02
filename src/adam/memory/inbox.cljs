@@ -101,7 +101,7 @@
           (zero? read) (.subarray buffer 0 offset)
           :else (recur next-offset))))))
 
-(defn- decode! [path]
+(defn- decode! [path archived?]
   (let [before (lstatSync path)]
     (when (or (.isSymbolicLink before) (not (.isFile before))) (fail! :unsafe-path))
     (owner-only! before)
@@ -119,7 +119,8 @@
               text (.toString payload "utf8")
               _ (when-not (.equals payload (.from Buffer text "utf8"))
                   (fail! :invalid-utf8))
-              wire (js->clj (js/JSON.parse text) :keywordize-keys true)
+              wire (try (js->clj (js/JSON.parse text) :keywordize-keys true)
+                        (catch :default _ (fail! :malformed-notification)))
               notification {:version (:version wire) :id (:id wire)
                             :source-kind (:sourceKind wire) :source-session-id (:sourceSessionId wire)
                             :producer-id (:producerId wire) :sidecar-locator (:sidecarLocator wire)
@@ -127,7 +128,8 @@
           (when-not (and (= wire-keys (set (keys wire))) (= 1 (:version wire))
                          (string? (:id wire))
                          (re-matches #"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}" (:id wire))
-                         (= (basename path) (str (:id wire) ".json"))
+                         (= (basename path)
+                            (str (if archived? (protocol/sha256 (:sidecarLocator wire)) (:id wire)) ".json"))
                          (string? (:queuedAt wire))
                          (re-matches #"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z" (:queuedAt wire))
                          (js/Number.isFinite (.parse js/Date (:queuedAt wire)))
@@ -142,7 +144,7 @@
       (reduce
        (fn [result name]
          (let [path (join directory name)]
-           (try (update result :pending conj (decode! path))
+           (try (update result :pending conj (decode! path false))
                 (catch :default error
                   (update result :rejections conj
                           {:path path :reason (or (:reason (ex-data error)) :malformed-notification)})))))
@@ -156,6 +158,77 @@
 
 (defn rejections [options]
   (:rejections (scan options)))
+
+(defn- archive-dir [options create?]
+  (let [directory (spool-dir options create?)
+        archive (directory! (join directory "expired") create?)]
+    ;; Persist creation of the child directory before removing active entries.
+    (when create? (sync-directory! directory))
+    archive))
+
+(defn park!
+  "Durably retain one locator per source/session/producer before active ack.
+  Existing snapshots win; retry after rename/fsync or before ack is idempotent."
+  [options notification]
+  (let [locator (canonical-locator notification)
+        _ (when-not (= locator (:sidecar-locator notification)) (fail! :locator-mismatch))
+        directory (archive-dir options true)
+        path (join directory (str (protocol/sha256 locator) ".json"))
+        existing (try (decode! path true)
+                      (catch :default error
+                        (if (= "ENOENT" (.-code error)) nil (throw error))))]
+    (if existing
+      (do
+        (when-not (= locator (:sidecar-locator existing)) (fail! :locator-mismatch))
+        ;; A previous crash may have happened after rename but before dir fsync.
+        (sync-directory! directory))
+      (let [wire {:version 1 :id (:id notification) :queuedAt (:queued-at notification)
+                  :sourceKind (:source-kind notification) :sourceSessionId (:source-session-id notification)
+                  :producerId (:producer-id notification) :sidecarLocator locator}
+            payload (str (js/JSON.stringify (clj->js wire)) "\n")
+            temporary (str path "." (randomUUID) ".tmp")]
+        (when (> (.byteLength Buffer payload "utf8") max-notification-bytes)
+          (fail! :oversized-notification))
+        (try
+          (let [fd (openSync temporary "wx" 384)]
+            (try (writeFileSync fd payload "utf8") (fsyncSync fd)
+                 (finally (closeSync fd))))
+          (renameSync temporary path)
+          (sync-directory! directory)
+          (finally (rmSync temporary #js {:force true})))))
+    nil))
+
+(defn- scan-archive [options]
+  (try
+    (let [directory (archive-dir options false)]
+      (reduce
+        (fn [result name]
+          (let [path (join directory name)]
+            (try (update result :parked conj (decode! path true))
+                 (catch :default error
+                   (update result :rejections conj
+                           {:path path :reason (or (:reason (ex-data error)) :malformed-notification)})))))
+        {:parked [] :rejections []}
+        (sort (filter #(string/ends-with? % ".json") (array-seq (readdirSync directory))))))
+    (catch :default error
+      (if (= "ENOENT" (.-code error)) {:parked [] :rejections []} (throw error)))))
+
+(defn parked [options] (:parked (scan-archive options)))
+(defn parked-rejections [options] (:rejections (scan-archive options)))
+
+(defn requeue!
+  "Create a fresh durable active notification, then remove its parked locator.
+  Crash between these operations leaves both; duplicate recovery is harmless."
+  [options notification]
+  (let [directory (archive-dir options false)
+        path (:path notification)]
+    (when-not (and (string? path) (= directory (dirname path))) (fail! :unsafe-acknowledgement))
+    (let [current (decode! path true)]
+      (when-not (= (:sidecar-locator notification) (:sidecar-locator current)) (fail! :locator-mismatch))
+      (enqueue! options (select-keys current input-keys))
+      (rmSync path #js {:force true})
+      (sync-directory! directory)
+      nil)))
 
 (defn acknowledge! [options notification]
   (let [directory (spool-dir options false)

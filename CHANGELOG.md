@@ -13,7 +13,8 @@ All notable changes to adam are documented here.
 
 - A public durable producer-memory notification spool, shared Pi/Claude serialized notification drains without lease-gating Pi source writes/imports, retained-graph memory repair, bounded latest-run diagnostics and retry error messages, and explicit `/adam:reconcile` / `worker.js --once` repair paths.
 
-- Restart-stable queued-age expiry for positively confirmed never-mirrored memory sources, with a configurable 10-minute default wait, content-free expiry diagnostics, and no expiry of backend/projection failures or mutation of retained data.
+- Restart-stable local-mtime expiry for positively confirmed never-mirrored memory sources, with a configurable 10-minute default wait, content-free expiry diagnostics, and no expiry of backend/projection failures or mutation of retained data.
+- Durable coalesced parking of expired memory locators and ownership-checked recovery through `/adam:reconcile` or `worker.js --once`, without fresh producer activity or ordinary-drain archive discovery.
 
 ## [0.3.3] - 2026-09-28
 

@@ -2,7 +2,7 @@
 
 # Recover expired memory notifications after late source mirroring
 
-- Status: proposed
+- Status: done
 - Created: 2026-10-02
 - Owner: unassigned
 - Category: bug
@@ -21,13 +21,13 @@ Explicit reconciliation can recover expired sidecars once their source becomes o
 
 ### Included
 
-- Prefer a consumer-owned, owner-only locator archive under the canonical XDG-state `adam/memory-inbox/expired/` directory. Park expired notifications durably before removing their active copies.
+- Implement a consumer-owned, owner-only locator archive under the canonical XDG-state `adam/memory-inbox/expired/` directory. Park expired notifications durably before removing their active copies.
 - Keep parked work out of normal pending enumeration, detached retries, and wake/idle checks so confirmed absent sources still allow the worker to exit.
 - Have `/adam:reconcile` check parked locators against current source ownership. Requeue only positively confirmed owned sources, then use normal sidecar synchronization and aggregate projection; no transcript discovery is authorized.
 - Serialize archive recovery with the existing notification-drain lease, without gating ordinary Pi mirroring/evidence/import.
 - Preserve the archive on backend failures or continued absent ownership. Make park/requeue transitions crash-safe (exclusive writes, fsync, atomic rename, directory fsync); remove a parked record only after its active recovery notification is durable.
-- Coalesce duplicate parked locators by source session and producer, or define an explicit bounded retention policy before implementation, to keep the recovery set smaller than an accumulated active notification history.
-- Decide and document the equivalent standalone explicit-repair entry point and archive visibility/counts. Normal hook/worker entry points must not automatically reactivate permanently missing sources.
+- Coalesce duplicate parked locators by source session and producer. Keep one validated locator per canonical sidecar path indefinitely until explicit recovery, not one record per expired notification.
+- `worker.js --once` is the equivalent explicit-repair entry point; `/adam:status` reports recovered locators and valid parked remainder from the latest explicit repair. Normal hook/worker entry points must not automatically reactivate permanently missing sources.
 
 ### Excluded
 
@@ -38,20 +38,27 @@ Explicit reconciliation can recover expired sidecars once their source becomes o
 
 ## Acceptance criteria
 
-- [ ] A notification expires while its source is absent; active work empties and the detached worker exits, with its locator durably parked.
-- [ ] After source mirroring, explicit reconciliation ingests the existing sidecar and produces file-linked memory **without any new producer notification or append**.
-- [ ] Continued absent ownership and backend outage leave parked work intact, with no active retry loop.
-- [ ] Restart/crash during park and during requeue preserves a recoverable locator; repeated repair is idempotent.
-- [ ] Producer isolation, duplicate coalescing, unsafe-path/permission handling, and lease-busy deferral preserve healthy work and ownership isolation.
-- [ ] Existing sidecar rejection/conflict semantics still apply during recovery; mirrored raw prefixes and memory provenance remain intact.
-- [ ] Deterministic tests and packaged live Neo4j acceptance cover late-source recovery without producer activity.
+- [x] A notification expires while its source is absent; active work empties and the detached worker exits, with its locator durably parked.
+- [x] After source mirroring, explicit reconciliation ingests the existing sidecar and produces file-linked memory **without any new producer notification or append**.
+- [x] Continued absent ownership and backend outage leave parked work intact, with no active retry loop.
+- [x] Restart/crash during park and during requeue preserves a recoverable locator; repeated repair is idempotent.
+- [x] Producer isolation, duplicate coalescing, unsafe-path/permission handling, and lease-busy deferral preserve healthy work and ownership isolation.
+- [x] Existing sidecar rejection/conflict semantics still apply during recovery; mirrored raw prefixes and memory provenance remain intact.
+- [x] Deterministic tests and packaged live Neo4j acceptance cover late-source recovery without producer activity.
 
 ## Validation
 
-Not implemented. The gap follows the current acknowledge/unlink path in `adam.memory.reconcile/drain-once!`; PR #22's late-source test explicitly enqueues a fresh notification after mirroring. Add a no-fresh-notification regression before implementation.
+Test-first reproduction of the original unlink-only path failed archive existence and no-producer recovery assertions. Implementation lives in `adam.memory.inbox`, `adam.memory.reconcile`, and Pi/worker composition, under the existing notification lease.
+
+- Clean `npm run ci`: all four ESM release targets, 164 ClojureScript tests / 688 assertions, 24 Node tests (three expected opt-in skips), exact-tarball consumer and runtime-drift checks pass.
+- `npm test`, package dry-run, staged/unstaged diff checks pass; committed release runtimes rebuilt cleanly.
+- Fresh ephemeral Neo4j 5.26 `npm run test:neo4j`: eight tests / 127 assertions plus packaged worker/Pi acceptance pass. Late Claude source mirroring leaves the archive untouched under ordinary worker mode, then `--once` recovers it without a new producer event/notification; repeated repair succeeds. Packaged Pi creates its source and recovers an expired sidecar in one `/adam:reconcile`, exposing recovered/remaining counts while retaining embedded Pi memory.
+- Deterministic coverage exercises both crash-overlap states through real inbox files, duplicate coalescing, independent producers, absent/offline source retention, terminal sidecar rejection, archive-directory and record symlink refusal, failed parking without healthy-source starvation or raw parse-error leakage, invalid repair policy, final archive counts, busy lease, and no ephemeral ordinary-turn initialization.
+
+No public protocol/version bump, source/sidecar mutation, producer/model code, or release changes. Prepared for a user-managed history-preserving PR merge.
 
 ## Notes
 
 Review: https://github.com/mootboy/adam/pull/22#issuecomment-5953436054 (note 2).
 
-Parking is preferred over sidecar-tree discovery: it is a smaller explicit recovery set and avoids adding filesystem discovery to normal drains. Final private archive format, duplicate retention policy, standalone repair flag, and terminal-rejection archive cleanup need approval before implementation. Track this before the separate reference Claude memory producer lands; it is intentionally not part of PR #22.
+Parking is preferred over sidecar-tree discovery: it is a smaller explicit recovery set and avoids adding filesystem discovery to normal drains. The user approved proceeding after PR #22 merged at `2209b98`. Private snapshots keep the existing v1 envelope under a SHA-256 canonical-locator filename, with first-valid snapshot/coalescing and no automatic distinct-locator retention deadline. Requeue creates/fsyncs a fresh public notification before deleting the archive; regular terminal sidecar rejection consumes the resulting active work. Unsafe archive snapshots require operator repair. No wire/version bump or migration is needed; older already-unlinked expirations still require a fresh explicit notification. The reference producer remains later work.
