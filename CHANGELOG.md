@@ -11,6 +11,8 @@ All notable changes to adam are documented here.
 - Canonical producer-scoped observation and reflection identities with a restart-safe graph-native migration that preserves remote-only memories, tombstones, support links, and file provenance.
 - Aggregate source-session memory projection across embedded Pi records and retained sidecar producers, with canonical `main`/`agent:<agentId>` Claude stream citations, producer-local support and tombstones, unresolved-reference repair, repository-less retention, and source/producer retrieval provenance.
 
+- A public durable producer-memory notification spool, shared Pi/Claude serialized reconciliation, retained-graph memory repair, bounded latest-run diagnostics, and explicit `/adam:reconcile` / `worker.js --once` repair paths.
+
 ## [0.3.3] - 2026-09-28
 
 ### Changed

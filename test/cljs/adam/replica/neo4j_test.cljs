@@ -494,6 +494,8 @@
                          queries))
                (is (some #(re-find #"min\(sessionVersion\)" %) queries))
                (is (some #(re-find #"codeMemoryVersion" %) queries))
+               (is (some #(re-find #"coalesce\(u.codeMemoryVersion, 0\)" %) queries)
+                   "a fresh user with no Pi projection starts at version zero")
                (is (some #(re-find #"legacyOwnership:OWNS" %) queries))
                (is (some #(re-find #"DETACH DELETE repository" %) queries))
                (is (some #(re-find #"u.codeMemoryVersion = \$version" %) queries))

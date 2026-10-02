@@ -14,6 +14,7 @@ Adam provides a full [Pi](https://pi.dev) extension and a [Claude Code](https://
 - [`docs/claude-transcript-contract.md`](docs/claude-transcript-contract.md) — observed Claude transcript authority, continuity, file evidence, and subagent semantics.
 - [`docs/claude-memory-producer-contract.md`](docs/claude-memory-producer-contract.md) — characterized non-blocking lifecycle, model isolation, replay, cost, and consent requirements for the planned reference producer.
 - [`docs/memory-protocol-contract.md`](docs/memory-protocol-contract.md) — normative producer-neutral sidecar protocol, event schemas, replay rules, and conformance fixtures for Adam 0.4.
+- [`docs/memory-notification-contract.md`](docs/memory-notification-contract.md) — unreleased 0.4 public durable notification spool and shared reconciliation/repair behavior.
 - [`docs/plan-0.3.3.md`](docs/plan-0.3.3.md) — active file-memory retrieval.
 - [`docs/plan-0.4.0.md`](docs/plan-0.4.0.md) — active milestone plan for provider-neutral memory production.
 - [`docs/acceptance-matrix.md`](docs/acceptance-matrix.md) — deterministic and live acceptance cases for incremental delivery.
@@ -111,7 +112,9 @@ The plugin starts the packaged stdio MCP server and exposes `adam_file_context` 
   Observed: agent:a · main @ 1a2b3c4
 ```
 
-`SessionStart`, `Stop`, `SubagentStop`, and `SessionEnd` hooks atomically enqueue bounded locator-only notifications under `${XDG_CONFIG_HOME:-~/.config}/adam/inbox/` and return without waiting for Neo4j. A detached, single-lease worker scans the authoritative parent and explicitly located subagent streams, resumes their checkpoints, and rebuilds native `Read`/`Edit`/`Write` file evidence. Successful work acknowledges notifications; outages and interrupted work retain them for exponential-backoff retry or a later hook wake-up, without blocking other streams, and the worker's diagnostics append to `${XDG_CONFIG_HOME:-~/.config}/adam/worker.log`. Claude ingestion creates no observations or reflections.
+`SessionStart`, `Stop`, `SubagentStop`, and `SessionEnd` hooks atomically enqueue bounded locator-only notifications under `${XDG_CONFIG_HOME:-~/.config}/adam/inbox/` and return without waiting for Neo4j. A detached, single-lease worker scans the authoritative parent and explicitly located subagent streams, resumes their checkpoints, and rebuilds native `Read`/`Edit`/`Write` file evidence. Successful work acknowledges notifications; outages and interrupted work retain them for exponential-backoff retry or a later hook wake-up, without blocking other streams, and the worker's diagnostics append to `${XDG_CONFIG_HOME:-~/.config}/adam/worker.log`. Adam itself generates no observations or reflections.
+
+On the unreleased 0.4 development line, independent producers can enqueue canonical locator-only notifications under `${XDG_STATE_HOME:-~/.local/state}/adam/memory-inbox/`. The shared worker mirrors sidecars and rebuilds aggregate memory from retained source records and file evidence, even when local transcripts are gone. Pi lifecycle also drains this queue after source mirroring. Explicit repair is `/adam:reconcile` or `node /path/to/adam/worker.js --once`; one-pass CLI repair exits nonzero for busy or retryable work. The reference Claude memory producer remains a separate, not-yet-implemented package.
 
 Adam stores the permanent user UUID under `${XDG_CONFIG_HOME:-~/.config}/adam/config.json`. On first use it atomically adopts an existing Pi-scoped UUID from `${PI_CODING_AGENT_DIR:-~/.pi/agent}/adam/config.json`. Conflicting UUIDs fail visibly rather than silently splitting identity.
 

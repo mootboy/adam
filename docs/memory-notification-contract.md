@@ -1,6 +1,6 @@
 # Producer memory notifications v1
 
-Status: implementation in progress (Adam 0.4 delivery step 6). The spool and storage-neutral drain are implemented; host composition, serialized worker integration, explicit repair, and live end-to-end acceptance remain pending. This is not yet a shipped producer API.
+Status: implemented on the unreleased Adam 0.4 development line (delivery step 6). The public spool, shared serialized worker, Pi/Claude composition, explicit repair paths, and deterministic/live acceptance are implemented. The separate reference producer and 0.4 release remain later increments.
 
 ## Authority and location
 
@@ -46,6 +46,16 @@ Missing or unsafe sidecars use the step-3 notification-terminal disposition: log
 
 Malformed/unsafe notifications are diagnosed independently of healthy notifications. Regular rejected entries and symlinks can be unlinked without following them; unsafe directory entries are not recursively removed and do not block healthy work. Diagnostics contain classification and source identity only, never raw envelope contents or error strings that may contain credentials.
 
-## Pending acceptance
+## Production entry points and serialization
 
-The production worker must hold an exclusive recoverable lease, retry pending transient work with capped backoff, and recheck both queues after lease release to avoid a wake/shutdown race. Pi and Claude entry points must use the same reconciliation service; hooks must never wait for Neo4j. The explicit repair path must process notifications even when no further producer append or host turn occurs. Reversed hook completion, worker restart, outage repair, missing source ownership, and multi-producer failure isolation require deterministic and live coverage before this contract is marked implemented.
+The detached Claude worker and Pi's active reconciliation/import operations share the existing recoverable `${XDG_CONFIG_HOME:-~/.config}/adam/worker.lock` lease. This deliberately retains the 0.3 lease location rather than creating a competing lock or migrating existing state. The new public memory inbox remains under XDG state. The worker releases the lease before capped-backoff sleeps, allowing Pi to establish a missing source session, and rechecks both queues after lease release to avoid a wake/shutdown race. A busy lifecycle reconciliation is deferred and reported by `/adam:status`; local JSONL remains authoritative.
+
+Pi startup/lifecycle drains both queues after mirroring the active source. Claude's detached worker drains its pending transcript work before producer-memory work. Hooks still only enqueue and wake; they never wait for Neo4j. Producers need no Adam runtime dependency or wake call: correctness depends on a later entry point reading the durable spool.
+
+Explicit repair is `/adam:reconcile` in Pi, or `node /path/to/adam/worker.js --once` with the normal `ADAM_NEO4J_*` environment. A notification does not authorize transcript discovery: if its source session has never been mirrored, first resume/import that source (or deliver its host lifecycle notification); until then memory attachment remains retryable. The CLI exits nonzero if the lease is busy or transient work remains; successful/terminal groups have already progressed. It does not sleep/retry indefinitely in one-pass mode. Normal detached mode retries transient work with capped exponential backoff.
+
+Aggregate memory-only repair uses an ownership-checked Neo4j write transaction: it reads retained source entries and producer records, structurally adapts selected Pi embedded entries, uses existing `TOUCHES` evidence, and replaces only session memory. It never clears file evidence or requires local transcript/repository files, so remote-only sources and deleted subagent transcripts retain provenance. A subsequent source/evidence reconciliation repairs newly resolvable citations.
+
+`/adam:status` retains only the latest memory-drain counts/timing: acknowledged and pending notifications, failures, appended records, synchronized streams, conflicts, unresolved citations, and duration. Detached diagnostics contain classifications and source/producer identity, not content. No unbounded timing history is collected.
+
+Deterministic acceptance covers coalescing, ownership-before-attachment, projection-before-acknowledgement, failure isolation, busy/recoverable leases, capped retries, lease release during backoff, post-release queue rechecks, and retained Pi branch adaptation. Live packaged-worker/Pi validation proves missing-source retry, transcript-before-memory repair, subagent citation/file links, post-final-hook sidecar append, restart with deleted source transcripts, and combined Pi embedded/sidecar retrieval.

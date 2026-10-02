@@ -72,45 +72,44 @@
   (js/console.error (str (.toISOString (js/Date.)) " adam worker: " message)))
 
 (defn run-worker!
-  [{:keys [inbox-options sleep! log! initial-backoff-ms max-backoff-ms max-attempts]
-    :or {initial-backoff-ms 1000 max-backoff-ms 60000}
+  [{:keys [inbox-options sleep! log! initial-backoff-ms max-backoff-ms max-attempts
+           drain! pending? attempt-number]
+    :or {initial-backoff-ms 1000 max-backoff-ms 60000 attempt-number 1}
     :as options}]
   (if-let [lease-path (acquire-lease! inbox-options)]
-    (let [sleep! (or sleep! default-sleep!)
-          log! (or log! default-log!)]
-      (letfn [(attempt [attempt-number]
-                (-> (drain-once! options)
-                    (.then
-                     (fn [result]
-                       (if (pos? (:pending result))
-                         (attempt 1)
-                         (assoc result :status :idle))))
-                    (.catch
-                     (fn [error]
-                       (if (and max-attempts (>= attempt-number max-attempts))
-                         (js/Promise.reject error)
-                         (let [delay (min max-backoff-ms
-                                          (* initial-backoff-ms
-                                             (js/Math.pow 2 (dec attempt-number))))]
-                           (log! (str "attempt " attempt-number " failed, retrying in "
-                                      delay " ms: " (.-message error)))
-                           (-> (sleep! delay)
-                               (.then (fn [_] (attempt (inc attempt-number)))))))))))]
-        (-> (attempt 1)
-            (.finally #(release-lease! lease-path))
-            (.then
-             (fn [result]
-               ;; Closing the lease before the final check prevents an enqueue/wake
-               ;; race from stranding a notification.
-               (if (seq (inbox/pending inbox-options))
-                 (run-worker! options)
-                 result))))))
+    (-> (.then (js/Promise.resolve nil) (fn [_] ((or drain! #(drain-once! options)))))
+        ;; Never hold the shared lease during backoff: Pi may need to mirror the
+        ;; missing source session before a memory notification can succeed.
+        (.finally #(release-lease! lease-path))
+        (.then (fn [result]
+                 (if (or (pos? (:pending result))
+                         (if pending? (pending?) (seq (inbox/pending inbox-options))))
+                   (run-worker! (assoc options :attempt-number 1))
+                   (assoc result :status :idle)))
+               (fn [error]
+                  (if (and max-attempts (>= attempt-number max-attempts))
+                    (js/Promise.reject error)
+                    (let [delay (min max-backoff-ms
+                                     (* initial-backoff-ms (js/Math.pow 2 (min 20 (dec attempt-number)))))]
+                      ((or log! default-log!)
+                       (str "attempt " attempt-number " failed, retrying in " delay " ms: " (.-message error)))
+                      (-> ((or sleep! default-sleep!) delay)
+                          (.then (fn [_] (run-worker! (assoc options :attempt-number (inc attempt-number)))))))))))
     (js/Promise.resolve {:status :busy})))
 
-(defn run-once!
-  [{:keys [inbox-options] :as options}]
+(defn with-lease!
+  "Run one host operation under the same lease as detached reconciliation."
+  [inbox-options work!]
   (if-let [lease-path (acquire-lease! inbox-options)]
-    (-> (drain-once! options)
+    (-> (.then (js/Promise.resolve nil) (fn [_] (work!)))
+        (.finally #(release-lease! lease-path)))
+    (js/Promise.reject (ex-info "Adam reconciliation is already running" {:reason :worker-busy}))))
+
+(defn run-once!
+  [{:keys [inbox-options drain!] :as options}]
+  (if-let [lease-path (acquire-lease! inbox-options)]
+    (-> (.then (js/Promise.resolve nil)
+               (fn [_] (if drain! (drain!) (drain-once! options))))
         (.then #(assoc % :status :drained))
         (.finally #(release-lease! lease-path)))
     (js/Promise.resolve {:status :busy})))
@@ -128,7 +127,7 @@
            (.then promise
                   (fn [processed]
                     (let [notification (last group)]
-                      (-> (process! notification)
+                      (-> (.then (js/Promise.resolve nil) (fn [_] (process! notification)))
                           (.then
                            (fn [result]
                              (when (= :missing-transcript (:status result))
