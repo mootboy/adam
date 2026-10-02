@@ -1,8 +1,10 @@
-# Adam 0.4.0 plan: provider-neutral memory production
+# Adam 0.4.0 plan: standalone producers and memory-source adapters
 
 Status: active milestone plan
 
-Adam 0.3 made Claude Code a second ingestion host: Adam mirrors its parent and subagent transcripts, indexes native file evidence, and exposes the same explicit file-memory query used by Pi. Claude conversations still produce no observations or reflections. Adam should not become the component that decides what is memorable; instead, 0.4.0 defines a durable protocol through which independent producers can publish memories that Adam losslessly replicates, validates, links to source entries, and projects onto canonical files.
+Adam 0.3 made Claude Code a second ingestion host: Adam mirrors its parent and subagent transcripts, indexes native file evidence, and exposes the same explicit file-memory query used by Pi. Claude conversations still produce no observations or reflections. Adam must not decide what is memorable or require memory producers to know that Adam exists. As with Pi observational memory, a standalone Claude producer owns its persisted format; Adam owns a read-only adapter, discovery, lossless replication, normalization, provenance, and retrieval.
+
+**Dependency correction (2026-10-02):** this supersedes the earlier requirement that the reference producer write Adam protocol-v1 files, enqueue Adam notifications, or optionally wake Adam's worker. No-import integration still reverses the dependency if a producer must know Adam's paths or process commands. Completed protocol/storage/spool work remains existing Adam infrastructure, not a requirement imposed on producers. The native-format reader/discovery path described below is planned, not implemented.
 
 This plan keeps three boundaries explicit:
 
@@ -13,7 +15,7 @@ This plan keeps three boundaries explicit:
 ## Required invariants
 
 1. Adam never calls a model to create an observation or reflection.
-2. Producers do not import Adam or write Neo4j. Their only integration is the documented file protocol and durable notification spool.
+2. Producers operate fully without Adam: no Adam imports, identity/configuration, native-format requirement, inbox writes, worker discovery/spawning, or Adam-specific export obligation. Adam depends on supported producer persistence, never the reverse.
 3. Host lifecycle hooks remain fast. Model calls and graph writes happen only in detached, retryable workers.
 4. Source sessions, transcript streams, and producer memory streams remain independently authoritative. Failure in one never invalidates another.
 5. Every accepted memory event is mirrored byte-for-byte before it affects derived memory projection.
@@ -44,15 +46,15 @@ This plan keeps three boundaries explicit:
                     Pi                              Claude Code
 ```
 
-Pi continues to receive `pi-observational-memory` events inside authoritative session JSONL. Adam normalizes those custom entries into the same internal protocol model used for sidecars. Claude and future hosts use sidecars because third-party producers must not modify host transcripts.
+Pi continues to receive `pi-observational-memory` events inside authoritative session JSONL. Adam structurally adapts those entries without requiring producer cooperation. The Claude producer owns a separate memory JSONL because no supported custom-entry append API has been established for Claude transcripts. Adam reads that producer's native format through its own adapter. A separate file is a host-storage decision, not an Adam dependency.
 
 ## Stage 1: memory protocol v1
 
-Write `docs/memory-protocol-contract.md` before implementation. It is the normative contract; this plan fixes the architectural decisions it must encode.
+The implemented [`memory-protocol-contract.md`](memory-protocol-contract.md) and fixtures define the existing protocol-v1 ingestion format. The rules below describe that format, not the mandatory native format or directory layout of the standalone reference producer. Producer-specific adapters may normalize native events into Adam's domain model without exporting or rewriting authoritative source files. Native-format scanning/storage must preserve original records, not falsely describe reserialized normalized events as a byte-for-byte replica. Its implementation remains a separate increment.
 
 ### Canonical producer identity
 
-A producer declares an immutable `producerId`, distinct from its display name and package version. It must match:
+For protocol-v1 input, a producer identity is represented by immutable `producerId`, distinct from its display name and package version. For native input, Adam's adapter supplies a stable producer identity from the producer's documented identity/version; the producer need not adopt Adam's identifier grammar. It must match:
 
 ```text
 ^[a-z0-9](?:[a-z0-9._-]{0,127})$
@@ -64,7 +66,7 @@ Adam never uses an unvalidated display name as a path or URN segment. Every reco
 
 ### Authoritative sidecar location
 
-Memory content is durable user data, not configuration. Sidecars live under XDG data storage:
+Memory content is durable user data, not configuration. Existing protocol-v1 sidecars live under XDG data storage (a native producer owns its own location; Adam must not require this path):
 
 ```text
 ${XDG_DATA_HOME:-~/.local/share}/adam/memories/v1/
@@ -252,13 +254,23 @@ Before normal memory writes, an implemented graph-native transaction migrates ex
 
 `/adam:status` reports bounded latest-run information for memory synchronization: stream counts, records appended, conflicts, unresolved citations, migration state, and timing. It does not retain memory content or unbounded history.
 
-## Stage 3: durable discovery and reconciliation
+## Stage 3: Adam-owned discovery and reconciliation
 
-### Notification spool
+### Required reader-first path (not yet implemented)
 
-Directory discovery alone is insufficient: Adam's final lifecycle hook may run before a producer commits its sidecar, leaving no later host event to trigger a scan. Protocol v1 therefore includes a durable, locator-only memory notification spool at `${XDG_STATE_HOME:-~/.local/state}/adam/memory-inbox/`.
+Adam registers a native memory-source adapter with an Adam-configured root or the producer's documented storage layout. At Adam startup, appropriate host lifecycle boundaries, and explicit `/adam:reconcile` / `worker.js --once`, Adam discovers and rereads supported memory logs for known owned source sessions. A producer does not register itself, export Adam files, or notify Adam. Discovery is bounded and restricted to configured/documented producer roots; it must not infer paths from prose or scan undocumented Claude transcript directories.
 
-After a sidecar append, the producer atomically writes an owner-only notification containing only:
+Adam owns native-format version detection, stable producer/event identity mapping, stream-qualified citation normalization, lossless raw replication, and append checkpoints. Native coverage fields remain producer provenance, not fictitious literal protocol-v1 fields. Unknown records remain raw; unsupported schemas produce isolated diagnostics rather than guessed semantics. Native memory and host transcripts remain separate authorities.
+
+After reading source/session work, Adam reads memory suffixes and creates one aggregate session projection from all retained producers. Missing local logs retain mirrored accepted state. A never-mirrored source is deferred in Adam-owned state until source ownership exists; discovery must revisit its existing log after late import without another producer append or notification.
+
+Background producer completion may occur after Adam's final hook. The minimum guarantee is visibility at the **next Adam startup/lifecycle reconciliation or explicit repair**, which rediscovers committed files even across restart. No prompt visibility after every append is promised. If prompt-independent low-latency ingestion is required, Adam can add its own bounded polling/watch scheduling; frequency, worker lifetime, shutdown behavior, and resource limits must be specified and tested in an Adam increment, not shifted onto the producer. A producer-specific wake command or notification is never necessary for correctness.
+
+### Existing notification spool (implemented infrastructure, not a producer obligation)
+
+The previous design implemented a durable, locator-only memory notification spool at `${XDG_STATE_HOME:-~/.local/state}/adam/memory-inbox/` to record work missed by final-hook ordering. Its mechanics below remain implemented, but requiring producers to populate it is superseded. Adam-owned discovery/adapters may use such a queue internally; an external spool writer is not required for native ingestion.
+
+Existing spool entries contain only:
 
 - notification version and ID;
 - source kind and source session ID;
@@ -268,7 +280,7 @@ After a sidecar append, the producer atomically writes an owner-only notificatio
 
 It contains no memory text, transcript content, credentials, or model output. Notifications use create/fsync/rename/directory-fsync durability and remain until Adam acknowledges successful or terminally classified processing.
 
-Writing the notification is the producer's only Adam-facing action and does not import or invoke Adam. Any later Adam entry point may drain it: Pi startup/lifecycle, the Claude reconciliation worker, or an explicit reconciliation command. A best-effort wake mechanism may reduce latency, but correctness depends on the durable spool, not process ordering. Reversed final-hook ordering must converge after the next Adam startup or explicit reconciliation without another producer append.
+The spool can still be drained by Pi startup/lifecycle, the Claude reconciliation worker, or explicit repair. Existing spool acceptance remains useful infrastructure evidence, but is not proof of producer independence. Native adapter acceptance must demonstrate rediscovery and convergence with **no producer-written Adam notification and no producer-started Adam worker**.
 
 This spool is a public file protocol, not reuse of Claude's private hook payload. Adam therefore drains two deliberately separate queues:
 
@@ -294,9 +306,9 @@ A malformed supported record is a bounded adapter diagnostic and does not poison
 
 Both Pi and Claude composition roots use the implemented host-neutral memory reconciliation service. Any owned source session can own a protocol sidecar. The existing XDG-config worker lease serializes both notification queues, not Pi's own mirroring/evidence projection or historical imports. Pi source writes proceed even when the drain lease is busy; the worker also releases it during retry backoff. `/adam:reconcile` and `worker.js --once` provide explicit repair without another producer append. Memory-only aggregate repair uses retained graph source records and `TOUCHES` evidence rather than requiring local files. Never-mirrored-source expiry uses a restart-stable local-file-mtime age window (`ADAM_MEMORY_SOURCE_WAIT_MS`); backend/projection failures are never expired by this policy. Expired locators are durably coalesced under private `memory-inbox/expired/`. Only explicit repair checks source ownership and requeues them, so late source mirroring needs no producer append/notification while ordinary drains and detached idle/retry checks never enumerate the archive. See [`memory-notification-contract.md`](memory-notification-contract.md).
 
-## Stage 4: reference Claude producer
+## Stage 4: standalone reference Claude producer
 
-The reference producer is a separate package and repository. It has no Neo4j access and no Adam runtime dependency.
+The reference producer is a separate package and repository. It must generate, persist, list, and recall its memories with Adam entirely absent. It owns its native versioned JSONL format, documented data location, model configuration, progress/replay, and user-facing memory IDs. It has no Neo4j access and no knowledge of Adam's package, identity, protocol paths, notification spool, worker executable, or installation. Adam alone owns the adapter that consumes it.
 
 ### Non-blocking lifecycle
 
@@ -305,19 +317,21 @@ The reference producer is a separate package and repository. It has no Neo4j acc
 One producer worker:
 
 - maintains explicit parent and subagent locators;
-- scans append-only source prefixes and reconstructs selected context according to Adam's documented Claude transcript contract;
-- resolves per-record cwd but leaves file association to Adam;
+- scans explicitly located source prefixes and reconstructs selected Claude context, including compaction, parallel tools, and subagents; Adam's characterization is evidence, not a producer runtime dependency;
+- records native source citations and per-record context, without relying on Adam to retain or recall them;
 - calls a configured model backend outside Claude's interactive lifecycle;
-- writes protocol events under one producer/session writer lease;
-- derives its committed source progress from its own sidecar;
-- writes an Adam memory notification only after the sidecar append is durable;
+- writes native memory/coverage events under its own writer lease;
+- derives committed source progress from its own memory log;
+- exposes independent memory listing/recall;
 - retries outages without duplicating committed logical work.
+
+There is no post-commit Adam notification or worker wake step. Only the producer's own worker is started by its hooks.
 
 Native `Read`, `Edit`, and `Write` activity may be cited. Bash commands, MCP calls, compact-summary prose, subagent handback prose, and path-looking text do not become file evidence merely because the producer mentions them.
 
 ### Producer characterization before implementation
 
-The initial characterization is recorded in [`claude-memory-producer-contract.md`](claude-memory-producer-contract.md). It approves fast locator-only hooks, a detached serialized worker, a repeatable explicitly enabled safe-mode Claude CLI tracer bullet, sidecar-derived replay, bounded structured output, source-progress scheduling, and explicit background-processing consent. Protocol v1 resolves no-memory coverage through `source.covered`; the producer defaults to an explicit-credential adapter unless inherited-login background use is confirmed to comply with the applicable subscription terms.
+The initial characterization is recorded in [`claude-memory-producer-contract.md`](claude-memory-producer-contract.md). Fast hooks, detached serialized execution, bounded structured output, source-progress scheduling, durable no-memory coverage, and explicit background-processing consent remain applicable. The producer defaults to an explicit-credential adapter unless inherited-login background use is confirmed to comply with applicable subscription terms. Its native schema/path and standalone listing/recall surface must be specified in its own repository before implementation; Adam's adapter follows that contract, not vice versa.
 
 The characterization covered:
 
@@ -338,12 +352,13 @@ The end-to-end proof is:
 
 1. Claude performs a native file operation in a parent or subagent stream.
 2. The producer hook returns promptly while its worker records an observation citing the exact source entry.
-3. The sidecar and durable notification survive process restart.
-4. Adam mirrors the source and memory streams, then projects one aggregate session snapshot.
+3. With Adam absent (no package, environment, config, spool, or worker), the producer saves, lists, recalls, and restarts from its native log without duplicate generation.
+4. After independently enabling Adam, its adapter discovers and losslessly mirrors the existing native log and source streams, then projects one aggregate session snapshot. No export or new producer append is required.
 5. Claude's `adam_file_context` returns the Claude-produced memory with source, stream, revision, and producer provenance.
 6. Pi's `/adam:context` returns the same memory through the same canonical file identity.
-7. Reversing Adam/producer hook completion order still converges after a later Adam wake.
-8. A producer crash immediately after sidecar append does not create a duplicate logical event on retry.
+7. Reverse hook completion order: the producer commits after Adam stops; the next Adam startup/lifecycle or explicit repair discovers that commit without a notification or producer-started Adam process.
+8. A producer crash immediately after native-log append does not create a duplicate logical event on retry.
+9. Adam/Neo4j absence or outage does not change producer generation, persistence, listing, recall, or hook latency.
 
 ## Deferred
 
@@ -353,7 +368,7 @@ The end-to-end proof is:
 - Cross-producer deduplication, support links, consolidation, or dropping.
 - Restoring host transcripts or producer sidecars from Neo4j.
 - Treating undocumented host storage layouts as discovery APIs.
-- A continuously running Adam daemon; protocol-v1 correctness uses durable notifications and later reconciliation.
+- A continuously running Adam daemon or default polling cadence; the initial native-reader guarantee is next Adam reconciliation, with any low-latency polling owned separately by Adam.
 - Migration of Adam's existing 0.3 config/inbox/log paths to XDG data/state directories.
 
 ## Delivery sequence
@@ -365,19 +380,20 @@ The scope is one 0.4.0 milestone, not one implementation PR. Track each numbered
 3. **Complete:** implement lossless memory-stream scanning, raw-record storage, checkpoints, and live round-trip tests.
 4. **Complete:** implement the graph-native producer-scoped memory-identity migration without changing session, stream, or entry identities.
 5. **Complete:** implement aggregate multi-producer projection and retrieval provenance.
-6. **Complete:** implement the distinct durable memory-notification spool and host-neutral reconciliation service, documented in [`memory-notification-contract.md`](memory-notification-contract.md).
-7. Build the reference producer and complete the cross-host tracer bullet.
+6. **Complete infrastructure; producer obligation superseded:** distinct memory spool, shared reconciliation, bounded absent-source expiry, and parked repair. Runtime remains unchanged by this plan correction.
+7. Deliver small reviewable increments: (a) specify/build the standalone producer's native format, generation, replay and independent listing/recall; (b) implement Adam-owned native log discovery, lossless reader and structural adapter; (c) prove standalone and cross-host acceptance without any producer awareness of Adam. Low-latency polling, if desired, is a separate Adam-owned scheduling decision.
 8. Prepare and merge the sole 0.4.0 release PR through the protected-main flow, then cut over Pi and Claude installations to the same tagged artifact.
 
 ## 0.4.0 acceptance
 
-- An independent producer writes protocol-v1 events without importing Adam or accessing Neo4j.
+- The producer generates, persists, lists and recalls native memories with Adam absent, and restarts safely with no Adam configuration, protocol, notifications, or worker invocation.
+- Adam's adapter reads the existing native log without modifying it, requiring an export, or requiring a fresh producer event.
 - Every complete sidecar record, including unknown and malformed records, is mirrored byte-for-byte with restart-safe append checkpoints.
 - Multiple producers for one session survive aggregate rebuilds without deleting or overwriting one another.
 - A missing or conflicted producer stream preserves its last committed raw replica and derived contribution while healthy streams continue.
 - Pi and Claude memories about the same canonical file are returned together from both hosts with user-isolated source, stream, revision, and producer provenance.
 - Records citing not-yet-mirrored entries converge after later source reconciliation.
-- Reversed final-hook ordering converges through the durable notification spool after restart or explicit reconciliation.
+- Reversed final-hook ordering converges through Adam-owned discovery at the next reconciliation, without a producer-written notification or producer-started Adam worker.
 - Producer retries across the append/checkpoint crash window do not duplicate logical events.
 - Existing Pi memories migrate transactionally to producer-scoped identities, including remote-only graph state, tombstones, support links, and file provenance.
 - Malformed records, model outages, Neo4j outages, and one stream's conflict do not block host operation or unrelated reconciliation.
