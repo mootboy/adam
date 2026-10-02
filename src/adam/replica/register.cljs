@@ -5,6 +5,11 @@
             [adam.knowledge.repository :as knowledge-repository]
             [adam.knowledge.store :as knowledge-store]
             [adam.knowledge.surfaces :as knowledge-surfaces]
+            [adam.memory.service :as memory-service]
+            [adam.memory.inbox :as memory-inbox]
+            [adam.sources.claude-code.inbox :as transcript-inbox]
+            [adam.sources.claude-code.worker :as notification-worker]
+            [adam.sources.claude-code.reconcile :as claude-reconcile]
             [adam.replica.commands :as commands]
             [adam.replica.config :as config]
             [adam.replica.identity :as identity]
@@ -52,7 +57,7 @@
                 memory-identity-version memory-identity-migration-status
                 memory-identity-migration-error
                 code-memory-version code-memory-rebuild-status
-                code-memory-rebuild-error last-timing]} runtime-state]
+                code-memory-rebuild-error last-timing memory-notifications memory-notifications-error]} runtime-state]
     (string/join
      "\n"
      (remove nil?
@@ -68,6 +73,15 @@
               (when last-result (str "Last sync: " (name (:status last-result))))
               (when last-mirrored-at (str "Mirrored at: " last-mirrored-at))
               (when last-error (str "Last error: " last-error))
+              (when memory-notifications
+                (str "Memory notifications: " (:acknowledged memory-notifications) " acknowledged, "
+                     (:pending memory-notifications) " pending, " (:failed memory-notifications) " failed; "
+                     (:records-written memory-notifications) " records appended; "
+                     (:streams-synchronized memory-notifications) " streams, "
+                     (:conflicts memory-notifications) " conflicts, "
+                     (:unresolved-citations memory-notifications) " unresolved citations; "
+                     (format-ms (:duration-ms memory-notifications))))
+              (when memory-notifications-error (str "Memory reconciliation: " memory-notifications-error))
               (when last-timing
                 (str "Last timing: " (name (:event last-timing))
                      " completed " (:completed-at last-timing)
@@ -429,6 +443,24 @@
                         :reason "active session is ephemeral"
                         :active-session-file nil)
                  (js/Promise.resolve nil)))))
+         drain-notifications!
+         (fn [replica user]
+           (if (satisfies? knowledge-store/MemoryReconciliationStore replica)
+             (memory-service/drain-after-transcripts!
+               #(notification-worker/drain-once!
+                  {:inbox-options (:worker-inbox-options options)
+                   :process! (fn [notification]
+                               (claude-reconcile/reconcile!
+                                 {:locator-options (:worker-inbox-options options)
+                                  :notification notification :store replica :user-uuid (:user-uuid user)
+                                  :resolve-repository! (fn [cwd _] (resolve-repository! cwd (:user-uuid user)))}))})
+               #(-> (memory-service/drain!
+                       {:store replica :user-uuid (:user-uuid user)
+                        :inbox-options (:memory-inbox-options options)})
+                    (.then (fn [result]
+                             (swap! runtime-state assoc :memory-notifications result :memory-notifications-error nil)
+                             result))))
+             (js/Promise.resolve {:processed 0 :pending 0})))
          synchronize!
          (fn synchronize!
            ([ctx] (synchronize! ctx :manual))
@@ -442,14 +474,50 @@
                                 :evidence-extraction-ms 0
                                 :neo4j-projection-ms 0
                                 :total-ms 0})
+                  pre-initialization-ms (atom 0)
                   next-run
                   (.then
                    @queue
                    (fn [_]
                      (record-duration! timing :queue-wait-ms enqueued-at)
-                     (-> (run-sync! ctx timing)
+                     (-> (if (and (:enabled? resolved-config)
+                                  (or (session-file ctx)
+                                      (seq (memory-inbox/pending (:memory-inbox-options options)))
+                                      (seq (memory-inbox/rejections (:memory-inbox-options options)))
+                                      (seq (transcript-inbox/pending (:worker-inbox-options options)))))
+                           (-> (let [started-at (now-ms)]
+                                 (-> (get-replica!)
+                                     (.finally #(reset! pre-initialization-ms
+                                                        (max 0 (- (now-ms) started-at))))))
+                               (.then
+                                 (fn [replica]
+                                   (if (satisfies? knowledge-store/MemoryReconciliationStore replica)
+                                     (notification-worker/run-once!
+                                       {:inbox-options (:worker-inbox-options options)
+                                        :drain! (fn []
+                                                  (-> (run-sync! ctx timing)
+                                                      (.then (fn [_]
+                                                               (-> (get-user!)
+                                                                   (.then #(drain-notifications! replica %)))))))})
+                                     (run-sync! ctx timing))))
+                               (.then (fn [result]
+                                        (when (= :busy (:status result))
+                                          (swap! runtime-state assoc :memory-notifications-error
+                                                 "Worker busy; reconciliation deferred to a later entry point"))
+                                        result)))
+                           (run-sync! ctx timing))
+                         (.catch (fn [error]
+                                   (if (:connected? @runtime-state)
+                                     (swap! runtime-state assoc :memory-notifications-error
+                                            "Reconciliation deferred; pending notifications retained")
+                                     (do
+                                       (swap! runtime-state assoc :last-error (error-message error))
+                                       (when-not @warned-unavailable?
+                                         (notify! ctx "adam session replication unavailable; local JSONL remains authoritative" "warning")
+                                         (reset! warned-unavailable? true))))))
                          (.finally
                           (fn []
+                            (swap! timing update :initialization-ms + @pre-initialization-ms)
                             (record-duration! timing :total-ms enqueued-at)
                             (swap! runtime-state assoc
                                    :last-timing
@@ -468,20 +536,16 @@
                       (-> (js/Promise.all #js [(get-replica!) (get-user!)])
                           (.then
                            (fn [resolved]
-                             (synchronize-file!
-                              (aget resolved 0)
-                              (aget resolved 1)
-                              path
-                              nil
-                              false
-                              (atom {:event :import
-                                     :queue-wait-ms 0
-                                     :initialization-ms 0
-                                     :replica-sync-ms 0
-                                     :repository-discovery-ms 0
-                                     :evidence-extraction-ms 0
-                                     :neo4j-projection-ms 0
-                                     :total-ms 0})))))))]
+                             (let [replica (aget resolved 0)
+                                   work! #(synchronize-file!
+                                           replica (aget resolved 1) path nil false
+                                           (atom {:event :import :queue-wait-ms 0
+                                                  :initialization-ms 0 :replica-sync-ms 0
+                                                  :repository-discovery-ms 0 :evidence-extraction-ms 0
+                                                  :neo4j-projection-ms 0 :total-ms 0}))]
+                               (if (satisfies? knowledge-store/MemoryReconciliationStore replica)
+                                 (notification-worker/with-lease! (:worker-inbox-options options) work!)
+                                 (work!))))))))]
                (reset! queue (.then result (fn [_] nil) (fn [_] nil)))
                result)))
          query-dependencies
@@ -515,6 +579,12 @@
        :get-replica! get-replica!
        :get-user! get-user!
        :list-sessions! (:list-sessions options)})
+     (invoke pi "registerCommand" "adam:reconcile"
+             #js {:description "Reconcile durable transcript and memory notifications once"
+                  :handler (fn [_args ctx]
+                             (-> (synchronize! ctx :reconcile)
+                                 (.then (fn [_]
+                                          (notify! ctx "adam reconciliation attempted; inspect /adam:status for pending work" "info")))))})
      (knowledge-surfaces/register-command! pi query-dependencies)
      (when (:enabled? resolved-config)
        (knowledge-surfaces/register-tool! pi query-dependencies)

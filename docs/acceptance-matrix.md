@@ -82,7 +82,7 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 
 ## Memory protocol v1
 
-These protocol cases run deterministically in the normal suite. Lossless scanning and checkpoint planning are implemented without Neo4j; raw graph round-trip and resume behavior are covered by opt-in live validation. Aggregate memory projection remains staged.
+These protocol cases run deterministically in the normal suite. Lossless scanning and checkpoint planning are implemented without Neo4j; raw graph round-trip and resume behavior are covered by opt-in live validation. Aggregate memory projection and durable notification reconciliation are implemented on the unreleased 0.4 development line.
 
 | Case | Expected result |
 | --- | --- |
@@ -200,6 +200,22 @@ These cases define the implemented 0.3 scanner, graph-storage, file-evidence, an
 | Unrelated custom entry is present | Adapter ignores it |
 | Supported producer entry is malformed | Projection reports an isolated diagnostic; replica remains valid |
 | Unknown producer schema version is present | Adapter does not guess or corrupt the projection |
+
+## Durable producer-memory reconciliation
+
+| Given / when | Required behavior |
+| --- | --- |
+| Producer commits after the final host hook | Durable locator notification converges at the next Adam entry point without another producer append (**live**) |
+| Source session has not been mirrored | Notification remains retryable; pending transcript work establishes ownership before memory attachment (**live**) |
+| Producer repeats notifications for one locator | Coalesced sidecar synchronization and one aggregate session projection precede acknowledgement |
+| One source/producer fails synchronously or asynchronously | Healthy groups progress; only failed work remains pending |
+| Projection fails after raw synchronization | Notification survives and a restart retries idempotently |
+| Worker waits for retry backoff | Shared lease is released so Pi can establish missing source ownership |
+| Worker closes its lease while new notifications arrive | Both queues are rechecked after release |
+| Local transcript/subagent files are gone | Retained raw records and `TOUCHES` evidence still produce memory provenance without deleting evidence (**live**) |
+| Pi explicit repair runs with embedded and sidecar memory | Both producer contributions survive graph-native aggregate repair (**live**) |
+| A source is missing or unsafe | Terminal notification acknowledgement preserves graph state and future repairability |
+| Latest status is inspected | Content-free counts and timing are bounded to the latest drain; no history or content telemetry |
 
 ## Aggregate memory projection
 

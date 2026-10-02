@@ -7,6 +7,10 @@
 (defprotocol AggregateMemoryStore
   (read-session-memory-streams! [store user-id session-id]))
 
+(defprotocol MemoryReconciliationStore
+  (ensure-memory-source! [store user-id session-id])
+  (reproject-retained-memory! [store user-uuid source-kind source-session-id]))
+
 (defprotocol FileMemoryQueryStore
   (query-file-memory! [store user-id repository-id relative-path limit]))
 

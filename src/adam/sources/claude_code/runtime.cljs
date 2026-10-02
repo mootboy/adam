@@ -1,5 +1,6 @@
 (ns adam.sources.claude-code.runtime
   (:require [adam.knowledge.memory-migration :as memory-migration]
+            [adam.memory.service :as memory-service]
             [adam.knowledge.repository :as repository]
             [adam.knowledge.runtime :as knowledge-runtime]
             [adam.knowledge.store :as knowledge-store]
@@ -91,4 +92,11 @@
                  (.catch (fn [_] nil)))
              (js/Promise.resolve nil)))]
      {:process! process!
+      :drain-memory! (fn []
+                       (-> (get-runtime!)
+                           (.then (fn [runtime]
+                                    (memory-service/drain!
+                                      (assoc runtime
+                                        :inbox-options (:memory-inbox-options options)
+                                        :log! #(js/console.error (str "adam memory: " (pr-str %)))))))))
       :close! close!})))

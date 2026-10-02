@@ -1,6 +1,6 @@
 # Reconcile durable producer memory notifications
 
-- Status: in-progress
+- Status: done
 - Created: 2026-10-01
 - Owner: coding agent
 
@@ -28,19 +28,21 @@ A locator-only public spool and host-neutral serialized reconciliation connect i
 
 ## Acceptance criteria
 
-- [ ] Notifications contain only bounded validated locators, never memory/transcript content.
-- [ ] Unsafe spool paths and malformed notifications cannot redirect reads or poison unrelated work.
-- [ ] Pending transcript work runs before memory attachment; absent owned sessions remain retryable.
-- [ ] Sidecars synchronize independently and one aggregate session projection precedes acknowledgement.
-- [ ] Missing/unsafe sidecars acknowledge without graph conflict; transient failures remain queued.
-- [ ] Restart, outage, reversed hook completion, producer isolation, and concurrent enqueue converge.
-- [ ] Pi/Claude composition roots share reconciliation and an explicit repair path.
+- [x] Notifications contain only bounded validated locators, never memory/transcript content.
+- [x] Unsafe spool paths and malformed notifications cannot redirect reads or poison unrelated work.
+- [x] Pending transcript work runs before memory attachment; absent owned sessions remain retryable.
+- [x] Sidecars synchronize independently and one aggregate session projection precedes acknowledgement.
+- [x] Missing/unsafe sidecars acknowledge without graph conflict; transient failures remain queued.
+- [x] Restart, outage, reversed hook completion, producer isolation, and concurrent enqueue converge.
+- [x] Pi/Claude composition roots share reconciliation and an explicit repair path.
 
 ## Validation
 
-Foundation checkpoint: `npm test` passed all four release builds, 139 deterministic ClojureScript tests with 560 assertions, and 20 Node tests with three expected opt-in skips. `npm run check:dist` and `git diff --check` passed.
-
-New test-first coverage proves canonical private notifications, strict bounded envelopes, symlink rejection, malformed-envelope isolation, per-producer coalescing, source-before-memory ordering, one aggregate projection before acknowledgement, transient producer/source isolation, terminal rejection acknowledgement, and projection-failure retention. Production lease/composition wiring and live end-to-end acceptance remain pending.
+- All four release targets build; normal suite passes 145 ClojureScript tests with 575 assertions and 20 Node tests with three expected opt-in skips.
+- Live ephemeral Neo4j 5.26 coverage passes eight ClojureScript tests with 127 assertions plus the packaged worker/Pi integration test.
+- Deterministic coverage proves private bounded notifications, symlink/malformed-envelope isolation, coalescing, ownership-before-attachment, projection-before-acknowledgement, transient isolation, terminal rejection, projection-failure retention, lease release during backoff, busy/capped retry handling, and post-release queue rechecks.
+- Packaged live coverage proves notification survival without Neo4j configuration, missing-source retry, transcript-first repair, canonical subagent citation links, append after the final source hook, restart with deleted local source streams, and Pi embedded/sidecar aggregate repair through `/adam:reconcile`.
+- Clean `npm run ci`, runtime reproducibility, clean-consumer tarball, package dry-run, and diff checks passed before PR handoff.
 
 ## Notes
 

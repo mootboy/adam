@@ -100,6 +100,8 @@
                    :now-ms (constantly 1)
                    :uuid-fn (constantly "notification-1")}
           release-process (atom nil)
+          mark-started (atom nil)
+          started (js/Promise. (fn [resolve _] (reset! mark-started resolve)))
           calls (atom 0)]
       (inbox/enqueue! options (input "session-1"))
       (let [first-run (worker/run-once!
@@ -107,7 +109,8 @@
                         :process! (fn [_]
                                     (swap! calls inc)
                                     (js/Promise. (fn [resolve _]
-                                                   (reset! release-process resolve))))})]
+                                                   (reset! release-process resolve)
+                                                   (@mark-started nil))))})]
         (-> (worker/run-once!
              {:inbox-options options
               :process! (fn [_]
@@ -116,8 +119,9 @@
             (.then
              (fn [second-result]
                (is (= {:status :busy} second-result))
-               (@release-process nil)
-               first-run))
+               (.then started (fn [_]
+                                (@release-process nil)
+                                first-run))))
             (.then
              (fn [first-result]
                (is (= :drained (:status first-result)))

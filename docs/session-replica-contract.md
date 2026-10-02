@@ -106,7 +106,7 @@ The normative 0.4 file boundary is [`memory-protocol-contract.md`](memory-protoc
 
 Each event carries a complete stream-qualified source checkpoint. It is producer provenance and producer replay authority only. Adam validates it monotonically against that sidecar's last accepted checkpoint; a disappearing stream, decreasing offset, or changed hash at an equal offset is a non-conflicting `checkpoint-regression` diagnostic and the event is skipped. Adam must not compare it with independently observed Pi or Claude synchronization checkpoints. Source citations may remain unresolved until later host-source reconciliation.
 
-The physical stream uses owner-only, non-symlink, single-writer UTF-8 JSONL with a 1 MiB record bound. The implemented sidecar scanner retains complete malformed and unsupported records with diagnostics, defers a non-LF tail, and detects concurrent changes. Checkpointed synchronization stores raw records in byte-bounded batches. Sidecar shrinkage, committed-prefix mutation, invalid UTF-8, or oversize records physically conflict only that memory stream after any preceding safe records commit. Immutable event reuse is a semantic conflict: later complete raw suffixes still mirror as `blocked`, but semantic advancement stops. A missing or unsafe sidecar is terminal for the current notification, which is acknowledged and logged without marking the stream conflicted; a later notification can ingest a repaired source. Concurrent change and a not-yet-mirrored source session are transient and retryable. POSIX owner-mode enforcement currently limits sidecar ingestion to Linux and macOS.
+The physical stream uses owner-only, non-symlink, single-writer UTF-8 JSONL with a 1 MiB record bound. The implemented sidecar scanner retains complete malformed and unsupported records with diagnostics, defers a non-LF tail, and detects concurrent changes. Checkpointed synchronization stores raw records in byte-bounded batches. Sidecar shrinkage, committed-prefix mutation, invalid UTF-8, or oversize records physically conflict only that memory stream after any preceding safe records commit. Immutable event reuse is a semantic conflict: later complete raw suffixes still mirror as `blocked`, but semantic advancement stops. A missing or unsafe sidecar is terminal for the current notification, which is acknowledged and logged without marking the stream conflicted; a later notification can ingest a repaired source. The implemented public XDG-state memory inbox and host-neutral shared worker are defined in [`memory-notification-contract.md`](memory-notification-contract.md); transcript work precedes memory attachment, and successful aggregate projection precedes acknowledgement. Concurrent change and a not-yet-mirrored source session are transient and retryable. POSIX owner-mode enforcement currently limits sidecar ingestion to Linux and macOS.
 
 ## Fork lineage
 
@@ -236,6 +236,10 @@ Shows the deduplicated union of exact-cwd local and Neo4j sessions with `local+n
 Local files are always preferred and opened unchanged. A complete, validated, remote-only session is materialized through a flushed temporary file and atomic rename into Pi's normal session directory. Existing targets are never overwritten. After switching, adam restores the selected leaf without summarization; an invalid leaf warns and falls back to Pi's default.
 
 Cross-machine path mapping is deferred.
+
+### `/adam:reconcile`
+
+Performs one serialized repair attempt: mirror the active persisted Pi session, drain pending Claude source notifications, synchronize public producer-memory notifications, and rebuild memory from retained owned graph source records and file evidence. Retryable work remains queued; missing/unsafe sources are terminally acknowledged without graph conflict. It does not run a model. The equivalent standalone one-pass repair is `node /path/to/adam/worker.js --once`.
 
 ### `/adam:status`
 

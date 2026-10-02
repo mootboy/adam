@@ -292,7 +292,7 @@ One Adam lease serializes memory-stream graph writes. The worker:
 
 A malformed supported record is a bounded adapter diagnostic and does not poison source-session replication. Prefix mutation physically stops only that memory stream. Immutable-event conflict stops semantic advancement while later raw suffix records continue mirroring as blocked; either case preserves the last committed projection. Missing or unsafe source files never create a permanent graph conflict, so repaired sidecars remain ingestible on a later notification.
 
-Both Pi and Claude composition roots use this host-neutral memory reconciliation service. If v1 sidecars are intentionally implemented only for Claude, the contract must say so; the preferred 0.4.0 outcome is that any known source session can own a protocol sidecar.
+Both Pi and Claude composition roots use the implemented host-neutral memory reconciliation service. Any owned source session can own a protocol sidecar. The existing XDG-config worker lease serializes both queues and Pi projection/import; it is released during retry backoff so a missing Pi source can progress. `/adam:reconcile` and `worker.js --once` provide explicit repair without another producer append. Memory-only aggregate repair uses retained graph source records and `TOUCHES` evidence rather than requiring local files. See [`memory-notification-contract.md`](memory-notification-contract.md).
 
 ## Stage 4: reference Claude producer
 
@@ -365,7 +365,7 @@ The scope is one 0.4.0 milestone, not one implementation PR. Track each numbered
 3. **Complete:** implement lossless memory-stream scanning, raw-record storage, checkpoints, and live round-trip tests.
 4. **Complete:** implement the graph-native producer-scoped memory-identity migration without changing session, stream, or entry identities.
 5. **Complete:** implement aggregate multi-producer projection and retrieval provenance.
-6. Implement the distinct durable memory-notification spool and host-neutral reconciliation service.
+6. **Complete:** implement the distinct durable memory-notification spool and host-neutral reconciliation service, documented in [`memory-notification-contract.md`](memory-notification-contract.md).
 7. Build the reference producer and complete the cross-host tracer bullet.
 8. Prepare and merge the sole 0.4.0 release PR through the protected-main flow, then cut over Pi and Claude installations to the same tagged artifact.
 

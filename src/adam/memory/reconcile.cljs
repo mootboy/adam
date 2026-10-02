@@ -15,12 +15,15 @@
   success alone permits acknowledgement. Failed groups remain available to the
   next drain while healthy producers/sessions continue. No models run here."
   [{:keys [inbox-options ensure-source! sync-sidecar! project-session! log!
-           store user-uuid]
+           store user-uuid now-ms]
     :or {log! (fn [_] nil)}}]
-  (let [notifications (inbox/pending inbox-options)
+  (let [now-ms (or now-ms #(.now js/performance))
+        started-at (now-ms)
+        notifications (inbox/pending inbox-options)
         sessions (grouped notifications (juxt :source-kind :source-session-id))
         counters (atom {:acknowledged 0 :failed 0 :records-written 0
-                        :sessions-projected 0 :rejected 0})
+                        :sessions-projected 0 :rejected 0 :streams-synchronized 0
+                        :conflicts 0 :unresolved-citations 0})
         sync-sidecar! (or sync-sidecar! sync/sync-sidecar-file!)
         acknowledge! (fn [group]
                        (doseq [notification group]
@@ -66,6 +69,9 @@
                                                        :path (inbox/sidecar-path inbox-options notification)))
                                                (.then
                                                 (fn [result]
+                                                  (swap! counters update :streams-synchronized inc)
+                                                  (when (= :conflict (:status result))
+                                                    (swap! counters update :conflicts inc))
                                                   (swap! counters update :records-written +
                                                          (or (:records-written result) 0))
                                                   (if (= :acknowledge (:notification-disposition result))
@@ -83,7 +89,9 @@
                              (when (seq @successful)
                                (-> (invoke! project-session! source)
                                    (.then
-                                    (fn [_]
+                                    (fn [projection-result]
+                                      (swap! counters update :unresolved-citations +
+                                             (or (:unresolved-citations projection-result) 0))
                                       (acknowledge! @successful)
                                       (swap! counters update :sessions-projected inc)))
                                    (.catch (fn [_] (failed! @successful :projection-retry)))))))
@@ -91,4 +99,5 @@
          (js/Promise.resolve nil)
          sessions)
         (.then (fn [_]
-                 (assoc @counters :pending (count (inbox/pending inbox-options))))))))
+                 (assoc @counters :pending (count (inbox/pending inbox-options))
+                                  :duration-ms (max 0 (- (now-ms) started-at))))))))

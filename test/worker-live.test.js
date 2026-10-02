@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -24,6 +25,9 @@ function workerEnvironment(configHome) {
   return {
     ...process.env,
     XDG_CONFIG_HOME: configHome,
+    XDG_STATE_HOME: path.join(configHome, "state"),
+    XDG_DATA_HOME: path.join(configHome, "data"),
+    PI_CODING_AGENT_DIR: path.join(configHome, "pi"),
     ADAM_NEO4J_URI: process.env.ADAM_TEST_NEO4J_URI,
     ADAM_NEO4J_USERNAME: process.env.ADAM_TEST_NEO4J_USERNAME,
     ADAM_NEO4J_PASSWORD: process.env.ADAM_TEST_NEO4J_PASSWORD,
@@ -78,7 +82,42 @@ test("durable Claude notification repairs after an outage and projects native fi
     const inboxDirectory = path.join(configHome, "adam", "inbox");
     assert.equal((await readdir(inboxDirectory)).filter((name) => name.endsWith(".json")).length, 1);
 
-    const workerResult = await run(process.execPath, ["worker.js"], { env: workerEnvironment(configHome) });
+    const environment = workerEnvironment(configHome);
+    const producer = "org.example.worker-memory";
+    const relativeLocator = `claude-code/${createHash("sha256").update(sessionId).digest("hex")}/${producer}.jsonl`;
+    const sidecar = path.join(environment.XDG_DATA_HOME, "adam", "memories", "v1", relativeLocator);
+    const memoryInbox = path.join(environment.XDG_STATE_HOME, "adam", "memory-inbox");
+    // Every component below the XDG roots is a real owner-only directory.
+    for (const directory of [path.dirname(sidecar), memoryInbox]) {
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+    }
+    const event = {
+      protocolVersion: 1, eventId: randomUUID(), kind: "observations.recorded",
+      recordedAt: "2026-01-01T00:00:00.000Z", producer: { id: producer, version: "1.0.0" },
+      source: { kind: "claude-code", sessionId },
+      sourceCheckpoint: { streams: [{ streamId: "agent:a1", committedBytes: 1,
+        prefixSha256: "a".repeat(64), selectedLeafEntryId: "agent-call-1" }] },
+      observations: [{ id: "aaaaaaaaaaaa", content: "Worker memory from retained subagent evidence",
+        timestamp: "2026-01-01T00:00:00.000Z", relevance: "high", tokenCount: 8,
+        sourceEntries: [{ streamId: "agent:a1", entryId: "agent-call-1" }] }],
+    };
+    await writeFile(sidecar, `${JSON.stringify(event)}\n`, { mode: 0o600 });
+    const enqueue = async () => {
+      const id = randomUUID();
+      await writeFile(path.join(memoryInbox, `${id}.json`), JSON.stringify({
+        version: 1, id, sourceKind: "claude-code", sourceSessionId: sessionId,
+        producerId: producer, sidecarLocator: relativeLocator, queuedAt: new Date().toISOString(),
+      }), { mode: 0o600 });
+    };
+    await enqueue(); // producer commits before the source session exists
+    const lifecycleFile = path.join(inboxDirectory, (await readdir(inboxDirectory)).find((name) => name.endsWith(".json")));
+    const lifecycleBytes = await readFile(lifecycleFile);
+    await rm(lifecycleFile);
+    const awaitingSource = await run(process.execPath, ["worker.js", "--once"], { env: environment });
+    assert.equal(awaitingSource.code, 1, "missing source ownership remains retryable");
+    assert.equal((await readdir(memoryInbox)).filter((name) => name.endsWith(".json")).length, 1);
+    await writeFile(lifecycleFile, lifecycleBytes, { mode: 0o600 });
+    const workerResult = await run(process.execPath, ["worker.js"], { env: environment });
     assert.deepEqual(workerResult, { code: 0, signal: null, stderr: "" });
     assert.equal((await readdir(inboxDirectory)).filter((name) => name.endsWith(".json")).length, 0);
 
@@ -102,6 +141,98 @@ test("durable Claude notification repairs after an outage and projects native fi
     assert.equal(record.get("entries").toNumber(), 5);
     assert.equal(record.get("touches").toNumber(), 4);
     assert.deepEqual(record.get("files"), ["README.md"]);
+    assert.equal((await readdir(memoryInbox)).filter((name) => name.endsWith(".json")).length, 0);
+    const memoryLinks = await session.run(
+      `MATCH (s:AdamSession {id: $sessionId})-[:HAS_MEMORY]->(o:AdamObservation {producer: $producer})
+       MATCH (o)-[:SOURCED_FROM]->(entry:AdamEntry {streamId: 'agent:a1'})
+       MATCH (o)-[:ABOUT]->(file:AdamCodeFile {relativePath: 'README.md'})
+       RETURN o.content AS content, entry.entryId AS entry`,
+      { sessionId: sessionUrn, producer },
+    );
+    assert.equal(memoryLinks.records[0].get("entry"), "agent-call-1");
+    assert.equal(memoryLinks.records[0].get("content"), event.observations[0].content);
+    // Reversed final-hook ordering: append after the last transcript hook, then
+    // restart explicitly without any further host event or transcript file.
+    await rm(transcriptPath);
+    await rm(agentTranscriptPath);
+    const secondEvent = { ...event, eventId: randomUUID(), kind: "source.covered" };
+    delete secondEvent.observations;
+    await writeFile(sidecar, `${JSON.stringify(event)}\n${JSON.stringify(secondEvent)}\n`, { mode: 0o600 });
+    await enqueue();
+    const repaired = await run(process.execPath, ["worker.js", "--once"], { env: environment });
+    assert.deepEqual(repaired, { code: 0, signal: null, stderr: "" });
+    assert.equal((await readdir(memoryInbox)).filter((name) => name.endsWith(".json")).length, 0);
+    const retained = await session.run(
+      `MATCH (s:AdamSession {id: $sessionId})-[:HAS_MEMORY]->(o:AdamObservation {producer: $producer})
+       MATCH (o)-[:ABOUT]->(file:AdamCodeFile {relativePath: 'README.md'})
+       MATCH (s)-[:HAS_MEMORY_STREAM]->(:AdamMemoryStream)-[:HAS_RECORD]->(record:AdamMemoryRecord)
+       RETURN count(DISTINCT o) AS memories, count(DISTINCT record) AS records`,
+      { sessionId: sessionUrn, producer },
+    );
+    assert.equal(retained.records[0].get("memories").toNumber(), 1);
+    assert.equal(retained.records[0].get("records").toNumber(), 2);
+
+    // The packaged Pi composition root shares the same source-before-memory
+    // repair path, including embedded memory from its authoritative ledger.
+    const piId = `pi-worker-${randomUUID()}`;
+    const piPath = path.join(root, "pi.jsonl");
+    const piRecords = [
+      { type: "session", id: piId, cwd },
+      { type: "message", id: "pi-tool", parentId: null, message: { role: "assistant", content: [
+        { type: "toolCall", id: "pi-call", name: "read", arguments: { path: "README.md" } },
+      ] } },
+      { type: "custom", id: "pi-memory", parentId: "pi-tool", customType: "om.observations.recorded",
+        data: { coversUpToId: "pi-tool", observations: [{ id: "cccccccccccc", content: "embedded Pi memory",
+          timestamp: event.recordedAt, relevance: "high", tokenCount: 3, sourceEntryIds: ["pi-tool"] }] } },
+    ];
+    await writeFile(piPath, `${piRecords.map(JSON.stringify).join("\n")}\n`);
+    const piLocator = `pi/${createHash("sha256").update(piId).digest("hex")}/${producer}.jsonl`;
+    const piSidecar = path.join(environment.XDG_DATA_HOME, "adam", "memories", "v1", piLocator);
+    await mkdir(path.dirname(piSidecar), { recursive: true, mode: 0o700 });
+    const piEvent = { ...event, eventId: randomUUID(), source: { kind: "pi", sessionId: piId },
+      sourceCheckpoint: { streams: [{ streamId: "main", committedBytes: 1, prefixSha256: "b".repeat(64), selectedLeafEntryId: "pi-tool" }] },
+      observations: [{ ...event.observations[0], id: "bbbbbbbbbbbb", content: "sidecar Pi memory",
+        sourceEntries: [{ streamId: "main", entryId: "pi-tool" }] }] };
+    await writeFile(piSidecar, `${JSON.stringify(piEvent)}\n`, { mode: 0o600 });
+    const piNotificationId = randomUUID();
+    await writeFile(path.join(memoryInbox, `${piNotificationId}.json`), JSON.stringify({
+      version: 1, id: piNotificationId, sourceKind: "pi", sourceSessionId: piId,
+      producerId: producer, sidecarLocator: piLocator, queuedAt: new Date().toISOString(),
+    }), { mode: 0o600 });
+    const piProbe = `
+      import extension from './extension.js';
+      import { execFile } from 'node:child_process';
+      import { promisify } from 'node:util';
+      const exec = promisify(execFile);
+      const commands = new Map(); const events = new Map();
+      extension({
+        registerCommand(name, command) { commands.set(name, command); },
+        registerTool() {}, on(name, handler) { events.set(name, handler); },
+        async exec(cmd, args, options) {
+          try { return { ...(await exec(cmd, args, options)), code: 0 }; }
+          catch (error) { return { stdout: '', stderr: '', code: error.code ?? 1 }; }
+        }
+      });
+      const ctx = { cwd: ${JSON.stringify(cwd)},
+        sessionManager: { getSessionFile() { return ${JSON.stringify(piPath)}; }, getLeafId() { return 'pi-memory'; } },
+        ui: { notify(message, level) { if (level === 'warning') console.error(message); } } };
+      await commands.get('adam:reconcile').handler('', ctx);
+      ctx.ui.notify = (message) => console.error(message);
+      await commands.get('adam:status').handler('', ctx);
+      await events.get('session_shutdown')({}, ctx);
+    `;
+    const piResult = await run(process.execPath, ["--input-type=module", "-e", piProbe], { env: environment });
+    assert.equal(piResult.code, 0, piResult.stderr);
+    assert.match(piResult.stderr, /adam session replica: connected/);
+    assert.match(piResult.stderr, /Memory notifications: 1 acknowledged, 0 pending/);
+    const piMemories = await session.run(
+      `MATCH (:AdamUser {id: $userId})-[:OWNS]->(:AdamSession {sourceKind: 'pi', sourceSessionId: $sessionId})
+       -[:HAS_MEMORY]->(memory:AdamObservation)-[:ABOUT]->(:AdamCodeFile {relativePath: 'README.md'})
+       RETURN memory.content AS content ORDER BY content`,
+      { userId: `urn:adam:user:${state.userUuid}`, sessionId: piId },
+    );
+    assert.deepEqual(piMemories.records.map((row) => row.get("content")), ["embedded Pi memory", "sidecar Pi memory"], piResult.stderr);
+    assert.equal((await readdir(memoryInbox)).filter((name) => name.endsWith(".json")).length, 0);
   } finally {
     const state = await readFile(path.join(configHome, "adam", "config.json"), "utf8")
       .then(JSON.parse)

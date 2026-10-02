@@ -1,6 +1,7 @@
 (ns adam.replica.neo4j
   (:require [adam.knowledge.store :as knowledge-store]
             [adam.memory.store :as memory-store]
+            [adam.memory.projection :as memory-projection]
             [adam.replica.identity :as identity]
             [adam.replica.store :as store]
             [adam.sources.claude-code.store :as claude-store]
@@ -960,6 +961,22 @@
      :diagnostics (mapv keyword
                         (array-seq (or (aget properties "diagnostics") #js [])))}))
 
+(defn- read-retained-memory-streams! [^js session user-id session-id]
+  (-> (.run session
+            "MATCH (:AdamUser {id: $userId})-[:OWNS]->(:AdamSession {id: $sessionId})-[:HAS_MEMORY_STREAM]->(stream:AdamMemoryStream)
+             OPTIONAL MATCH (stream)-[:HAS_RECORD]->(record:AdamMemoryRecord)
+             WITH stream, record ORDER BY record.ordinal
+             RETURN stream, collect(record) AS records ORDER BY stream.producerId"
+            #js {:userId user-id :sessionId session-id})
+      (.then (fn [result]
+               (mapv (fn [row]
+                       (let [p (.-properties (record-get row "stream"))]
+                         {:id (aget p "id") :producer-id (aget p "producerId")
+                          :source-kind (aget p "sourceKind") :source-session-id (aget p "sourceSessionId")
+                          :records (mapv decoded-memory-record
+                                         (array-seq (or (record-get row "records") #js [])))}))
+                     (records result))))))
+
 (defn- file-memory-record [record]
   (let [memory (.-properties (record-get record "memory"))
         stored-session (.-properties (record-get record "s"))
@@ -1469,6 +1486,67 @@
                                     (array-seq (or (record-get row "records") #js [])))}))
                 (records result))))))))
 
+  knowledge-store/MemoryReconciliationStore
+  (ensure-memory-source! [_ user-id session-id]
+    (with-session! driver database
+      (fn [session]
+        (-> (.run session
+                  "MATCH (:AdamUser {id: $userId})-[:OWNS]->(s:AdamSession {id: $sessionId}) RETURN s.id AS id"
+                  #js {:userId user-id :sessionId session-id})
+            (.then (fn [result]
+                     (when (empty? (records result))
+                       (throw (ex-info "Memory source session is not mirrored" {:reason :missing-source-session})))
+                     nil))))))
+  (reproject-retained-memory! [this user-uuid source-kind source-session-id]
+    (let [user-id (identity/user-urn user-uuid)
+          session-id (identity/session-urn user-uuid source-kind source-session-id)]
+      (with-session! driver database
+        (fn [^js session]
+          (.executeWrite session
+            (fn [^js tx]
+              (-> (.run tx
+                        "MATCH (:AdamUser {id: $userId})-[:OWNS]->(s:AdamSession {id: $sessionId})
+                         SET s.memoryReconciliationRevision = coalesce(s.memoryReconciliationRevision, 0) + 1
+                         RETURN s.currentLeafId AS leaf"
+                        #js {:userId user-id :sessionId session-id})
+                  (.then (fn [result]
+                           (when (empty? (records result))
+                             (throw (ex-info "Memory source session is not mirrored" {:reason :missing-source-session})))
+                           (let [leaf (record-get (first (records result)) "leaf")]
+                             (-> (.run tx
+                                       "MATCH (:AdamSession {id: $sessionId})-[:HAS_ENTRY]->(entry:AdamEntry)
+                                        OPTIONAL MATCH (entry)-[:TOUCHES]->(file:AdamCodeFile)
+                                        RETURN entry, file.id AS fileId ORDER BY entry.ordinal"
+                                       #js {:sessionId session-id})
+                                 (.then (fn [rows] [leaf (records rows)]))))))
+                  (.then (fn [[leaf rows]]
+                           (-> (read-retained-memory-streams! tx user-id session-id)
+                               (.then
+                                 (fn [streams]
+                                   (let [entries (->> rows
+                                                      (map (fn [row]
+                                                             (let [p (.-properties (record-get row "entry"))]
+                                                               {:entry-id (aget p "entryId")
+                                                                :stream-id (or (aget p "streamId") "main")
+                                                                :raw-json (aget p "rawJson")}))) distinct vec)
+                                         touches (->> rows
+                                                      (keep (fn [row]
+                                                              (when-let [file-id (record-get row "fileId")]
+                                                                (let [p (.-properties (record-get row "entry"))]
+                                                                  {:entry-id (aget p "entryId")
+                                                                   :stream-id (or (aget p "streamId") "main")
+                                                                   :file-id file-id})))) vec)
+                                         projection (memory-projection/from-retained
+                                                     {:user-uuid user-uuid :source-kind source-kind
+                                                      :source-session-id source-session-id :current-leaf-id leaf
+                                                      :entries entries :entry-file-evidence touches :streams streams})]
+                                     (-> (replace-memory-projection! tx projection)
+                                         (.then (fn [_]
+                                                  {:observations (count (:observations projection))
+                                                   :reflections (count (:reflections projection))
+                                                   :unresolved-citations (count (filter #(= :unresolved-reference (:reason %))
+                                                                                        (:memory-diagnostics projection)))}))))))))))))))))
+
   knowledge-store/FileEvidenceStore
   (ensure-file-evidence-schema! [_]
     (ensure-file-evidence-constraints! driver database))
@@ -1545,7 +1623,7 @@
               WITH u, count(DISTINCT s) AS sessionCount,
                    min(sessionVersion) AS projectedVersion
               RETURN CASE WHEN sessionCount = 0
-                          THEN u.codeMemoryVersion
+                          THEN coalesce(u.codeMemoryVersion, 0)
                           ELSE projectedVersion
                      END AS version"
              #js {:userId user-id})
