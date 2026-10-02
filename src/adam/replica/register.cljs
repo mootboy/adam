@@ -76,6 +76,7 @@
               (when memory-notifications
                 (str "Memory notifications: " (:acknowledged memory-notifications) " acknowledged, "
                      (:pending memory-notifications) " pending, " (:failed memory-notifications) " failed; "
+                     (:source-expired memory-notifications) " source notifications expired; "
                      (:records-written memory-notifications) " records appended; "
                      (:streams-synchronized memory-notifications) " streams, "
                      (:conflicts memory-notifications) " conflicts, "

@@ -1,11 +1,15 @@
 (ns adam.memory.service
   (:require [adam.knowledge.store :as store]
             [adam.memory.reconcile :as reconcile]
+            [adam.memory.retry :as retry]
             [adam.replica.identity :as identity]))
 
 (defn drain! [{:keys [store user-uuid] :as options}]
   (reconcile/drain-once!
     (assoc options
+      :source-wait-ms (if (contains? options :source-wait-ms)
+                        (:source-wait-ms options)
+                        (retry/resolve-source-wait-ms (aget (.-env js/process) "ADAM_MEMORY_SOURCE_WAIT_MS")))
       :ensure-source!
       (fn [{:keys [source-kind source-session-id]}]
         (store/ensure-memory-source! store (identity/user-urn user-uuid)

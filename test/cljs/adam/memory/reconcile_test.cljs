@@ -85,6 +85,101 @@
           (.catch (fn [error] (is false (str error))))
           (.finally (fn [] (rmSync root #js {:recursive true :force true}) (done)))))))
 
+(deftest confirmed-missing-source-expires-at-the-default-age-boundary
+  (async done
+    (let [root (mkdtempSync (join (tmpdir) "adam-memory-expiry-"))
+          options {:state-home root :data-home root}
+          notification (inbox/enqueue! options (locator "session-1" "producer-a"))
+          queued-at (.parse js/Date (:queued-at notification))
+          clock (atom (+ queued-at 599999))
+          present? (atom false)
+          logs (atom [])
+          writes (atom [])
+          drain! #(reconcile/drain-once!
+                    {:inbox-options options :now-epoch-ms (fn [] @clock)
+                     :log! (fn [entry] (swap! logs conj entry))
+                     :ensure-source! (fn [_]
+                                       (if @present? (js/Promise.resolve nil)
+                                         (throw (ex-info "source absent" {:reason :missing-source-session}))))
+                     :sync-sidecar! (fn [_] (swap! writes conj :sync)
+                                      (js/Promise.resolve {:status :unchanged}))
+                     :project-session! (fn [_] (swap! writes conj :project) (js/Promise.resolve nil))})]
+      (-> (drain!)
+          (.then (fn [result]
+                   (is (= [1 0 0] ((juxt :pending :acknowledged :source-expired) result)))
+                   (is (empty? @writes))
+                   (reset! clock (+ queued-at 600000))
+                   ;; A new drain rereads the durable queuedAt; no in-memory retry
+                   ;; count is needed, including after a process restart.
+                   (drain!)))
+          (.then (fn [result]
+                   (is (= [0 1 1 0] ((juxt :pending :acknowledged :source-expired :failed) result)))
+                   (is (= :source-never-mirrored (:reason (last @logs))))
+                   (is (empty? @writes) "expiry must not read the sidecar or mutate retained graph state")
+                   (reset! present? true)
+                   (inbox/enqueue! options (locator "session-1" "producer-a"))
+                   (drain!)))
+          (.then (fn [result]
+                   (is (= [0 1 0] ((juxt :pending :acknowledged :source-expired) result)))
+                   (is (= [:sync :project] @writes) "fresh notification works normally after source import")))
+          (.catch (fn [error] (is false (.-stack error))))
+          (.finally (fn [] (rmSync root #js {:recursive true :force true}) (done)))))))
+
+(deftest old-notifications-do-not-expire-on-backend-or-projection-failure
+  (async done
+    (let [root (mkdtempSync (join (tmpdir) "adam-memory-expiry-error-"))
+          options {:state-home root :data-home root}
+          notification (inbox/enqueue! options (locator "session-1" "producer-a"))
+          clock (+ (.parse js/Date (:queued-at notification)) 600000)
+          source-mode (atom :offline)
+          settings {:inbox-options options :now-epoch-ms (fn [] clock)
+                    :ensure-source! (fn [_]
+                                      (if (= :offline @source-mode)
+                                        (js/Promise.reject (js/Error. "Neo4j unavailable"))
+                                        (js/Promise.resolve nil)))
+                    :sync-sidecar! (fn [_] (js/Promise.resolve {:status :unchanged}))
+                    :project-session! (fn [_]
+                                        (js/Promise.reject
+                                          (ex-info "projection failed" {:reason :missing-source-session})))}]
+      (-> (reconcile/drain-once! settings)
+          (.then (fn [result]
+                   (is (= [1 0 1] ((juxt :pending :source-expired :failed) result)))
+                   (reset! source-mode :present)
+                   (reconcile/drain-once! settings)))
+          (.then (fn [result]
+                   (is (= [1 0 1] ((juxt :pending :source-expired :failed) result)))
+                   (is (= 1 (count (inbox/pending options))))))
+          (.catch (fn [error] (is false (.-stack error))))
+          (.finally (fn [] (rmSync root #js {:recursive true :force true}) (done)))))))
+
+(deftest coalesced-fresh-notification-does-not-reset-older-notification-age
+  (async done
+    (let [root (mkdtempSync (join (tmpdir) "adam-memory-expiry-coalesce-"))
+          options {:state-home root :data-home root}
+          older (inbox/enqueue! options (locator "session-1" "producer-a"))
+          fresh (inbox/enqueue! options (locator "session-1" "producer-a"))
+          ;; Inject per-notification times so this does not depend on wall-clock
+          ;; scheduling of two adjacent enqueue operations.
+          pending (atom [(assoc older :queued-at "2026-10-02T00:00:00.000Z")
+                         (assoc fresh :queued-at "2026-10-02T00:09:59.000Z")])
+          clock (.parse js/Date "2026-10-02T00:10:00.000Z")]
+      (-> (js/Promise.resolve nil)
+          (.then (fn [_]
+                   (with-redefs [inbox/pending (fn [_] @pending)]
+                     ;; pending is read synchronously; acknowledgements use real files.
+                     (reconcile/drain-once!
+                       {:inbox-options options :now-epoch-ms (fn [] clock)
+                        :ensure-source! (fn [_] (js/Promise.reject
+                                                 (ex-info "absent" {:reason :missing-source-session})))
+                        :sync-sidecar! (fn [_] (is false "absent source must not read sidecars"))
+                        :project-session! (fn [_] (is false "absent source must not project"))}))))
+          (.then (fn [result]
+                   (is (= 1 (:source-expired result)))
+                   (is (= 1 (:failed result)))
+                   (is (= [(:id fresh)] (mapv :id (inbox/pending options))))))
+          (.catch (fn [error] (is false (.-stack error))))
+          (.finally (fn [] (rmSync root #js {:recursive true :force true}) (done)))))))
+
 (deftest terminal-source-rejection-acknowledges-without-projecting
   (async done
     (let [root (mkdtempSync (join (tmpdir) "adam-memory-drain-"))

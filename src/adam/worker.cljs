@@ -1,6 +1,7 @@
 (ns adam.worker
   (:require [adam.replica.config :as config]
             [adam.memory.inbox :as memory-inbox]
+            [adam.memory.retry :as retry]
             [adam.memory.service :as memory-service]
             [adam.sources.claude-code.inbox :as transcript-inbox]
             [adam.sources.claude-code.runtime :as runtime]
@@ -10,6 +11,9 @@
   (let [resolved-config (config/resolve-process-config)]
     (when-not (:enabled? resolved-config)
       (throw (js/Error. (str "adam worker unavailable: " (:reason resolved-config)))))
+    ;; Invalid policy is a startup configuration error, not retryable work.
+    ;; Leave the durable inbox untouched and exit before initializing Neo4j.
+    (retry/resolve-source-wait-ms (aget (.-env js/process) "ADAM_MEMORY_SOURCE_WAIT_MS"))
     (let [{:keys [process! drain-memory! close!]} (runtime/create-runtime resolved-config)]
       (-> ((if (some #{"--once"} (array-seq (.-argv js/process))) worker/run-once! worker/run-worker!)
             {:inbox-options {}

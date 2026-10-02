@@ -1,5 +1,6 @@
 (ns adam.memory.reconcile
   (:require [adam.memory.inbox :as inbox]
+            [adam.memory.retry :as retry]
             [adam.memory.sync :as sync]))
 
 (defn- invoke! [f input]
@@ -15,13 +16,15 @@
   success alone permits acknowledgement. Failed groups remain available to the
   next drain while healthy producers/sessions continue. No models run here."
   [{:keys [inbox-options ensure-source! sync-sidecar! project-session! log!
-           store user-uuid now-ms]
-    :or {log! (fn [_] nil)}}]
-  (let [now-ms (or now-ms #(.now js/performance))
+           store user-uuid now-ms now-epoch-ms source-wait-ms]
+    :or {log! (fn [_] nil) source-wait-ms retry/default-source-wait-ms}}]
+  (let [source-wait-ms (retry/validate-source-wait-ms source-wait-ms)
+        now-epoch-ms (or now-epoch-ms #(.now js/Date))
+        now-ms (or now-ms #(.now js/performance))
         started-at (now-ms)
         notifications (inbox/pending inbox-options)
         sessions (grouped notifications (juxt :source-kind :source-session-id))
-        counters (atom {:acknowledged 0 :failed 0 :records-written 0
+        counters (atom {:acknowledged 0 :failed 0 :source-expired 0 :records-written 0
                         :sessions-projected 0 :rejected 0 :streams-synchronized 0
                         :conflicts 0 :unresolved-citations 0})
         sync-sidecar! (or sync-sidecar! sync/sync-sidecar-file!)
@@ -54,10 +57,12 @@
                   (fn [_]
                     (let [source (select-keys (first session-group)
                                               [:source-kind :source-session-id])
-                          successful (atom [])]
+                          successful (atom [])
+                          source-confirmed? (atom false)]
                       (-> (invoke! ensure-source! source)
                           (.then
                            (fn [_]
+                             (reset! source-confirmed? true)
                              (reduce
                               (fn [promise producer-group]
                                 (.then promise
@@ -97,7 +102,24 @@
                                       (acknowledge! @successful)
                                       (swap! counters update :sessions-projected inc)))
                                    (.catch (fn [error] (failed! @successful :projection-retry error)))))))
-                          (.catch (fn [error] (failed! session-group :source-retry error))))))))
+                          (.catch
+                            (fn [error]
+                              (if (and (not @source-confirmed?)
+                                       (= :missing-source-session (:reason (ex-data error))))
+                                (let [now (now-epoch-ms)
+                                      expired (filterv #(>= (retry/notification-age-ms % now) source-wait-ms)
+                                                       session-group)
+                                      expired-ids (set (map :id expired))
+                                      remaining (filterv #(not (contains? expired-ids (:id %))) session-group)]
+                                  (doseq [group (grouped expired :producer-id)]
+                                    (log! (assoc (select-keys (first group) [:source-kind :source-session-id :producer-id])
+                                                 :reason :source-never-mirrored
+                                                 :notifications (count group)
+                                                 :age-ms (apply max (map #(retry/notification-age-ms % now) group)))))
+                                  (acknowledge! expired)
+                                  (swap! counters update :source-expired + (count expired))
+                                  (when (seq remaining) (failed! remaining :source-retry error)))
+                                (failed! session-group :source-retry error)))))))))
          (js/Promise.resolve nil)
          sessions)
         (.then (fn [_]

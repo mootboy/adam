@@ -17,6 +17,8 @@
             pending (inbox/pending options)]
         (is (= 1 (count pending)))
         (is (= locator (select-keys (first pending) (keys locator))))
+        (is (js/Number.isFinite (:file-mtime-ms (first pending))))
+        (is (= (:file-mtime-ms (first pending)) (:file-mtime-ms (first (inbox/pending options)))))
         (is (= (str "claude-code/" (protocol/sha256 "session-123")
                     "/org.example.memory.jsonl") (:sidecar-locator notification)))
         (is (= 384 (bit-and 511 (.-mode (statSync (:path notification))))))

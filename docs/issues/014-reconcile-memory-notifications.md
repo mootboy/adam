@@ -46,6 +46,6 @@ A locator-only public spool and host-neutral serialized reconciliation connect i
 
 ## Notes
 
-PR #21 review findings 1/2 are covered by failing-then-passing busy-lease and connected-error register regressions; small logging/raw-transfer follow-ups 4/5 are also addressed. Never-mirrored-source expiry (finding 3) remains a separate follow-up in [issue 015](015-bound-never-mirrored-source-retries.md).
+PR #21 review findings 1/2 are covered by failing-then-passing busy-lease and connected-error register regressions; small logging/raw-transfer follow-ups 4/5 are also addressed. Never-mirrored-source expiry (finding 3) is implemented as the separate follow-up in [issue 015](015-bound-never-mirrored-source-retries.md).
 
 Delivery step 6 in `docs/plan-0.4.0.md`. Aggregate folding currently rereads retained per-session records; worker sizing must account for this linear cost. Notifications and lifecycle inboxes remain distinct public/private protocols.

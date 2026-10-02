@@ -206,7 +206,12 @@ These cases define the implemented 0.3 scanner, graph-storage, file-evidence, an
 | Given / when | Required behavior |
 | --- | --- |
 | Producer commits after the final host hook | Durable locator notification converges at the next Adam entry point without another producer append (**live**) |
-| Source session has not been mirrored | Notification remains retryable; pending transcript work establishes ownership before memory attachment (**live**) |
+| Source session has not been mirrored | Notification remains retryable within its source-wait window; pending transcript work establishes ownership before memory attachment (**live**) |
+| Ownership query positively confirms absence at/past the window | Only expired notifications acknowledge with `source-never-mirrored`; detached worker exits without reading sidecars or mutating retained state (**live**) |
+| Backend or projection fails past the window | No absent-source expiry; notifications remain pending |
+| Worker restarts or new duplicate notifications coalesce | Each immutable queued age survives; newer notifications do not reset older deadlines |
+| Expired source is later mirrored and freshly notified | Normal memory ingestion/file retrieval succeeds (**live**) |
+| Source-wait configuration is invalid | Standalone worker fails at startup without connection/retry or acknowledgement; Pi source mirroring remains independent |
 | Producer repeats notifications for one locator | Coalesced sidecar synchronization and one aggregate session projection precede acknowledgement |
 | One source/producer fails synchronously or asynchronously | Healthy groups progress; only failed work remains pending |
 | Projection fails after raw synchronization | Notification survives and a restart retries idempotently |
