@@ -210,7 +210,9 @@ These cases define the implemented 0.3 scanner, graph-storage, file-evidence, an
 | Producer repeats notifications for one locator | Coalesced sidecar synchronization and one aggregate session projection precede acknowledgement |
 | One source/producer fails synchronously or asynchronously | Healthy groups progress; only failed work remains pending |
 | Projection fails after raw synchronization | Notification survives and a restart retries idempotently |
-| Worker waits for retry backoff | Shared lease is released so Pi can establish missing source ownership |
+| Detached worker holds the notification lease | Pi active-session mirroring, evidence projection, and historical imports still complete; only notification drains defer |
+| Pi replication fails after connecting | Replication `last-error` and unhealthy connectivity remain distinct from notification deferral |
+| Worker waits for retry backoff | Shared lease is released; Pi source writes are independently lease-free |
 | Worker closes its lease while new notifications arrive | Both queues are rechecked after release |
 | Local transcript/subagent files are gone | Retained raw records and `TOUCHES` evidence still produce memory provenance without deleting evidence (**live**) |
 | Pi explicit repair runs with embedded and sidecar memory | Both producer contributions survive graph-native aggregate repair (**live**) |

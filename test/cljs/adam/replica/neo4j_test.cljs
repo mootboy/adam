@@ -30,6 +30,29 @@
 (defn- fake-record [values]
   #js {:get (fn [key] (get values key))})
 
+(deftest retained-memory-repair-transfers-raw-source-payloads-only-for-pi
+  (async done
+    (let [calls (atom [])
+          run! (fn [query params]
+                 (swap! calls conj {:query query :params params})
+                 (js/Promise.resolve
+                   #js {:records (if (re-find #"RETURN s.currentLeafId AS leaf" query)
+                                   #js [(fake-record {"leaf" nil})] #js [])}))
+          tx #js {:run run!}
+          session #js {:executeWrite (fn [work] (work tx))
+                       :close (fn [] (js/Promise.resolve nil))}
+          replica (neo4j/replica-with-driver #js {:session (fn [_] session)} "neo4j")]
+      (-> (js/Promise.all
+            #js [(knowledge-store/reproject-retained-memory! replica "user" "pi" "session")
+                 (knowledge-store/reproject-retained-memory! replica "user" "claude-code" "session")])
+          (.then (fn [_]
+                   (let [queries (filter #(re-find #"AS entry,\s+file.id AS fileId" (:query %)) @calls)]
+                     (is (= #{"pi" "claude-code"} (set (map #(aget (:params %) "sourceKind") queries))))
+                     (is (every? #(re-find #"CASE WHEN \$sourceKind = 'pi' THEN" (:query %)) queries))
+                     (is (every? #(re-find #"ELSE entry \{ \.entryId, \.streamId, \.ordinal \} END" (:query %)) queries)))))
+          (.catch (fn [error] (is false (.-stack error))))
+          (.finally done)))))
+
 (defn- transactional-driver
   ([] (transactional-driver false))
   ([mismatch?]

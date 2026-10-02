@@ -152,7 +152,7 @@ Agent tool in Pi and Claude Code:
 
 - `adam_file_context({ path, origin? })`
 
-The Claude Code plugin launches the read-only stdio MCP server from `mcp.js` and bounded lifecycle hooks from `hook.js`. Hooks wake `worker.js`, which serializes transcript synchronization and file-evidence projection independently of Claude's interactive lifecycle. Retrieval shares query semantics and identity with Pi. Adam still generates no observations or reflections. The unreleased 0.4 implementation ingests independent producer sidecars through a public durable memory-notification spool, then transactionally rebuilds memory from retained graph source records and existing file evidence. Both host paths share the worker lease (released during retry backoff); the separate reference producer remains staged work.
+The Claude Code plugin launches the read-only stdio MCP server from `mcp.js` and bounded lifecycle hooks from `hook.js`. Hooks wake `worker.js`, which serializes transcript synchronization and file-evidence projection independently of Claude's interactive lifecycle. Retrieval shares query semantics and identity with Pi. Adam still generates no observations or reflections. The unreleased 0.4 implementation ingests independent producer sidecars through a public durable memory-notification spool, then transactionally rebuilds memory from retained graph source records and existing file evidence. Both host notification drains share the worker lease (released during retry backoff), while Pi session/evidence synchronization and imports remain lease-independent; the separate reference producer remains staged work.
 
 Environment:
 

@@ -60,12 +60,14 @@
   (async done
     (let [root (mkdtempSync (join (tmpdir) "adam-memory-drain-"))
           options {:state-home root :data-home root}
-          synchronized (atom [])]
+          synchronized (atom [])
+          logs (atom [])]
       (inbox/enqueue! options (locator "session-1" "producer-a"))
       (inbox/enqueue! options (locator "session-2" "producer-a"))
       (mkdirSync (join root "adam" "memory-inbox" "unsafe.json"))
       (-> (reconcile/drain-once!
            {:inbox-options options
+            :log! #(swap! logs conj %)
             :ensure-source! (fn [source]
                               (if (= "session-1" (:source-session-id source))
                                 (throw (js/Error. "source not mirrored"))
@@ -78,7 +80,8 @@
                    (is (= ["session-2"] @synchronized))
                    (is (= 1 (:failed result)))
                    (is (= 1 (:acknowledged result)))
-                   (is (= ["session-1"] (mapv :source-session-id (inbox/pending options))))))
+                   (is (= ["session-1"] (mapv :source-session-id (inbox/pending options))))
+                   (is (= "source not mirrored" (:message (first (filter #(= :source-retry (:reason %)) @logs)))))))
           (.catch (fn [error] (is false (str error))))
           (.finally (fn [] (rmSync root #js {:recursive true :force true}) (done)))))))
 
@@ -105,16 +108,20 @@
 (deftest failed-projection-retains-notifications-for-restart
   (async done
     (let [root (mkdtempSync (join (tmpdir) "adam-memory-drain-"))
-          options {:state-home root :data-home root}]
+          options {:state-home root :data-home root}
+          logs (atom [])]
       (inbox/enqueue! options (locator "session-1" "producer-a"))
       (-> (reconcile/drain-once!
            {:inbox-options options
             :ensure-source! (fn [_] (js/Promise.resolve nil))
             :sync-sidecar! (fn [_] (js/Promise.resolve {:status :mirrored}))
+            :log! #(swap! logs conj %)
             :project-session! (fn [_] (throw (js/Error. "projection outage")))})
           (.then (fn [result]
                    (is (= 0 (:acknowledged result)))
                    (is (= 1 (:pending result)))
-                   (is (= 1 (count (inbox/pending options))))))
+                   (is (= 1 (count (inbox/pending options))))
+                   (is (= :projection-retry (:reason (first @logs))))
+                   (is (= "projection outage" (:message (first @logs))))))
           (.catch (fn [error] (is false (str error))))
           (.finally (fn [] (rmSync root #js {:recursive true :force true}) (done)))))))
