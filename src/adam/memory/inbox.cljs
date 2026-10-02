@@ -123,7 +123,7 @@
               notification {:version (:version wire) :id (:id wire)
                             :source-kind (:sourceKind wire) :source-session-id (:sourceSessionId wire)
                             :producer-id (:producerId wire) :sidecar-locator (:sidecarLocator wire)
-                            :queued-at (:queuedAt wire) :path path}]
+                            :queued-at (:queuedAt wire) :file-mtime-ms (.-mtimeMs stat) :path path}]
           (when-not (and (= wire-keys (set (keys wire))) (= 1 (:version wire))
                          (string? (:id wire))
                          (re-matches #"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}" (:id wire))

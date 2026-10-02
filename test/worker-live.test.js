@@ -32,6 +32,7 @@ function workerEnvironment(configHome) {
     ADAM_NEO4J_USERNAME: process.env.ADAM_TEST_NEO4J_USERNAME,
     ADAM_NEO4J_PASSWORD: process.env.ADAM_TEST_NEO4J_PASSWORD,
     ADAM_NEO4J_DATABASE: process.env.ADAM_TEST_NEO4J_DATABASE ?? "neo4j",
+    ADAM_MEMORY_SOURCE_WAIT_MS: "600000",
   };
 }
 
@@ -171,6 +172,58 @@ test("durable Claude notification repairs after an outage and projects native fi
     );
     assert.equal(retained.records[0].get("memories").toNumber(), 1);
     assert.equal(retained.records[0].get("records").toNumber(), 2);
+
+    // A positively absent source expires and lets detached mode exit without
+    // touching an existing retained source/memory prefix. A later source hook
+    // and fresh notification must still ingest normally for that same locator.
+    const absentId = `absent-${randomUUID()}`;
+    const absentLocator = `claude-code/${createHash("sha256").update(absentId).digest("hex")}/${producer}.jsonl`;
+    const absentSidecar = path.join(environment.XDG_DATA_HOME, "adam", "memories", "v1", absentLocator);
+    await mkdir(path.dirname(absentSidecar), { recursive: true, mode: 0o700 });
+    const lateEvent = { ...event, eventId: randomUUID(), source: { kind: "claude-code", sessionId: absentId },
+      sourceCheckpoint: { streams: [{ streamId: "main", committedBytes: 1, prefixSha256: "c".repeat(64), selectedLeafEntryId: "call-1" }] },
+      observations: [{ ...event.observations[0], sourceEntries: [{ streamId: "main", entryId: "call-1" }] }] };
+    await writeFile(absentSidecar, `${JSON.stringify(lateEvent)}\n`, { mode: 0o600 });
+    const enqueueAbsent = async (queuedAt) => {
+      const id = randomUUID();
+      await writeFile(path.join(memoryInbox, `${id}.json`), JSON.stringify({
+        version: 1, id, sourceKind: "claude-code", sourceSessionId: absentId,
+        producerId: producer, sidecarLocator: absentLocator, queuedAt,
+      }), { mode: 0o600 });
+    };
+    const prefixSnapshot = async () => {
+      const rows = await session.run(
+        `MATCH (:AdamSession {id: $sessionId})-[:HAS_ENTRY]->(entry:AdamEntry)
+         RETURN entry.id AS id, entry.rawJson AS raw ORDER BY id`, { sessionId: sessionUrn });
+      return rows.records.map((row) => [row.get("id"), row.get("raw")]);
+    };
+    const originalPrefix = await prefixSnapshot();
+    await enqueueAbsent(new Date(Date.now() - 2000).toISOString());
+    const expiryEnvironment = { ...environment, ADAM_MEMORY_SOURCE_WAIT_MS: "1000" };
+    const expired = await run(process.execPath, ["worker.js"], { env: expiryEnvironment });
+    assert.equal(expired.code, 0, expired.stderr);
+    assert.match(expired.stderr, /source-never-mirrored/);
+    assert.equal((await readdir(memoryInbox)).filter((name) => name.endsWith(".json")).length, 0);
+    assert.deepEqual(await prefixSnapshot(), originalPrefix);
+    const absentStreams = await session.run(
+      "MATCH (stream:AdamMemoryStream {sourceSessionId: $id}) RETURN count(stream) AS count", { id: absentId });
+    assert.equal(absentStreams.records[0].get("count").toNumber(), 0, "expiry must not scan or mirror sidecars");
+    const lateTranscript = path.join(root, "late-source.jsonl");
+    await writeFile(lateTranscript, `${lines.map((line) => JSON.stringify({ ...line, sessionId: absentId })).join("\n")}\n`);
+    const lateHook = await run(process.execPath, ["hook.js"], {
+      env: { ...expiryEnvironment, ADAM_NEO4J_URI: "" },
+      input: JSON.stringify({ hook_event_name: "Stop", session_id: absentId, transcript_path: lateTranscript, cwd }),
+    });
+    assert.equal(lateHook.code, 0, lateHook.stderr);
+    await enqueueAbsent(new Date().toISOString());
+    const lateRepair = await run(process.execPath, ["worker.js", "--once"], { env: expiryEnvironment });
+    assert.equal(lateRepair.code, 0, lateRepair.stderr);
+    const lateMemory = await session.run(
+      `MATCH (:AdamUser {id: $userId})-[:OWNS]->(:AdamSession {sourceSessionId: $id})
+       -[:HAS_MEMORY]->(o:AdamObservation)-[:ABOUT]->(:AdamCodeFile {relativePath: 'README.md'})
+       RETURN o.content AS content`, { userId: `urn:adam:user:${state.userUuid}`, id: absentId });
+    assert.equal(lateMemory.records[0].get("content"), lateEvent.observations[0].content);
+    assert.equal((await readdir(memoryInbox)).filter((name) => name.endsWith(".json")).length, 0);
 
     // The packaged Pi composition root shares the same source-before-memory
     // repair path, including embedded memory from its authoritative ledger.
