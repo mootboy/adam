@@ -177,7 +177,7 @@ test("durable Claude notification repairs after an outage and projects native fi
 
     // A positively absent source expires and lets detached mode exit without
     // touching an existing retained source/memory prefix. A later source hook
-    // and fresh notification must still ingest normally for that same locator.
+    // and explicit repair must recover its parked locator without producer activity.
     const absentId = `absent-${randomUUID()}`;
     const absentLocator = `claude-code/${createHash("sha256").update(absentId).digest("hex")}/${producer}.jsonl`;
     const absentSidecar = path.join(environment.XDG_DATA_HOME, "adam", "memories", "v1", absentLocator);
@@ -210,6 +210,8 @@ test("durable Claude notification repairs after an outage and projects native fi
     assert.equal(expired.code, 0, expired.stderr);
     assert.match(expired.stderr, /source-never-mirrored/);
     assert.equal((await readdir(memoryInbox)).filter((name) => name.endsWith(".json")).length, 0);
+    const parkedDirectory = path.join(memoryInbox, "expired");
+    assert.equal((await readdir(parkedDirectory)).filter((name) => name.endsWith(".json")).length, 1);
     assert.deepEqual(await prefixSnapshot(), originalPrefix);
     const absentStreams = await session.run(
       "MATCH (stream:AdamMemoryStream {sourceSessionId: $id}) RETURN count(stream) AS count", { id: absentId });
@@ -221,9 +223,20 @@ test("durable Claude notification repairs after an outage and projects native fi
       input: JSON.stringify({ hook_event_name: "Stop", session_id: absentId, transcript_path: lateTranscript, cwd }),
     });
     assert.equal(lateHook.code, 0, lateHook.stderr);
-    await enqueueAbsent(new Date().toISOString());
+    const normalLatePass = await run(process.execPath, ["worker.js"], { env: expiryEnvironment });
+    assert.equal(normalLatePass.code, 0, normalLatePass.stderr);
+    assert.equal((await readdir(parkedDirectory)).filter((name) => name.endsWith(".json")).length, 1,
+      "ordinary worker must not reactivate archived work after its source appears");
+    const beforeExplicitRepair = await session.run(
+      "MATCH (stream:AdamMemoryStream {sourceSessionId: $id}) RETURN count(stream) AS count", { id: absentId });
+    assert.equal(beforeExplicitRepair.records[0].get("count").toNumber(), 0);
+    // No new sidecar append or memory notification: only the source hook changed.
     const lateRepair = await run(process.execPath, ["worker.js", "--once"], { env: expiryEnvironment });
     assert.equal(lateRepair.code, 0, lateRepair.stderr);
+    assert.match(lateRepair.stderr, /parked-source-recovered/);
+    assert.equal((await readdir(parkedDirectory)).filter((name) => name.endsWith(".json")).length, 0);
+    const repeatedRepair = await run(process.execPath, ["worker.js", "--once"], { env: expiryEnvironment });
+    assert.equal(repeatedRepair.code, 0, repeatedRepair.stderr);
     const lateMemory = await session.run(
       `MATCH (:AdamUser {id: $userId})-[:OWNS]->(:AdamSession {sourceSessionId: $id})
        -[:HAS_MEMORY]->(o:AdamObservation)-[:ABOUT]->(:AdamCodeFile {relativePath: 'README.md'})
@@ -254,10 +267,18 @@ test("durable Claude notification repairs after an outage and projects native fi
         sourceEntries: [{ streamId: "main", entryId: "pi-tool" }] }] };
     await writeFile(piSidecar, `${JSON.stringify(piEvent)}\n`, { mode: 0o600 });
     const piNotificationId = randomUUID();
-    await writeFile(path.join(memoryInbox, `${piNotificationId}.json`), JSON.stringify({
+    const piNotificationPath = path.join(memoryInbox, `${piNotificationId}.json`);
+    await writeFile(piNotificationPath, JSON.stringify({
       version: 1, id: piNotificationId, sourceKind: "pi", sourceSessionId: piId,
       producerId: producer, sidecarLocator: piLocator, queuedAt: new Date().toISOString(),
     }), { mode: 0o600 });
+    await utimes(piNotificationPath, agedTime, agedTime);
+    const piExpiry = await run(process.execPath, ["worker.js"], { env: expiryEnvironment });
+    assert.equal(piExpiry.code, 0, piExpiry.stderr);
+    assert.equal((await readdir(memoryInbox)).filter((name) => name.endsWith(".json")).length, 0);
+    assert.equal((await readdir(parkedDirectory)).filter((name) => name.endsWith(".json")).length, 1);
+    // Pi must create the source and recover its archived sidecar in one repair,
+    // with no producer append or new notification after expiry.
     const piProbe = `
       import extension from './extension.js';
       import { execFile } from 'node:child_process';
@@ -284,6 +305,8 @@ test("durable Claude notification repairs after an outage and projects native fi
     assert.equal(piResult.code, 0, piResult.stderr);
     assert.match(piResult.stderr, /adam session replica: connected/);
     assert.match(piResult.stderr, /Memory notifications: 1 acknowledged, 0 pending/);
+    assert.match(piResult.stderr, /1 parked locators recovered; 0 parked remaining/);
+    assert.equal((await readdir(parkedDirectory)).filter((name) => name.endsWith(".json")).length, 0);
     const piMemories = await session.run(
       `MATCH (:AdamUser {id: $userId})-[:OWNS]->(:AdamSession {sourceKind: 'pi', sourceSessionId: $sessionId})
        -[:HAS_MEMORY]->(memory:AdamObservation)-[:ABOUT]->(:AdamCodeFile {relativePath: 'README.md'})

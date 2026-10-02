@@ -1,6 +1,7 @@
 (ns adam.replica.register-test
   (:require [adam.knowledge.store :as knowledge-store]
             [adam.replica.register :as register]
+            [adam.memory.inbox :as memory-inbox]
             [adam.replica.store :as store]
             [adam.sources.claude-code.worker :as notification-worker]
             [cljs.test :refer [async deftest is]]
@@ -387,6 +388,48 @@
                           (is (= :mirrored (:status result)) "historical imports are not lease-gated")
                           (is (= 2 (count @writes)))))))
           (.then (fn [_] ((:shutdown! runtime))))
+          (.catch (fn [error] (is false (.-stack error))))
+          (.finally (fn [] (rmSync directory #js {:recursive true :force true}) (done)))))))
+
+(deftest explicit-pi-repair-recovers-parked-work-under-the-notification-lease
+  (async done
+    (let [directory (mkdtempSync (join (tmpdir) "adam-register-parked-"))
+          inbox-options {:state-home directory :data-home directory}
+          lease-options {:config-home directory}
+          replica (->LifecycleReplica (atom nil) (atom []) (atom []) (atom []) (atom 0)
+                                      (atom 2) (atom []) (atom 0) (atom []) (atom 3) (atom [])
+                                      (atom 1) (atom []))
+          created (atom 0)
+          {:keys [pi commands]} (fake-pi)
+          runtime (register/register!
+                    pi {:config {:enabled? true} :worker-inbox-options lease-options
+                        :memory-inbox-options inbox-options
+                        :create-replica (fn [] (swap! created inc) replica)
+                        :load-user (fn [] {:user-uuid "user-1"})})
+          ctx #js {:sessionManager #js {:getSessionFile (fn [] nil)}
+                   :ui #js {:notify (fn [_ _] nil)}}
+          repair! #((aget (get @commands "adam:reconcile") "handler") "" ctx)]
+      (memory-inbox/enqueue! inbox-options {:source-kind "pi" :source-session-id "remote-only" :producer-id "producer-a"})
+      (let [notification (first (memory-inbox/pending inbox-options))]
+        (memory-inbox/park! inbox-options notification)
+        (memory-inbox/acknowledge! inbox-options notification))
+      (-> (js/Promise.resolve nil)
+          (.then (fn [_] ((:synchronize! runtime) ctx :turn-end)))
+          (.then (fn [_]
+                   (is (zero? @created) "parked-only work must not initialize ordinary ephemeral turns")
+                   (notification-worker/with-lease! lease-options
+                     #(-> (repair!)
+                          (.then (fn [_]
+                                   (is (= 1 (count (memory-inbox/parked inbox-options))))
+                                   (is (empty? (memory-inbox/pending inbox-options)))
+                                   (is (re-find #"Worker busy" (:memory-notifications-error ((:status runtime)))))))))))
+          (.then (fn [_] (repair!)))
+          (.then (fn [_]
+                   (is (empty? (memory-inbox/parked inbox-options)))
+                   (is (= 1 (get-in ((:status runtime)) [:memory-notifications :recovered])))
+                   (is (= 0 (get-in ((:status runtime)) [:memory-notifications :parked-pending])))
+                   (is (nil? (:memory-notifications-error ((:status runtime)))))
+                   ((:shutdown! runtime))))
           (.catch (fn [error] (is false (.-stack error))))
           (.finally (fn [] (rmSync directory #js {:recursive true :force true}) (done)))))))
 

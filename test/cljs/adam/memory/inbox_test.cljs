@@ -2,7 +2,7 @@
   (:require [cljs.test :refer-macros [deftest is]]
             [adam.memory.inbox :as inbox]
             [adam.memory.protocol :as protocol]
-            ["node:fs" :refer [mkdtempSync rmSync statSync symlinkSync mkdirSync writeFileSync]]
+            ["node:fs" :refer [mkdtempSync rmSync statSync symlinkSync mkdirSync writeFileSync readFileSync]]
             ["node:os" :refer [tmpdir]]
             ["node:path" :refer [join]]))
 
@@ -26,6 +26,62 @@
                (inbox/sidecar-path options notification)))
         (inbox/acknowledge! options (first pending))
         (is (empty? (inbox/pending options))))
+      (finally (rmSync root #js {:recursive true :force true})))))
+
+(deftest archive-coalesces-locators-and-survives-both-crash-windows
+  (let [root (mkdtempSync (join (tmpdir) "adam-memory-archive-"))
+        options {:state-home root :data-home root}]
+    (try
+      (inbox/enqueue! options locator)
+      (let [notification (first (inbox/pending options))]
+        ;; Crash after durable parking, before active acknowledgement.
+        (inbox/park! options notification)
+        (is (= 1 (count (inbox/pending options))))
+        (is (= 1 (count (inbox/parked options))))
+        (inbox/park! options notification)
+        (is (= 1 (count (inbox/parked options))))
+        (is (= 384 (bit-and 511 (.-mode (statSync (:path (first (inbox/parked options))))))))
+        (inbox/acknowledge! options notification))
+      (is (empty? (inbox/rejections options)) "archive is not part of the active inbox")
+      (let [snapshot (first (inbox/parked options))]
+        ;; Crash after durable recovery enqueue, before archive removal.
+        (inbox/enqueue! options locator)
+        (inbox/requeue! options snapshot)
+        (is (empty? (inbox/parked options)))
+        (is (= 2 (count (inbox/pending options))))
+        (is (every? #(= locator (select-keys % (keys locator))) (inbox/pending options))))
+      (finally (rmSync root #js {:recursive true :force true})))))
+
+(deftest unsafe-archive-retains-active-work-without-following-links
+  (let [root (mkdtempSync (join (tmpdir) "adam-memory-archive-unsafe-"))
+        options {:state-home root :data-home root}
+        elsewhere (join root "elsewhere")]
+    (try
+      (inbox/enqueue! options locator)
+      (mkdirSync elsewhere #js {:mode 448})
+      (symlinkSync elsewhere (join root "adam" "memory-inbox" "expired"))
+      (is (thrown? js/Error (inbox/park! options (first (inbox/pending options)))))
+      (is (= 1 (count (inbox/pending options))))
+      (is (thrown? js/Error (inbox/parked options)))
+      (finally (rmSync root #js {:recursive true :force true})))))
+
+(deftest unsafe-archive-record-is-neither-followed-nor-overwritten
+  (let [root (mkdtempSync (join (tmpdir) "adam-memory-archive-record-"))
+        options {:state-home root :data-home root}
+        target (join root "private-target")]
+    (try
+      (inbox/enqueue! options locator)
+      (inbox/park! options (first (inbox/pending options)))
+      (let [path (:path (first (inbox/parked options)))]
+        (rmSync path)
+        (writeFileSync target "untouched" #js {:mode 384})
+        (symlinkSync target path)
+        (is (empty? (inbox/parked options)))
+        (is (= :unsafe-path (:reason (first (inbox/parked-rejections options)))))
+        (is (thrown? js/Error (inbox/park! options (first (inbox/pending options)))))
+        (is (thrown? js/Error (inbox/requeue! options {:path path})))
+        (is (= 1 (count (inbox/pending options))))
+        (is (= "untouched" (readFileSync target "utf8"))))
       (finally (rmSync root #js {:recursive true :force true})))))
 
 (deftest invalid-locators-and-unbounded-content-fail-closed
