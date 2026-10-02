@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, utimes } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -103,14 +103,16 @@ test("durable Claude notification repairs after an outage and projects native fi
         sourceEntries: [{ streamId: "agent:a1", entryId: "agent-call-1" }] }],
     };
     await writeFile(sidecar, `${JSON.stringify(event)}\n`, { mode: 0o600 });
-    const enqueue = async () => {
+    const enqueue = async (queuedAt = new Date().toISOString()) => {
       const id = randomUUID();
       await writeFile(path.join(memoryInbox, `${id}.json`), JSON.stringify({
         version: 1, id, sourceKind: "claude-code", sourceSessionId: sessionId,
-        producerId: producer, sidecarLocator: relativeLocator, queuedAt: new Date().toISOString(),
+        producerId: producer, sidecarLocator: relativeLocator, queuedAt,
       }), { mode: 0o600 });
     };
-    await enqueue(); // producer commits before the source session exists
+    // Fresh local notification, but the producer clock is 15 minutes behind.
+    // It must wait for the source hook rather than expiring on its first drain.
+    await enqueue(new Date(Date.now() - 900000).toISOString());
     const lifecycleFile = path.join(inboxDirectory, (await readdir(inboxDirectory)).find((name) => name.endsWith(".json")));
     const lifecycleBytes = await readFile(lifecycleFile);
     await rm(lifecycleFile);
@@ -186,10 +188,12 @@ test("durable Claude notification repairs after an outage and projects native fi
     await writeFile(absentSidecar, `${JSON.stringify(lateEvent)}\n`, { mode: 0o600 });
     const enqueueAbsent = async (queuedAt) => {
       const id = randomUUID();
-      await writeFile(path.join(memoryInbox, `${id}.json`), JSON.stringify({
+      const notificationPath = path.join(memoryInbox, `${id}.json`);
+      await writeFile(notificationPath, JSON.stringify({
         version: 1, id, sourceKind: "claude-code", sourceSessionId: absentId,
         producerId: producer, sidecarLocator: absentLocator, queuedAt,
       }), { mode: 0o600 });
+      return notificationPath;
     };
     const prefixSnapshot = async () => {
       const rows = await session.run(
@@ -198,7 +202,9 @@ test("durable Claude notification repairs after an outage and projects native fi
       return rows.records.map((row) => [row.get("id"), row.get("raw")]);
     };
     const originalPrefix = await prefixSnapshot();
-    await enqueueAbsent(new Date(Date.now() - 2000).toISOString());
+    const agedFile = await enqueueAbsent(new Date().toISOString());
+    const agedTime = new Date(Date.now() - 2000);
+    await utimes(agedFile, agedTime, agedTime); // stable local age, not a producer timestamp
     const expiryEnvironment = { ...environment, ADAM_MEMORY_SOURCE_WAIT_MS: "1000" };
     const expired = await run(process.execPath, ["worker.js"], { env: expiryEnvironment });
     assert.equal(expired.code, 0, expired.stderr);

@@ -14,7 +14,7 @@
           options {:state-home root :data-home root}
           notification (memory-inbox/enqueue! options
                          {:source-kind "claude-code" :source-session-id "absent" :producer-id "producer-a"})
-          clock (atom (.parse js/Date (:queued-at notification)))
+          clock (atom (:file-mtime-ms (first (memory-inbox/pending options))))
           calls (atom 0)
           logs (atom [])]
       (-> (worker/run-worker!

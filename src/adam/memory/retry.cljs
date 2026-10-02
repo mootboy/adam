@@ -20,12 +20,9 @@
       (validate-source-wait-ms (js/Number raw)))))
 
 (defn notification-age-ms [notification now-epoch-ms]
-  ;; File mtime bounds a producer-supplied future queuedAt without adding a new
-  ;; wire field or mutable retry state. Both timestamps survive worker restart.
-  (let [queued-at (.parse js/Date (:queued-at notification))
-        mtime (:file-mtime-ms notification)
-        ;; Allow normal filesystem timestamp granularity before treating a
-        ;; declared timestamp as future-skewed (e.g. a producer clock bug).
-        effective-queued-at (if (and (js/Number.isFinite mtime) (> queued-at (+ mtime 1000)))
-                              mtime queued-at)]
+  ;; The spool is written on this host: mtime uses Adam's clock rather than a
+  ;; producer's possibly skewed queuedAt. Neither basis resets on worker restart.
+  (let [mtime (:file-mtime-ms notification)
+        effective-queued-at (if (js/Number.isFinite mtime)
+                              mtime (.parse js/Date (:queued-at notification)))]
     (max 0 (- now-epoch-ms effective-queued-at))))
