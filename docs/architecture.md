@@ -6,7 +6,7 @@ Status: approved design; implementation is incremental.
 
 ## Authority and boundaries
 
-Pi session JSONL and hook-located Claude transcript streams are authoritative for their respective host sources. Producer-owned memory sidecars defined by [`memory-protocol-contract.md`](memory-protocol-contract.md) are a separate authority for external memory events. adam reads these persisted logs but never modifies or overwrites an existing source file. Neo4j is an eventually consistent replica and a rebuildable derived index.
+Pi session JSONL and hook-located Claude transcript streams are authoritative for their respective host sources. Producer-owned native memory logs are a separate authority for external memories. The existing [`memory-protocol-contract.md`](memory-protocol-contract.md) defines one supported input format, not a requirement imposed on producers. adam reads these persisted logs but never modifies or overwrites an existing source file. Neo4j is an eventually consistent replica and a rebuildable derived index.
 
 ```text
 Pi
@@ -20,7 +20,7 @@ Pi
     └── explicit query surfaces
 ```
 
-Persisted logs are the integration protocol. Pi producers may embed supported entries in authoritative session JSONL; external producers append protocol-v1 sidecars. Separate extensions need no shared process state, package dependency, or direct event channel.
+Persisted logs are the integration boundary. Pi producers embed native custom entries in authoritative session JSONL; a standalone Claude producer owns its own memory JSONL, listing and recall. **Adam must never rely on a memory producer knowing Adam exists.** Adam owns discovery, structural adaptation and reconciliation; producers need no Adam format/path, identity, inbox, export step, or worker command. This applies beyond avoiding imports. The native Claude memory reader/discovery adapter remains planned; existing protocol-v1 spool runtime is unchanged.
 
 ### Memory producers own
 
@@ -35,7 +35,8 @@ Persisted logs are the integration protocol. Pi producers may embed supported en
 - complete session, entry-tree, current-leaf, and fork-lineage replication;
 - user and identity ownership plus canonical repository/file identity, worktree context, and revision provenance;
 - deterministic file-tool evidence;
-- adapters that interpret supported persisted memory formats;
+- discovery and read-only adapters that interpret producer-owned persisted memory formats;
+- reconciliation scheduling, including any background polling/watch mechanism needed to observe late producer writes;
 - Neo4j persistence and reconstruction reads;
 - import, resume, status, and explicit file-context retrieval.
 
@@ -99,7 +100,7 @@ Unknown custom entries are ignored. Malformed or unsupported producer entries pr
 
 The first adapter is implemented structurally in `src/adam/sources/pi_observational_memory/` without importing the producer package. It preserves first-valid-record semantics, dropped-observation tombstones, source-entry provenance, and reflection support links. The resulting `AdamObservation` and `AdamReflection` nodes are rebuilt transactionally with the file-evidence projection; adapter diagnostics expose only producer, entry ID, and reason.
 
-Adam 0.4 protocol v1 additionally defines producer/session sidecars with `observations.recorded`, `reflections.recorded`, `observations.dropped`, and content-free `source.covered` events. The contract fixes safe paths, lossless JSONL framing, RFC 8785 replay identity, stream-qualified citations, and source-coverage recovery. Adam now scans an explicitly located sidecar, preserves every complete physical record in checkpointed `AdamMemoryStream`/`AdamMemoryRecord` storage, defers partial tails, stops only on physical conflicts, and continues raw mirroring after immutable-event conflicts while semantic advancement remains blocked. Observation and reflection identities include canonical producer scope through a restart-safe graph migration. Aggregate projection now folds embedded Pi memory and every retained mirrored producer stream into one source-session snapshot; a distinct durable XDG-state notification spool now drives host-neutral reconciliation from Pi lifecycle and the detached Claude worker. Explicit repair uses `/adam:reconcile` or `worker.js --once`; the separate reference producer remains staged.
+Adam 0.4 protocol v1 additionally defines producer/session sidecars with `observations.recorded`, `reflections.recorded`, `observations.dropped`, and content-free `source.covered` events. The contract fixes safe paths, lossless JSONL framing, RFC 8785 replay identity, stream-qualified citations, and source-coverage recovery. Adam now scans an explicitly located sidecar, preserves every complete physical record in checkpointed `AdamMemoryStream`/`AdamMemoryRecord` storage, defers partial tails, stops only on physical conflicts, and continues raw mirroring after immutable-event conflicts while semantic advancement remains blocked. Observation and reflection identities include canonical producer scope through a restart-safe graph migration. Aggregate projection now folds embedded Pi memory and every retained mirrored producer stream into one source-session snapshot; a distinct durable XDG-state spool currently drives protocol-v1 reconciliation from Pi lifecycle and the detached Claude worker. Explicit repair uses `/adam:reconcile` or `worker.js --once`. Requiring producers to write that spool is superseded by the revised [0.4 plan](plan-0.4.0.md): Adam-owned native discovery/adaptation must also work with no producer notifications. That reader path and the standalone reference producer remain staged.
 
 ## Repository and file evidence
 
@@ -152,7 +153,7 @@ Agent tool in Pi and Claude Code:
 
 - `adam_file_context({ path, origin? })`
 
-The Claude Code plugin launches the read-only stdio MCP server from `mcp.js` and bounded lifecycle hooks from `hook.js`. Hooks wake `worker.js`, which serializes transcript synchronization and file-evidence projection independently of Claude's interactive lifecycle. Retrieval shares query semantics and identity with Pi. Adam still generates no observations or reflections. The unreleased 0.4 implementation ingests independent producer sidecars through a public durable memory-notification spool, then transactionally rebuilds memory from retained graph source records and existing file evidence. Both host notification drains share the worker lease (released during retry backoff), while Pi session/evidence synchronization and imports remain lease-independent; the separate reference producer remains staged work.
+The Claude Code plugin launches the read-only stdio MCP server from `mcp.js` and bounded lifecycle hooks from `hook.js`. Hooks wake `worker.js`, which serializes transcript synchronization and file-evidence projection independently of Claude's interactive lifecycle. Retrieval shares query semantics and identity with Pi. Adam still generates no observations or reflections. The existing unreleased 0.4 implementation ingests protocol-v1 sidecars through a durable memory spool, then transactionally rebuilds memory from retained graph source records and existing file evidence. The revised target adds Adam-owned native log discovery/readers: late commits are discovered on the next Adam reconciliation without producer exports, notifications or Adam worker invocation. Both host notification drains share the worker lease (released during retry backoff), while Pi session/evidence synchronization and imports remain lease-independent; the separate reference producer remains staged work.
 
 Environment:
 

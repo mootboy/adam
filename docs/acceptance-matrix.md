@@ -201,7 +201,22 @@ These cases define the implemented 0.3 scanner, graph-storage, file-evidence, an
 | Supported producer entry is malformed | Projection reports an isolated diagnostic; replica remains valid |
 | Unknown producer schema version is present | Adapter does not guess or corrupt the projection |
 
-## Durable producer-memory reconciliation
+## Standalone producer and Adam-owned native ingestion (planned, not implemented)
+
+The revised [0.4 plan](plan-0.4.0.md) supersedes producer-written Adam notifications as a requirement. Existing spool coverage below remains implementation evidence, not standalone/native-reader acceptance.
+
+| Given / when | Required behavior |
+| --- | --- |
+| Adam is absent, unconfigured, or uninstalled | Producer generation, native persistence, listing, recall, and restart recovery work independently |
+| Native memories already exist before enabling Adam | Adam discovers/reads them without producer export, append, notification, or worker invocation |
+| Producer commits after Adam's final hook | Next Adam startup/lifecycle or explicit repair rediscovers it without producer activity |
+| Adam/Neo4j is unavailable | Producer behavior and hook latency stay unchanged; Adam later repairs ingestion |
+| Native schema differs from protocol v1 | Adam adapter supplies normalized provenance while retaining exact native raw records; source logs stay unchanged |
+| Native citations reference parent/subagent activity | Adam maps documented producer citations to its stream/entry identities without producer knowledge of Adam IDs |
+| Discovery root or native schema is unsupported/unsafe | Adam fails in isolation with bounded diagnostics; producer need not change format or export data |
+| Lower-latency background ingestion is enabled later | Adam alone owns polling/watch scheduling, resource bounds and shutdown; producer never starts Adam |
+
+## Durable producer-memory reconciliation (existing protocol-v1 spool)
 
 | Given / when | Required behavior |
 | --- | --- |
