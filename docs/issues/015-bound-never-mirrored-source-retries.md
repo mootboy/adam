@@ -17,7 +17,7 @@ Retain short-lived missing-source retries for reversed hook ordering, while even
 
 ## Scope
 
-- Use a 10-minute default per-notification queued-age window, configurable through `ADAM_MEMORY_SOURCE_WAIT_MS` (1000–86400000 ms), with immutable queued timestamps across restarts.
+- Use a 10-minute default per-notification queued-age window, configurable through `ADAM_MEMORY_SOURCE_WAIT_MS` (1000–86400000 ms), with local notification file mtime surviving restarts (`queuedAt` only as fallback).
 - Apply expiry only when the ownership check actually confirms an absent source, not when Neo4j is unreachable or initialization, synchronization, or projection fails.
 - Acknowledge only expired notifications, preserving all mirrored source/sidecar state and allowing a later fresh notification after import to reconcile normally.
 - Bound diagnostics and continue healthy producer/source groups.
@@ -36,10 +36,12 @@ Retain short-lived missing-source retries for reversed hook ordering, while even
 Review: https://github.com/mootboy/adam/pull/21#issuecomment-5947281189 (finding 3).
 
 - Deterministic tests pin the 10-minute boundary, strict configuration bounds, backend/projection non-expiry, per-notification coalescing, restart-stable timestamps, and detached-worker exit after expiry.
-- Notification file mtime is private reader metadata, not a new wire field. Future queued timestamps more than one second ahead of mtime fall back to durable mtime, preserving ordinary filesystem rounding without trusting a producer clock bug.
+- Review note 1 is addressed: notification file mtime is the primary age basis on Adam's own host clock, with `queuedAt` only as fallback. Deterministic and packaged live tests cover a fresh notification from a producer 15 minutes slow waiting for the transcript hook rather than expiring prematurely; no wire field changes.
 - Packaged live validation proves missing-source expiry leaves retained raw entries untouched, creates no sidecar stream, and permits normal file-linked ingestion after a late source hook and fresh notification.
-- All four release targets build; normal suite passes 154 ClojureScript tests with 627 assertions and 21 Node tests with three expected opt-in skips. Invalid expiry configuration exits before driver initialization/retries.
+- All four release targets build; normal suite passes 156 ClojureScript tests with 642 assertions and 21 Node tests with three expected opt-in skips. Invalid expiry configuration exits before driver initialization/retries.
 - Opt-in ephemeral Neo4j validation passes eight tests with 127 assertions plus the expanded packaged worker/Pi test.
 - Clean CI, committed-runtime reproducibility, tarball/package checks, and diff checks passed before PR handoff.
+
+Review: https://github.com/mootboy/adam/pull/22#issuecomment-5953436054. Note 2 (park expired locators for explicit late-source recovery without a fresh producer notification) is tracked separately in [issue 016](016-recover-expired-memory-notifications.md); it is not implemented here.
 
 No package version bump, protocol wire change, or source/sidecar mutation. The reference memory producer remains separate later work.

@@ -209,7 +209,8 @@ These cases define the implemented 0.3 scanner, graph-storage, file-evidence, an
 | Source session has not been mirrored | Notification remains retryable within its source-wait window; pending transcript work establishes ownership before memory attachment (**live**) |
 | Ownership query positively confirms absence at/past the window | Only expired notifications acknowledge with `source-never-mirrored`; detached worker exits without reading sidecars or mutating retained state (**live**) |
 | Backend or projection fails past the window | No absent-source expiry; notifications remain pending |
-| Worker restarts or new duplicate notifications coalesce | Each immutable queued age survives; newer notifications do not reset older deadlines |
+| Worker restarts or new duplicate notifications coalesce | Each local file mtime survives; newer notifications do not reset older deadlines |
+| Producer clock is ahead or behind Adam's clock | Fresh local notification uses mtime, not producer queuedAt; slow-clock source-hook race remains retryable (**live**) |
 | Expired source is later mirrored and freshly notified | Normal memory ingestion/file retrieval succeeds (**live**) |
 | Source-wait configuration is invalid | Standalone worker fails at startup without connection/retry or acknowledgement; Pi source mirroring remains independent |
 | Producer repeats notifications for one locator | Coalesced sidecar synchronization and one aggregate session projection precede acknowledgement |
