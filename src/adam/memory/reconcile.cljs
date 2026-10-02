@@ -29,12 +29,14 @@
                        (doseq [notification group]
                          (inbox/acknowledge! inbox-options notification)
                          (swap! counters update :acknowledged inc)))
-        failed! (fn [group reason]
+        failed! (fn [group reason error]
                   (swap! counters update :failed + (count group))
-                  (log! {:source-kind (:source-kind (first group))
-                         :source-session-id (:source-session-id (first group))
-                         :producer-id (:producer-id (first group))
-                         :reason reason}))]
+                  (let [message (or (.-message error) "Unknown Adam reconciliation error")]
+                    (log! {:source-kind (:source-kind (first group))
+                           :source-session-id (:source-session-id (first group))
+                           :producer-id (:producer-id (first group))
+                           :reason reason
+                           :message (subs message 0 (min 512 (count message)))})))]
     (when-not (and (fn? ensure-source!) (fn? project-session!))
       (throw (js/Error. "Memory reconciliation requires source and projection boundaries")))
     (doseq [rejection (inbox/rejections inbox-options)]
@@ -81,7 +83,7 @@
                                                     (if (contains? #{:mirrored :unchanged :conflict} (:status result))
                                                       (swap! successful into producer-group)
                                                       (throw (js/Error. "Unexpected memory synchronization result"))))))
-                                               (.catch (fn [_] (failed! producer-group :sidecar-retry))))))))
+                                               (.catch (fn [error] (failed! producer-group :sidecar-retry error))))))))
                               (js/Promise.resolve nil)
                               (grouped session-group :producer-id))))
                           (.then
@@ -94,8 +96,8 @@
                                              (or (:unresolved-citations projection-result) 0))
                                       (acknowledge! @successful)
                                       (swap! counters update :sessions-projected inc)))
-                                   (.catch (fn [_] (failed! @successful :projection-retry)))))))
-                          (.catch (fn [_] (failed! session-group :source-retry))))))))
+                                   (.catch (fn [error] (failed! @successful :projection-retry error)))))))
+                          (.catch (fn [error] (failed! session-group :source-retry error))))))))
          (js/Promise.resolve nil)
          sessions)
         (.then (fn [_]

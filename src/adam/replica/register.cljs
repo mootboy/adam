@@ -370,6 +370,13 @@
                               (js/Promise.reject error))))]
                    (reset! code-memory-rebuild-promise promise)
                    promise))))
+         record-replication-error!
+         (fn [ctx error]
+           (swap! runtime-state assoc :connected? false :last-error (error-message error))
+           (when-not @warned-unavailable?
+             (notify! ctx "adam session replication unavailable; local JSONL remains authoritative" "warning")
+             (reset! warned-unavailable? true))
+           {:status :replication-failed})
          run-sync!
          (fn [ctx timing]
            (if-not (:enabled? resolved-config)
@@ -428,15 +435,7 @@
                         (when (zero? (:initialization-ms @timing))
                           (record-duration! timing :initialization-ms
                                             initialization-started-at))
-                        (swap! runtime-state assoc
-                               :connected? false
-                               :last-error (error-message error))
-                        (when-not @warned-unavailable?
-                          (notify! ctx
-                                   "adam session replication unavailable; local JSONL remains authoritative"
-                                   "warning")
-                          (reset! warned-unavailable? true))
-                        nil)))))
+                        (record-replication-error! ctx error))))))
                (do
                  (swap! runtime-state assoc
                         :connected? false
@@ -480,41 +479,38 @@
                    @queue
                    (fn [_]
                      (record-duration! timing :queue-wait-ms enqueued-at)
-                     (-> (if (and (:enabled? resolved-config)
-                                  (or (session-file ctx)
-                                      (seq (memory-inbox/pending (:memory-inbox-options options)))
-                                      (seq (memory-inbox/rejections (:memory-inbox-options options)))
-                                      (seq (transcript-inbox/pending (:worker-inbox-options options)))))
-                           (-> (let [started-at (now-ms)]
-                                 (-> (get-replica!)
-                                     (.finally #(reset! pre-initialization-ms
-                                                        (max 0 (- (now-ms) started-at))))))
-                               (.then
-                                 (fn [replica]
-                                   (if (satisfies? knowledge-store/MemoryReconciliationStore replica)
-                                     (notification-worker/run-once!
-                                       {:inbox-options (:worker-inbox-options options)
-                                        :drain! (fn []
-                                                  (-> (run-sync! ctx timing)
-                                                      (.then (fn [_]
-                                                               (-> (get-user!)
-                                                                   (.then #(drain-notifications! replica %)))))))})
-                                     (run-sync! ctx timing))))
-                               (.then (fn [result]
-                                        (when (= :busy (:status result))
-                                          (swap! runtime-state assoc :memory-notifications-error
-                                                 "Worker busy; reconciliation deferred to a later entry point"))
-                                        result)))
-                           (run-sync! ctx timing))
-                         (.catch (fn [error]
-                                   (if (:connected? @runtime-state)
-                                     (swap! runtime-state assoc :memory-notifications-error
-                                            "Reconciliation deferred; pending notifications retained")
-                                     (do
-                                       (swap! runtime-state assoc :last-error (error-message error))
-                                       (when-not @warned-unavailable?
-                                         (notify! ctx "adam session replication unavailable; local JSONL remains authoritative" "warning")
-                                         (reset! warned-unavailable? true))))))
+                     (-> (.then (js/Promise.resolve nil) (fn [_] (run-sync! ctx timing)))
+                         ;; Source writes must run even while the detached worker
+                         ;; owns the notification lease. Classify their failures
+                         ;; independently from later notification-drain failures.
+                         (.catch (fn [error] (record-replication-error! ctx error)))
+                         (.then
+                           (fn [result]
+                             (when-not (= :replication-failed (:status result))
+                               (-> (.then (js/Promise.resolve nil)
+                                     (fn [_]
+                                       (when (and (:enabled? resolved-config)
+                                                  (or (session-file ctx)
+                                                      (seq (memory-inbox/pending (:memory-inbox-options options)))
+                                                      (seq (memory-inbox/rejections (:memory-inbox-options options)))
+                                                      (seq (transcript-inbox/pending (:worker-inbox-options options)))))
+                                         (let [started-at (now-ms)]
+                                           (-> (get-replica!)
+                                               (.finally #(reset! pre-initialization-ms
+                                                                  (max 0 (- (now-ms) started-at))))
+                                               (.then
+                                                 (fn [replica]
+                                                   (when (satisfies? knowledge-store/MemoryReconciliationStore replica)
+                                                     (notification-worker/with-lease!
+                                                       (:worker-inbox-options options)
+                                                       #(-> (get-user!)
+                                                            (.then (fn [user]
+                                                                     (drain-notifications! replica user)))))))))))))
+                                   (.catch (fn [error]
+                                             (swap! runtime-state assoc :memory-notifications-error
+                                                    (if (= :worker-busy (:reason (ex-data error)))
+                                                      "Worker busy; notification drains deferred to a later entry point"
+                                                      "Reconciliation deferred; pending notifications retained"))))))))
                          (.finally
                           (fn []
                             (swap! timing update :initialization-ms + @pre-initialization-ms)
@@ -536,16 +532,12 @@
                       (-> (js/Promise.all #js [(get-replica!) (get-user!)])
                           (.then
                            (fn [resolved]
-                             (let [replica (aget resolved 0)
-                                   work! #(synchronize-file!
-                                           replica (aget resolved 1) path nil false
-                                           (atom {:event :import :queue-wait-ms 0
-                                                  :initialization-ms 0 :replica-sync-ms 0
-                                                  :repository-discovery-ms 0 :evidence-extraction-ms 0
-                                                  :neo4j-projection-ms 0 :total-ms 0}))]
-                               (if (satisfies? knowledge-store/MemoryReconciliationStore replica)
-                                 (notification-worker/with-lease! (:worker-inbox-options options) work!)
-                                 (work!))))))))]
+                             (synchronize-file!
+                               (aget resolved 0) (aget resolved 1) path nil false
+                               (atom {:event :import :queue-wait-ms 0
+                                      :initialization-ms 0 :replica-sync-ms 0
+                                      :repository-discovery-ms 0 :evidence-extraction-ms 0
+                                      :neo4j-projection-ms 0 :total-ms 0})))))))]
                (reset! queue (.then result (fn [_] nil) (fn [_] nil)))
                result)))
          query-dependencies

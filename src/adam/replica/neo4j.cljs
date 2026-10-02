@@ -1516,8 +1516,10 @@
                              (-> (.run tx
                                        "MATCH (:AdamSession {id: $sessionId})-[:HAS_ENTRY]->(entry:AdamEntry)
                                         OPTIONAL MATCH (entry)-[:TOUCHES]->(file:AdamCodeFile)
-                                        RETURN entry, file.id AS fileId ORDER BY entry.ordinal"
-                                       #js {:sessionId session-id})
+                                        RETURN CASE WHEN $sourceKind = 'pi' THEN entry { .entryId, .streamId, .ordinal, .rawJson }
+                                               ELSE entry { .entryId, .streamId, .ordinal } END AS entry,
+                                               file.id AS fileId ORDER BY entry.ordinal"
+                                       #js {:sessionId session-id :sourceKind source-kind})
                                  (.then (fn [rows] [leaf (records rows)]))))))
                   (.then (fn [[leaf rows]]
                            (-> (read-retained-memory-streams! tx user-id session-id)
@@ -1525,14 +1527,14 @@
                                  (fn [streams]
                                    (let [entries (->> rows
                                                       (map (fn [row]
-                                                             (let [p (.-properties (record-get row "entry"))]
+                                                             (let [p (record-get row "entry")]
                                                                {:entry-id (aget p "entryId")
                                                                 :stream-id (or (aget p "streamId") "main")
                                                                 :raw-json (aget p "rawJson")}))) distinct vec)
                                          touches (->> rows
                                                       (keep (fn [row]
                                                               (when-let [file-id (record-get row "fileId")]
-                                                                (let [p (.-properties (record-get row "entry"))]
+                                                                (let [p (record-get row "entry")]
                                                                   {:entry-id (aget p "entryId")
                                                                    :stream-id (or (aget p "streamId") "main")
                                                                    :file-id file-id})))) vec)

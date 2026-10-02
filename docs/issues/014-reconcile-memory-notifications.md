@@ -38,12 +38,14 @@ A locator-only public spool and host-neutral serialized reconciliation connect i
 
 ## Validation
 
-- All four release targets build; normal suite passes 145 ClojureScript tests with 575 assertions and 20 Node tests with three expected opt-in skips.
+- All four release targets build; normal suite passes 148 ClojureScript tests with 592 assertions and 20 Node tests with three expected opt-in skips.
 - Live ephemeral Neo4j 5.26 coverage passes eight ClojureScript tests with 127 assertions plus the packaged worker/Pi integration test.
-- Deterministic coverage proves private bounded notifications, symlink/malformed-envelope isolation, coalescing, ownership-before-attachment, projection-before-acknowledgement, transient isolation, terminal rejection, projection-failure retention, lease release during backoff, busy/capped retry handling, and post-release queue rechecks.
+- Deterministic coverage proves private bounded notifications, symlink/malformed-envelope isolation, coalescing, ownership-before-attachment, projection-before-acknowledgement, transient isolation, terminal rejection, projection-failure retention, lease release during backoff, busy-lease Pi mirroring/evidence/import, replication-error versus drain-deferral reporting, bounded retry diagnostics, conditional Pi-only raw entry fetch, busy/capped retry handling, and post-release queue rechecks.
 - Packaged live coverage proves notification survival without Neo4j configuration, missing-source retry, transcript-first repair, canonical subagent citation links, append after the final source hook, restart with deleted local source streams, and Pi embedded/sidecar aggregate repair through `/adam:reconcile`.
 - Clean `npm run ci`, runtime reproducibility, clean-consumer tarball, package dry-run, and diff checks passed before PR handoff.
 
 ## Notes
+
+PR #21 review findings 1/2 are covered by failing-then-passing busy-lease and connected-error register regressions; small logging/raw-transfer follow-ups 4/5 are also addressed. Never-mirrored-source expiry (finding 3) remains a separate follow-up in [issue 015](015-bound-never-mirrored-source-retries.md).
 
 Delivery step 6 in `docs/plan-0.4.0.md`. Aggregate folding currently rereads retained per-session records; worker sizing must account for this linear cost. Notifications and lifecycle inboxes remain distinct public/private protocols.

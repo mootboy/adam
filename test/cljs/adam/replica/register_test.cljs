@@ -2,6 +2,7 @@
   (:require [adam.knowledge.store :as knowledge-store]
             [adam.replica.register :as register]
             [adam.replica.store :as store]
+            [adam.sources.claude-code.worker :as notification-worker]
             [cljs.test :refer [async deftest is]]
             ["node:fs" :refer [mkdtempSync rmSync writeFileSync]]
             ["node:os" :refer [tmpdir]]
@@ -26,6 +27,12 @@
     (swap! memory-identity-migrations conj [user-id target-version])
     (reset! memory-identity-version target-version)
     (js/Promise.resolve nil))
+
+  knowledge-store/MemoryReconciliationStore
+  (ensure-memory-source! [_ _user-id _session-id]
+    (js/Promise.resolve nil))
+  (reproject-retained-memory! [_ _user-uuid _source-kind _source-session-id]
+    (js/Promise.resolve {:observations 0 :reflections 0 :unresolved-citations 0}))
 
   knowledge-store/FileEvidenceStore
   (ensure-file-evidence-schema! [_]
@@ -116,6 +123,8 @@
           runtime (register/register!
                    pi
                    {:config {:enabled? true}
+                    :worker-inbox-options {:config-home directory}
+                    :memory-inbox-options {:state-home directory :data-home directory}
                     :create-replica
                     (fn []
                       (if (= 1 (swap! attempts inc))
@@ -179,6 +188,8 @@
           runtime (register/register!
                    pi
                    {:config {:enabled? true}
+                    :worker-inbox-options {:config-home directory}
+                    :memory-inbox-options {:state-home directory :data-home directory}
                     :now-ms (fn [] (swap! clock + 10))
                     :create-replica (fn [] replica)
                     :load-user (fn [] {:user-uuid "user-1"})
@@ -284,6 +295,8 @@
                    {:config {:enabled? true}
                     :create-replica (fn [] replica)
                     :load-user (fn [] {:user-uuid "user-1"})
+                    :worker-inbox-options {:config-home directory}
+                    :memory-inbox-options {:state-home directory :data-home directory}
                     :list-code-memory-session-files (fn [] [path])
                     :resolve-git-identity (fn [_] (js/Promise.resolve nil))
                     :resolve-repository (fn [_cwd _user] (js/Promise.resolve repository))})
@@ -327,6 +340,93 @@
              (is false (.-stack error))
              (done)))))))
 
+(deftest busy-notification-lease-does-not-skip-pi-mirroring-evidence-or-import
+  (async done
+    (let [directory (mkdtempSync (join (tmpdir) "adam-register-busy-"))
+          path (join directory "session.jsonl")
+          imported-path (join directory "imported.jsonl")
+          checkpoint (atom nil)
+          writes (atom [])
+          projections (atom [])
+          replica (->LifecycleReplica checkpoint (atom []) writes (atom []) (atom 0)
+                                      (atom 2) (atom []) (atom 0) projections (atom 3) (atom [])
+                                      (atom 1) (atom []))
+          {:keys [pi]} (fake-pi)
+          lease-options {:config-home directory}
+          runtime (register/register!
+                    pi {:config {:enabled? true}
+                        :worker-inbox-options lease-options
+                        :memory-inbox-options {:state-home directory :data-home directory}
+                        :create-replica (fn [] replica)
+                        :load-user (fn [] {:user-uuid "user-1"})
+                        :resolve-git-identity (fn [_] (js/Promise.resolve nil))
+                        :resolve-repository (fn [_ _]
+                                              (js/Promise.resolve
+                                                {:id "repository" :root "/repo"
+                                                 :worktrees [{:root "/repo" :commit "abc" :dirty? false}]}))})
+          ctx #js {:sessionManager #js {:getSessionFile (fn [] path)
+                                        :getLeafId (fn [] "tool")}
+                   :ui #js {:notify (fn [_ _] nil)}}]
+      (writeFileSync path
+        (str "{\"type\":\"session\",\"id\":\"session-1\",\"cwd\":\"/repo\"}\n"
+             "{\"type\":\"message\",\"id\":\"tool\",\"parentId\":null,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"call\",\"name\":\"read\",\"arguments\":{\"path\":\"src/a.cljs\"}}]}}\n"))
+      (writeFileSync imported-path
+        (str "{\"type\":\"session\",\"id\":\"session-2\",\"cwd\":\"/repo\"}\n"
+             "{\"type\":\"message\",\"id\":\"imported-entry\",\"parentId\":null}\n"))
+      (-> (notification-worker/with-lease! lease-options
+            #(-> ((:synchronize! runtime) ctx :turn-end)
+                 (.then (fn [_]
+                          (is (= 1 (count @writes)) "Pi session mirrors even while the drain is busy")
+                          (is (= ["src/a.cljs"] (mapv :relative-path (:files (first @projections)))))
+                          (is (true? (:connected? ((:status runtime)))))
+                          (is (re-find #"Worker busy" (:memory-notifications-error ((:status runtime)))))
+                          (is (nil? (:last-error ((:status runtime)))))
+                          (reset! checkpoint nil)
+                          ((:import-file! runtime) imported-path ctx)))
+                 (.then (fn [result]
+                          (is (= :mirrored (:status result)) "historical imports are not lease-gated")
+                          (is (= 2 (count @writes)))))))
+          (.then (fn [_] ((:shutdown! runtime))))
+          (.catch (fn [error] (is false (.-stack error))))
+          (.finally (fn [] (rmSync directory #js {:recursive true :force true}) (done)))))))
+
+(deftest connected-replication-failure-is-not-mislabeled-as-drain-deferral
+  (async done
+    (let [directory (mkdtempSync (join (tmpdir) "adam-register-sync-error-"))
+          path (join directory "session.jsonl")
+          fail? (atom false)
+          replica (->LifecycleReplica (atom nil) (atom []) (atom []) (atom []) (atom 0)
+                                      (atom 2) (atom []) (atom 0) (atom []) (atom 3) (atom [])
+                                      (atom 1) (atom []))
+          {:keys [pi]} (fake-pi)
+          runtime (register/register!
+                    pi {:config {:enabled? true}
+                        :worker-inbox-options {:config-home directory}
+                        :memory-inbox-options {:state-home directory :data-home directory}
+                        :create-replica (fn [] replica)
+                        :load-user (fn [] {:user-uuid "user-1"})
+                        :resolve-repository (fn [_ _] (js/Promise.resolve nil))
+                        :resolve-git-identity (fn [_]
+                                                (if @fail?
+                                                  (throw (js/Error. "identity resolution failed"))
+                                                  (js/Promise.resolve nil)))})
+          ctx #js {:sessionManager #js {:getSessionFile (fn [] path) :getLeafId (fn [] nil)}
+                   :ui #js {:notify (fn [_ _] nil)}}]
+      (writeFileSync path "{\"type\":\"session\",\"id\":\"session-1\",\"cwd\":\"/repo\"}\n")
+      (-> (js/Promise.resolve nil)
+          (.then (fn [_] ((:synchronize! runtime) ctx)))
+          (.then (fn [_]
+                   (is (true? (:connected? ((:status runtime)))))
+                   (reset! fail? true)
+                   ((:synchronize! runtime) ctx)))
+          (.then (fn [_]
+                   (is (= "identity resolution failed" (:last-error ((:status runtime)))))
+                   (is (false? (:connected? ((:status runtime)))))
+                   (is (nil? (:memory-notifications-error ((:status runtime)))))
+                   ((:shutdown! runtime))))
+          (.catch (fn [error] (is false (.-stack error))))
+          (.finally (fn [] (rmSync directory #js {:recursive true :force true}) (done)))))))
+
 (deftest file-evidence-failure-does-not-mark-session-replication-unhealthy
   (async done
     (let [directory (mkdtempSync (join (tmpdir) "adam-register-evidence-failure-"))
@@ -342,6 +442,8 @@
                     :create-replica (fn [] replica)
                     :load-user (fn [] {:user-uuid "user-1"})
                     :resolve-git-identity (fn [_] (js/Promise.resolve nil))
+                    :worker-inbox-options {:config-home directory}
+                    :memory-inbox-options {:state-home directory :data-home directory}
                     :resolve-repository
                     (fn [_cwd _user]
                       (js/Promise.resolve
