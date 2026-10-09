@@ -24,7 +24,7 @@ This directory is adam's repository-local issue tracker. Use one Markdown file p
 - [`018`](018-show-parked-count-in-ordinary-status.md) — Show parked archive count in ordinary status (`proposed`, enhancement)
 - [`019`](019-isolate-live-test-identities-and-cleanup.md) — Isolate live-test identities and restrict cleanup to test-created sessions (`done`, critical bug)
 
-- [`020`](020-release-0.4.0-memory-infrastructure.md) — Release 0.4.0 memory infrastructure (`blocked`, release; operational acceptance pending)
+- [`020`](020-release-0.4.0-memory-infrastructure.md) — Release 0.4.0 memory infrastructure (`in-progress`, release; user approved deferred operational smoke)
 
 ## Naming
 

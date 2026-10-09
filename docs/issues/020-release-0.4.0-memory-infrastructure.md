@@ -1,6 +1,6 @@
 # Release Adam 0.4.0 memory infrastructure
 
-- Status: blocked
+- Status: in-progress
 - Created: 2026-10-09
 - Owner: unassigned
 
@@ -8,7 +8,7 @@
 
 The implemented 0.4 memory infrastructure is still unreleased. The earlier milestone incorrectly couples Adam's release to building a separate Claude memory producer and a native reader. Producer independence means neither package's release should require the other.
 
-The production incident additionally requires post-recovery ownership/provenance and worker-completion evidence before publication. Green isolated tests alone do not establish the shared deployment is healthy.
+The production incident warranted post-recovery ownership/provenance and worker-completion checks. Ownership/provenance now has read-only DB evidence. On 2026-10-09 the sole user reported completing a backup and explicitly approved publication without candidate runtime smoke, accepting that remaining bugs may be fixed afterward. This changes release gating, not the evidence: candidate restart, worker completion and production migration remain unverified.
 
 ## Outcome
 
@@ -21,7 +21,7 @@ Publish a precisely scoped 0.4.0 infrastructure artifact through the protected-m
 - Simplified release plan and aligned architecture, acceptance, input-contract and user documentation.
 - Package/lockfile/Claude manifest 0.4.0 and dated changelog.
 - Clean four-target runtime generation, reproducibility, exact-tarball and disposable live validation.
-- User-managed history-preserving release PR, gated on operational acceptance.
+- User-managed history-preserving release PR, with explicit acceptance of deferred operational smoke.
 - Post-publication Pi/Claude cutover and explicit retrieval/idempotent reconciliation smoke.
 
 ### Excluded
@@ -38,9 +38,10 @@ Publish a precisely scoped 0.4.0 infrastructure artifact through the protected-m
 - [x] Package, lockfile, manifest and changelog agree on 0.4.0.
 - [x] Clean normal CI, reproducible runtimes, exact tarball/package checks and fresh disposable Neo4j validation pass.
 - [x] Hosted Node 22.19/24 and Neo4j checks are green.
-- [ ] User confirms Pi recovery: source ownership and orphaned observation provenance/file links restored, not merely session totals.
-- [ ] Candidate host restart, explicit retrieval and worker completion/lease release are verified; outstanding/deleted Claude sources are accounted for and unchanged replay is healthy.
-- [ ] User approves and merges the release PR preserving history after these gates.
+- [x] Read-only DB audit verifies Pi recovery: source ownership and orphaned observation provenance/file links restored, not merely session totals.
+- [x] User reports completing a database backup and explicitly approves release with remaining runtime risk accepted.
+- [ ] **Post-release, non-blocking by user decision:** candidate host restart, explicit retrieval, worker completion/lease release and production memory-identity migration are verified.
+- [ ] User merges the release PR preserving history.
 - [ ] Protected-main CI tags/publishes the exact tested commit with tarball and checksum.
 - [ ] Pi and Claude run the same published artifact and pass operational smoke.
 
@@ -53,12 +54,14 @@ Local release preparation passes:
 - Fresh disposable Neo4j 5.26 on `127.0.0.1:7688`, with explicit disposable acknowledgement: eight live ClojureScript tests / 127 assertions plus packaged worker/Pi and scoped-teardown Node live cases pass.
 - `claude plugin validate .`, package dry-run and diff checks pass.
 
-[Draft PR #27](https://github.com/mootboy/adam/pull/27), preparation commit `38241c6`: hosted Node 22.19/24 and Neo4j checks passed in [run 37927094705](https://github.com/mootboy/adam/actions/runs/37927094705); tag/publish jobs skipped. The release PR must remain draft until user-confirmed operational acceptance; this is the blocking dependency. No production recovery commands, model calls, tags or publication performed.
+[PR #27](https://github.com/mootboy/adam/pull/27), preparation commit `38241c6`: hosted Node 22.19/24 and Neo4j checks passed in [run 37927094705](https://github.com/mootboy/adam/actions/runs/37927094705); tag/publish jobs skipped. Follow-up head `a723439` also passed hosted validation. No production recovery commands, model calls, tags or publication performed during preparation.
 
-User-reported recovery state before preparation: authorized stream-checkpoint reset/backlog draining restored 19/23 Claude sessions and 4,549/4,579 Claude entries; 92 Pi sessions and 701 orphaned observations still await `/adam:import --all`. These are reported facts, not independently verified acceptance. The remaining Claude sources/entries must be accounted for, not automatically assumed lost or recovered.
+[Read-only recovery audit](https://github.com/mootboy/adam/pull/27#issuecomment-6080693663), 2026-10-09: 100 owned Pi sessions / 93,975 attached entries with consistent checkpoints; 19 owned Claude sessions / 20 owned streams / 19,262 attached entries. No orphan memories or broken source/support ownership; all 1,867 ABOUT edges were backed by source-entry file evidence. The remaining 30 orphan entries / 12 streams belong to six historical `worker-live-*` test fixtures; no cleanup was performed. This supersedes the earlier report that Pi recovery was outstanding. Graph-relative checkpoint checks do not certify every local transcript is current.
+
+The shared graph still has pre-0.4 memory identities. Read-only checks found no incomplete migration provenance or duplicate target identity groups; the migration itself was not run. User reports a backup, but no restore drill is evidenced. Candidate restart/retrieval and worker exit/lease release are deferred to post-release smoke by explicit user approval, not claimed passed.
 
 ## Notes
 
-Keep the PR draft while operational gates are pending: merging a version bump activates post-merge tagging/publication. No direct push/tag release shortcut. The previous stalled installed worker must not be declared fixed solely because a backlog drained.
+The user explicitly removed the candidate operational-smoke blocker after reporting a backup and accepting remaining risk. Mark the PR ready; merging the version bump activates post-merge tagging/publication. Continue leaving the history-preserving merge to the user. No direct push/tag release shortcut. The previous stalled installed worker must not be declared fixed solely because a backlog drained.
 
 The separate producer owns its native persistence/recall; Adam later implements one concrete read-only adapter with rediscovery at the next reconciliation. No producer-written Adam notifications or worker commands are required. See [`../plan-0.4.0.md`](../plan-0.4.0.md).
