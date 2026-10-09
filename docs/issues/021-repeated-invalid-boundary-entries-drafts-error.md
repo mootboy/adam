@@ -2,9 +2,9 @@
 
 # Repeated Pi extension error: Invalid boundary entries: drafts is not iterable
 
-- Status: proposed
+- Status: ready
 - Category: bug
-- Triage: needs-triage
+- Triage: ready-for-agent
 - Created: 2026-10-09
 - Owner: unassigned
 
@@ -16,7 +16,9 @@ The user reports frequent errors after updating to Adam v0.4.0:
 Extension "/home/linus/.pi/agent/git/github.com/mootboy/adam/extension.js" error: Invalid boundary entries: drafts is not iterable
 ```
 
-Pi attributes the error to Adam's extension boundary. The originating function, triggering lifecycle event and actual impact on replication/projection are not yet established. Do not assume attribution identifies the root cause, or that the healthy database audit proves each lifecycle callback succeeds.
+Isolated reproduction confirms the failure on `turn_end` in Pi 1.1.0. Adam returns its internal ClojureScript reconciliation map from the registered event handler. That map has a JavaScript `.entries()` method; Pi's boundary runner reads `handlerResult.entries` as the pending boundary-draft array. The resulting function is not iterable, so rebuilding boundary context throws.
+
+A healthy replica does not establish successful boundary callbacks: the synthetic mirror completes before this rejection. If a preceding extension supplies drafts, Pi's invalid-boundary fallback returns an empty draft list, discarding pending drafts in that composition. This does not establish corruption of already-committed JSONL/graph records or prove real pi-observational-memory drafts were lost.
 
 ## Outcome
 
@@ -39,7 +41,7 @@ Identify and correct the failing boundary interaction so normal Pi operation doe
 
 ## Acceptance criteria
 
-- [ ] Exact reported failure is reproduced with its stack and triggering event identified.
+- [x] Exact reported failure is reproduced with its stack and triggering event identified.
 - [ ] A regression test exercises the real failing boundary, fails before the fix and passes afterward.
 - [ ] Valid normal activity no longer emits the repeated extension error.
 - [ ] Replication/projection health and continued callbacks are checked; unrelated failures remain isolated and diagnosable.
@@ -48,7 +50,22 @@ Identify and correct the failing boundary interaction so normal Pi operation doe
 
 ## Validation
 
-User-reported symptom; not independently reproduced. Filing only was requested, so no runtime reproduction or fix was attempted.
+Initial filing was based on the user report. Subsequent user-authorized analysis reproduced the exact error three times using actual compiled Adam lifecycle code, `LifecycleReplica` test storage, synthetic JSONL and isolated temporary inboxes. The harness loaded compiled test namespaces without invoking their suite main and used Pi 1.1.0's real `ExtensionRunner.emitBoundary` and `AgentSession._applyBoundaryDrafts`. No production initialization, DB access, reconciliation or model calls occurred during this reproduction.
+
+Confirmed chain:
+
+1. `src/adam/replica/register.cljs`: registered lifecycle callbacks directly return `synchronize!`, whose successful notification drain resolves to a ClojureScript map.
+2. `src/adam/memory/service.cljs`: `drain-after-transcripts!` returns the internal `{:processed ... :pending ... :memory ...}` map. Its JavaScript `entries` property is a method, not an array.
+3. Installed Pi `dist/core/extensions/runner.js`, `emitBoundary`: assigns that method to boundary `entries` because `handlerResult?.entries !== undefined`.
+4. Installed Pi `dist/core/agent-session.js`, `_applyBoundaryDrafts`: `for (const draft of drafts)` throws `TypeError: drafts is not iterable`; the runner reports the exact `Invalid boundary entries` error and marks the boundary invalid.
+
+Controlled A/B checks, repeated three times:
+
+- Original registered handler: boundary invalid with the exact reported error.
+- Wrapper that still awaits the same handler but returns `undefined`: boundary valid with no error; synthetic replica writes/completions still occur.
+- A preceding synthetic producer supplies one custom draft: original Adam callback leaves zero returned drafts after rejection; void-return wrapper preserves the one draft.
+
+Installed versions confirmed read-only: Pi **1.1.0**, Adam **0.4.0**, pi-observational-memory **3.1.4**. The minimal harness is temporary diagnostic material, not yet a committed regression. No production fix has been applied.
 
 The preceding read-only audit confirmed installed package v0.4.0 at release commit `4289ecc864f31a04ee22224ee9a0644b109a1ae9`, successful producer-scoped memory migration and working explicit retrieval. The queues were empty and no worker lease was held at that snapshot. Those observations do not exclude intermittent lifecycle failures.
 
@@ -56,4 +73,8 @@ A literal search for `Invalid boundary entries` and `drafts` in Adam's `src` and
 
 ## Notes
 
-Still needed for diagnosis: stack trace, exact Pi and pi-observational-memory versions, and whether startup, turn completion, compaction or another action triggers the error. Do not commit private transcript records merely to characterize the boundary.
+Proposed minimal fix: registered side-effect-only lifecycle callbacks should await serialized `synchronize!` completion and resolve to `undefined` (or another host-accepted no-result value), not forward the internal map. Preserve internal result/status APIs, serialization, shutdown safety and failure isolation. Do not return `entries: []`: that would erase drafts supplied by preceding extensions.
+
+Before changing production code, commit a failing regression at the actual lifecycle-return seam. Cover successful persisted synchronization/draining, preservation of preceding producer drafts, awaiting completion, and non-success paths without accidental boundary payloads. Retain compiled JavaScript boundary validation: ordinary mocks that only await and ignore handler results concealed this API mismatch.
+
+The reproduction rules out another extension or real transcript data as necessary causes. It does not establish when the return-value leak was first introduced or why it became visible specifically after this upgrade. No need to change Pi core or the producer to correct Adam's event return contract. Do not commit private transcript records merely to characterize the boundary.
