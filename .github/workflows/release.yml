@@ -78,6 +78,7 @@ jobs:
         run: npm run test:neo4j
         env:
           ADAM_TEST_NEO4J_URI: bolt://127.0.0.1:7687
+          ADAM_TEST_NEO4J_DISPOSABLE: "1"
           ADAM_TEST_NEO4J_USERNAME: neo4j
           ADAM_TEST_NEO4J_PASSWORD: adam-release-password
           ADAM_TEST_NEO4J_DATABASE: neo4j

@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 import test from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { isolatedAdamEnvironment } from "./support/adam-environment.js";
 
 const neo4jEnvironment = {
-  ADAM_NEO4J_URI: "bolt://localhost:7687",
+  ADAM_NEO4J_URI: "bolt://127.0.0.1:1",
   ADAM_NEO4J_USERNAME: "neo4j",
   ADAM_NEO4J_PASSWORD: "test-password",
   ADAM_NEO4J_DATABASE: "neo4j",
@@ -27,10 +31,12 @@ function nextResponse(responses, id) {
   });
 }
 
-test("the compiled MCP server advertises the read-only file-context tool", async () => {
+test("the compiled MCP server advertises the read-only file-context tool", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "adam-mcp-isolated-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
   const child = spawn(process.execPath, ["mcp.js"], {
     cwd: process.cwd(),
-    env: { ...process.env, ...neo4jEnvironment },
+    env: { ...isolatedAdamEnvironment(root), ...neo4jEnvironment },
     stdio: ["pipe", "pipe", "pipe"],
   });
   const { EventEmitter } = await import("node:events");
@@ -72,10 +78,12 @@ test("the compiled MCP server advertises the read-only file-context tool", async
   }
 });
 
-test("the MCP process drains buffered requests before exiting on closed standard input", async () => {
+test("the MCP process drains buffered requests before exiting on closed standard input", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "adam-mcp-isolated-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
   const child = spawn(process.execPath, ["mcp.js"], {
     cwd: process.cwd(),
-    env: { ...process.env, ...neo4jEnvironment },
+    env: { ...isolatedAdamEnvironment(root), ...neo4jEnvironment },
     stdio: ["pipe", "pipe", "pipe"],
   });
   const responses = [];

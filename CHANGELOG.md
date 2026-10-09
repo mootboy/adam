@@ -16,6 +16,10 @@ All notable changes to adam are documented here.
 - Restart-stable local-mtime expiry for positively confirmed never-mirrored memory sources, with a configurable 10-minute default wait, content-free expiry diagnostics, and no expiry of backend/projection failures or mutation of retained data.
 - Durable coalesced parking of expired memory locators and ownership-checked recovery through `/adam:reconcile` or `worker.js --once`, without fresh producer activity or ordinary-drain archive discovery.
 
+### Fixed
+
+- Live-test identity isolation and teardown scope: isolate canonical and legacy Pi roots, preseed fixture identity, delete only registered session-owned records, and use unique canonical-repository fixtures. Live suites require explicit disposable-database acknowledgement to prevent accidental shared/production execution.
+
 ## [0.3.3] - 2026-09-28
 
 ### Changed

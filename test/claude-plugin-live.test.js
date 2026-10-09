@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rename, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { isolatedAdamEnvironment } from "./support/adam-environment.js";
 
 // Opt-in: starts a real interactive Claude Code session with the installed
 // tarball as --plugin-dir and waits for the namespaced plugin MCP server to
@@ -39,11 +40,22 @@ test("interactive Claude Code starts the packaged plugin MCP server", { skip: !e
     { cwd: consumerDirectory, stdio: "ignore" },
   );
   const pluginRoot = path.join(consumerDirectory, "node_modules", "@mootboy", "adam");
+  // Valid config only for lazy MCP initialization, with an unreachable endpoint.
+  // Hooks inherit no backend config, so detached workers exit rather than retry.
+  // Never inherit production credentials or start production reconciliation.
+  const mcpPath = path.join(pluginRoot, ".mcp.json");
+  const mcpConfig = JSON.parse(await readFile(mcpPath, "utf8"));
+  mcpConfig.mcpServers.adam.env = {
+    ADAM_NEO4J_URI: "bolt://127.0.0.1:1", ADAM_NEO4J_USERNAME: "neo4j",
+    ADAM_NEO4J_PASSWORD: "unused-test-password",
+  };
+  await writeFile(mcpPath, JSON.stringify(mcpConfig));
   const command = [
     "claude", "--plugin-dir", pluginRoot, "--model", "haiku", "--debug", "--debug-file", log,
   ].map((part) => `'${part}'`).join(" ");
   const child = spawn("script", ["-qfec", command, "/dev/null"], {
     cwd: process.cwd(),
+    env: isolatedAdamEnvironment(path.join(temporaryDirectory, "adam-state")),
     stdio: ["pipe", "ignore", "ignore"],
     detached: true,
   });

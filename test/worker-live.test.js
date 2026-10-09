@@ -6,6 +6,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import neo4j from "neo4j-driver";
+import { isolatedAdamEnvironment, seedTestIdentity, assertTestIdentity } from "./support/adam-environment.js";
+import { cleanupTestSessions } from "./support/neo4j-cleanup.js";
+import { requireDisposableNeo4j } from "../scripts/require-disposable-neo4j.mjs";
 
 function run(command, args, { env, input } = {}) {
   return new Promise((resolve, reject) => {
@@ -23,11 +26,7 @@ function run(command, args, { env, input } = {}) {
 
 function workerEnvironment(configHome) {
   return {
-    ...process.env,
-    XDG_CONFIG_HOME: configHome,
-    XDG_STATE_HOME: path.join(configHome, "state"),
-    XDG_DATA_HOME: path.join(configHome, "data"),
-    PI_CODING_AGENT_DIR: path.join(configHome, "pi"),
+    ...isolatedAdamEnvironment(configHome),
     ADAM_NEO4J_URI: process.env.ADAM_TEST_NEO4J_URI,
     ADAM_NEO4J_USERNAME: process.env.ADAM_TEST_NEO4J_USERNAME,
     ADAM_NEO4J_PASSWORD: process.env.ADAM_TEST_NEO4J_PASSWORD,
@@ -41,10 +40,20 @@ test("durable Claude notification repairs after an outage and projects native fi
   const username = process.env.ADAM_TEST_NEO4J_USERNAME;
   const password = process.env.ADAM_TEST_NEO4J_PASSWORD;
   if (!uri || !username || !password) return t.skip("ADAM_TEST_NEO4J_* is not configured");
+  requireDisposableNeo4j();
 
   const root = await mkdtemp(path.join(tmpdir(), "adam-worker-live-"));
   const configHome = path.join(root, "config");
-  const sessionId = `worker-live-${crypto.randomUUID()}`;
+  const sessionId = `worker-live-${randomUUID()}`;
+  const absentId = `absent-${randomUUID()}`;
+  const piId = `pi-worker-${randomUUID()}`;
+  const environment = workerEnvironment(configHome);
+  const expectedUserUuid = await seedTestIdentity(environment);
+  const createdSessionIds = [
+    `urn:adam:session:${expectedUserUuid}:claude-code:${sessionId}`,
+    `urn:adam:session:${expectedUserUuid}:claude-code:${absentId}`,
+    `urn:adam:session:${expectedUserUuid}:pi:${piId}`,
+  ];
   const transcriptPath = path.join(root, "session.jsonl");
   const agentTranscriptPath = path.join(root, "agent-a1.jsonl");
   const cwd = process.cwd();
@@ -71,7 +80,7 @@ test("durable Claude notification repairs after an outage and projects native fi
     transcript_path: transcriptPath, agent_transcript_path: agentTranscriptPath,
     agent_id: "a1", cwd,
   });
-  const unavailableEnvironment = { ...process.env, XDG_CONFIG_HOME: configHome };
+  const unavailableEnvironment = isolatedAdamEnvironment(configHome);
   for (const key of ["ADAM_NEO4J_URI", "ADAM_NEO4J_USERNAME", "ADAM_NEO4J_PASSWORD", "ADAM_NEO4J_DATABASE"]) {
     delete unavailableEnvironment[key];
   }
@@ -83,7 +92,6 @@ test("durable Claude notification repairs after an outage and projects native fi
     const inboxDirectory = path.join(configHome, "adam", "inbox");
     assert.equal((await readdir(inboxDirectory)).filter((name) => name.endsWith(".json")).length, 1);
 
-    const environment = workerEnvironment(configHome);
     const producer = "org.example.worker-memory";
     const relativeLocator = `claude-code/${createHash("sha256").update(sessionId).digest("hex")}/${producer}.jsonl`;
     const sidecar = path.join(environment.XDG_DATA_HOME, "adam", "memories", "v1", relativeLocator);
@@ -124,7 +132,8 @@ test("durable Claude notification repairs after an outage and projects native fi
     assert.deepEqual(workerResult, { code: 0, signal: null, stderr: "" });
     assert.equal((await readdir(inboxDirectory)).filter((name) => name.endsWith(".json")).length, 0);
 
-    const state = JSON.parse(await readFile(path.join(configHome, "adam", "config.json"), "utf8"));
+    await assertTestIdentity(environment, expectedUserUuid);
+    const state = { userUuid: expectedUserUuid };
     const sessionUrn = `urn:adam:session:${state.userUuid}:claude-code:${sessionId}`;
     const result = await session.run(
       `MATCH (s:AdamSession {id: $sessionId})
@@ -178,7 +187,6 @@ test("durable Claude notification repairs after an outage and projects native fi
     // A positively absent source expires and lets detached mode exit without
     // touching an existing retained source/memory prefix. A later source hook
     // and explicit repair must recover its parked locator without producer activity.
-    const absentId = `absent-${randomUUID()}`;
     const absentLocator = `claude-code/${createHash("sha256").update(absentId).digest("hex")}/${producer}.jsonl`;
     const absentSidecar = path.join(environment.XDG_DATA_HOME, "adam", "memories", "v1", absentLocator);
     await mkdir(path.dirname(absentSidecar), { recursive: true, mode: 0o700 });
@@ -246,7 +254,6 @@ test("durable Claude notification repairs after an outage and projects native fi
 
     // The packaged Pi composition root shares the same source-before-memory
     // repair path, including embedded memory from its authoritative ledger.
-    const piId = `pi-worker-${randomUUID()}`;
     const piPath = path.join(root, "pi.jsonl");
     const piRecords = [
       { type: "session", id: piId, cwd },
@@ -316,22 +323,13 @@ test("durable Claude notification repairs after an outage and projects native fi
     assert.deepEqual(piMemories.records.map((row) => row.get("content")), ["embedded Pi memory", "sidecar Pi memory"], piResult.stderr);
     assert.equal((await readdir(memoryInbox)).filter((name) => name.endsWith(".json")).length, 0);
   } finally {
-    const state = await readFile(path.join(configHome, "adam", "config.json"), "utf8")
-      .then(JSON.parse)
-      .catch(() => null);
-    if (state) {
-      const parameters = { userId: `urn:adam:user:${state.userUuid}` };
-      await session.run(
-        "MATCH (:AdamUser {id: $userId})-[:OWNS]->(s:AdamSession) DETACH DELETE s",
-        parameters,
-      ).catch(() => {});
-      await session.run(
-        "MATCH (u:AdamUser {id: $userId}) DETACH DELETE u",
-        parameters,
-      ).catch(() => {});
+    try {
+      await assertTestIdentity(environment, expectedUserUuid);
+      await cleanupTestSessions(session, expectedUserUuid, createdSessionIds);
+    } finally {
+      await session.close();
+      await driver.close();
+      await rm(root, { recursive: true, force: true });
     }
-    await session.close();
-    await driver.close();
-    await rm(root, { recursive: true, force: true });
   }
 });

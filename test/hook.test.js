@@ -4,6 +4,7 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { isolatedAdamEnvironment } from "./support/adam-environment.js";
 
 const neo4jKeys = [
   "ADAM_NEO4J_URI",
@@ -13,7 +14,7 @@ const neo4jKeys = [
 ];
 
 function hookEnvironment(configHome) {
-  const environment = { ...process.env, XDG_CONFIG_HOME: configHome };
+  const environment = isolatedAdamEnvironment(configHome);
   for (const key of neo4jKeys) delete environment[key];
   return environment;
 }

@@ -34,10 +34,11 @@ npm test
 
 `npm test` compiles the Pi extension, MCP server, Claude hook, and reconciliation worker to committed `dist/` JavaScript, runs deterministic tests, packs the npm tarball, installs it into a temporary consumer, and exercises the source and packaged JavaScript boundaries. `npm run ci` additionally verifies that the committed generated runtime matches the source build.
 
-The opt-in live suite uses an isolated Neo4j database:
+The opt-in live suite requires a **fresh disposable Neo4j instance**, never a shared/development/production database. Explicit acknowledgement is required before any live-test connection; it is a safety gate, not proof that the supplied endpoint is disposable. Test subprocesses use isolated canonical/Pi identity roots and teardown uses registered fixture sessions. Use a separate container/port (for example 7688, not the production 7687):
 
 ```bash
-ADAM_TEST_NEO4J_URI=bolt://127.0.0.1:7687 \
+ADAM_TEST_NEO4J_DISPOSABLE=1 \
+ADAM_TEST_NEO4J_URI=bolt://127.0.0.1:7688 \
 ADAM_TEST_NEO4J_USERNAME=neo4j \
 ADAM_TEST_NEO4J_PASSWORD='your-password' \
 npm run test:neo4j

@@ -30,7 +30,7 @@
     "clean": "rm -rf dist target .shadow-cljs",
     "test": "npm run build && npm run test:cljs && node --test test/*.test.js",
     "test:cljs": "shadow-cljs compile test",
-    "test:neo4j": "npm run build && shadow-cljs compile neo4j-test && node --test test/worker-live.test.js",
+    "test:neo4j": "node scripts/require-disposable-neo4j.mjs && npm run build && shadow-cljs compile neo4j-test && node --test test/worker-live.test.js test/cleanup-live.test.js",
     "test:claude": "npm run build && node --test test/claude-*-live.test.js",
     "watch": "shadow-cljs watch extension test",
     "check:dist": "git diff --exit-code -- dist/adam.js dist/adam-mcp.js dist/adam-hook.js dist/adam-worker.js",
