@@ -154,7 +154,9 @@ The producer:
 
 Users remain responsible for whether the configured provider may receive repository and conversation content. Corporate or regulated environments may require a direct approved provider adapter rather than inherited Claude login. Successful authentication through an existing Claude seat is technical evidence only, not evidence that unattended background use is permitted by that subscription's terms.
 
-## Consequences for Adam 0.4.0
+## Consequences for Adam integration (separate follow-up)
+
+Adam 0.4.0 releases implemented memory infrastructure. Building this standalone producer and its concrete Adam native reader is not a dependency of that release; the proof below gates only the later claim of native-producer integration.
 
 - Adam depends on producer-owned persistence, never on producer awareness of Adam. The protocol-v1 scanner/spool remain existing ingestion infrastructure, not mandatory producer integration.
 - Adam must implement its native reader/adapter and documented/configured discovery roots before claiming cross-host ingestion for this producer. It must preserve exact native raw records and adapter-derived provenance.
