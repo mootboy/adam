@@ -220,7 +220,16 @@
       (-> (js/Promise.resolve nil)
           (.then (fn [_] ((get @events "turn_end") #js {} ctx)))
           (.then
-           (fn [_]
+           (fn [result]
+             (is (identical? js/undefined result)
+                 "side-effect lifecycle handlers must not expose internal maps as Pi boundary results")
+             (let [drafts #js [#js {:type "custom" :customType "producer.memory" :data #js {}}]
+                   select-entries (js/Function. "result" "entries"
+                                    "return result?.entries === undefined ? entries : result.entries;")
+                   selected (select-entries result drafts)]
+               (is (identical? drafts selected)
+                   "Pi's boundary chaining must preserve preceding producer drafts")
+               (is (= 1 ((js/Function. "drafts" "return [...drafts].length;") selected))))
              (is (= 2 (count @initializations)))
              (is (= [["urn:adam:user:user-1" 2]] @identity-migrations))
              (is (= 2 @identity-version))
@@ -268,6 +277,71 @@
              (rmSync directory #js {:recursive true :force true})
              (is false (.-stack error))
              (done)))))))
+
+(deftest lifecycle-callbacks-await-work-and-return-no-host-result
+  (async done
+    (let [directory (mkdtempSync (join (tmpdir) "adam-register-return-"))
+          path (join directory "session.jsonl")
+          replica (->LifecycleReplica (atom nil) (atom []) (atom []) (atom []) (atom 0)
+                                      (atom 2) (atom []) (atom 0) (atom []) (atom 3) (atom [])
+                                      (atom 1) (atom []))
+          release (atom nil)
+          started (atom nil)
+          replica-ready (js/Promise. (fn [resolve _] (reset! release resolve)))
+          creation-started (js/Promise. (fn [resolve _] (reset! started resolve)))
+          settled? (atom false)
+          fail? (atom false)
+          {:keys [pi events]} (fake-pi)
+          runtime (register/register!
+                    pi {:config {:enabled? true}
+                        :worker-inbox-options {:config-home directory}
+                        :memory-inbox-options {:state-home directory :data-home directory}
+                        :create-replica (fn [] (@started nil) replica-ready)
+                        :load-user (fn [] {:user-uuid "user-1"})
+                        :resolve-repository (fn [_ _] (js/Promise.resolve nil))
+                        :resolve-git-identity (fn [_]
+                                                (if @fail?
+                                                  (throw (js/Error. "identity unavailable"))
+                                                  (js/Promise.resolve nil)))})
+          ctx #js {:sessionManager #js {:getSessionFile (fn [] path)
+                                        :getLeafId (fn [] "entry-1")}
+                   :ui #js {:notify (fn [_ _] nil)}}]
+      (writeFileSync path
+        (str "{\"type\":\"session\",\"id\":\"session-1\",\"cwd\":\"/repo\"}\n"
+             "{\"type\":\"message\",\"id\":\"entry-1\",\"parentId\":null}\n"))
+      (let [handler (get @events "turn_end")
+            work (-> (.call handler nil #js {} ctx)
+                     (.then (fn [result] (reset! settled? true) result)))]
+        (-> (js/Promise.race
+              #js [creation-started
+                   (.then work (fn [_]
+                                 (throw (js/Error. (str "callback settled before replica creation: "
+                                                       (:last-error ((:status runtime))))))))])
+            (.then (fn [_]
+                     (is (false? @settled?) "callback must await serialized replica work")
+                     (@release replica)
+                     work))
+            (.then (fn [result]
+                     (is (identical? js/undefined result))
+                     (is (true? (:connected? ((:status runtime)))))
+                     (reduce
+                       (fn [pending event]
+                         (-> pending
+                             (.then (fn [_] ((get @events event) #js {} ctx)))
+                             (.then (fn [result]
+                                      (is (identical? js/undefined result) event)))))
+                       (js/Promise.resolve nil)
+                       ["session_start" "turn_end" "session_compact" "session_tree"
+                        "session_info_changed" "model_select" "thinking_level_select"])))
+            (.then (fn [_]
+                     (reset! fail? true)
+                     ((get @events "turn_end") #js {} ctx)))
+            (.then (fn [result]
+                     (is (identical? js/undefined result) "isolated source failure is not a boundary result")
+                     (is (= "identity unavailable" (:last-error ((:status runtime)))))
+                     ((:shutdown! runtime))))
+            (.catch (fn [error] (is false (.-stack error))))
+            (.finally (fn [] (rmSync directory #js {:recursive true :force true}) (done))))))))
 
 (deftest lifecycle-indexes-file-evidence-after-the-lossless-mirror
   (async done

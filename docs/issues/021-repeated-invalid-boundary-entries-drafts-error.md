@@ -2,7 +2,7 @@
 
 # Repeated Pi extension error: Invalid boundary entries: drafts is not iterable
 
-- Status: ready
+- Status: done
 - Category: bug
 - Triage: ready-for-agent
 - Created: 2026-10-09
@@ -42,11 +42,11 @@ Identify and correct the failing boundary interaction so normal Pi operation doe
 ## Acceptance criteria
 
 - [x] Exact reported failure is reproduced with its stack and triggering event identified.
-- [ ] A regression test exercises the real failing boundary, fails before the fix and passes afterward.
-- [ ] Valid normal activity no longer emits the repeated extension error.
-- [ ] Replication/projection health and continued callbacks are checked; unrelated failures remain isolated and diagnosable.
-- [ ] Normal `npm test`, compiled-boundary and generated-runtime checks pass; changed compiled runtime is committed if needed.
-- [ ] Live tests, if required, use only a disposable Neo4j endpoint and isolated test identities/cleanup.
+- [x] A regression test exercises the real failing boundary, fails before the fix and passes afterward.
+- [x] Valid normal activity no longer emits the repeated extension error in isolated reproduction; installed-runtime cutover awaits release.
+- [x] Replication/projection health and continued callbacks are checked; unrelated failures remain isolated and diagnosable.
+- [x] Normal `npm test`, compiled-boundary and generated-runtime checks pass; changed compiled runtime is included in the fix.
+- [x] Live tests use only a disposable Neo4j endpoint and isolated test identities/cleanup.
 
 ## Validation
 
@@ -65,16 +65,26 @@ Controlled A/B checks, repeated three times:
 - Wrapper that still awaits the same handler but returns `undefined`: boundary valid with no error; synthetic replica writes/completions still occur.
 - A preceding synthetic producer supplies one custom draft: original Adam callback leaves zero returned drafts after rejection; void-return wrapper preserves the one draft.
 
-Installed versions confirmed read-only: Pi **1.1.0**, Adam **0.4.0**, pi-observational-memory **3.1.4**. The minimal harness is temporary diagnostic material, not yet a committed regression. No production fix has been applied.
+Installed versions confirmed read-only: Pi **1.1.0**, Adam **0.4.0**, pi-observational-memory **3.1.4**. The minimal harness is temporary diagnostic material. Permanent regressions now cover the real registered callbacks with successful persisted mirroring/draining, preceding producer drafts, a gated replica proving completion is awaited, all seven synchronization events and isolated replication failure. A packaged ESM subprocess test additionally checks awaitable void-result callbacks with an ephemeral session and an unreachable backend, using isolated state roots. No change has been applied to the installed production package.
 
 The preceding read-only audit confirmed installed package v0.4.0 at release commit `4289ecc864f31a04ee22224ee9a0644b109a1ae9`, successful producer-scoped memory migration and working explicit retrieval. The queues were empty and no worker lease was held at that snapshot. Those observations do not exclude intermittent lifecycle failures.
 
-A literal search for `Invalid boundary entries` and `drafts` in Adam's `src` and `test` directories found no matches. This is only a search result, not evidence that another package is responsible.
+An initial literal search for `Invalid boundary entries` and `drafts` in Adam's `src` and `test` directories found no matches. This was only a search result, not evidence that another package was responsible.
+
+Implementation validation:
+
+- Before the fix, the added lifecycle regression produced two assertion failures and `TypeError: drafts is not iterable`.
+- The callback wrapper now awaits the original serialized synchronization promise and explicitly returns `undefined`; internal synchronization/status results are unchanged.
+- The actual Pi runner/context harness passes three repeated runs with the fixed compiled callback, retains the preceding producer draft and completes replica writes.
+- Clean normal CI passes 165 ClojureScript tests / 703 assertions and 26 Node passes / four opt-in skips, including packaged ESM callbacks, exact tarball and runtime drift.
+- Fresh disposable Neo4j 5.26 on `127.0.0.1:7688` passes eight live tests / 127 assertions plus packaged worker/Pi and scoped-teardown validation. Production was not used for tests.
+
+The fix is prepared as patch release 0.4.1 in PR #28. Publication/install are not claimed complete; user-managed merge activates the usual independently validating release pipeline.
 
 ## Notes
 
-Proposed minimal fix: registered side-effect-only lifecycle callbacks should await serialized `synchronize!` completion and resolve to `undefined` (or another host-accepted no-result value), not forward the internal map. Preserve internal result/status APIs, serialization, shutdown safety and failure isolation. Do not return `entries: []`: that would erase drafts supplied by preceding extensions.
+Implemented minimal fix: registered side-effect-only lifecycle callbacks await serialized `synchronize!` completion and resolve to `undefined`, rather than forwarding the internal map. Preserve internal result/status APIs, serialization, shutdown safety and failure isolation. Do not return `entries: []`: that would erase drafts supplied by preceding extensions.
 
-Before changing production code, commit a failing regression at the actual lifecycle-return seam. Cover successful persisted synchronization/draining, preservation of preceding producer drafts, awaiting completion, and non-success paths without accidental boundary payloads. Retain compiled JavaScript boundary validation: ordinary mocks that only await and ignore handler results concealed this API mismatch.
+A failing regression was added and executed before changing production code. It covers successful persisted synchronization/draining and preservation of preceding producer drafts; additional tests cover awaited completion and non-success paths without accidental boundary payloads. Retain compiled JavaScript boundary validation: ordinary mocks that only await and ignore handler results concealed this API mismatch.
 
 The reproduction rules out another extension or real transcript data as necessary causes. It does not establish when the return-value leak was first introduced or why it became visible specifically after this upgrade. No need to change Pi core or the producer to correct Adam's event return contract. Do not commit private transcript records merely to characterize the boundary.

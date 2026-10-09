@@ -597,7 +597,10 @@
                  "on"
                  event
                  (fn [_event ctx]
-                   (synchronize! ctx (keyword (string/replace event "_" "-"))))))
+                   ;; Pi interprets turn_end results as boundary drafts. Internal
+                   ;; ClojureScript maps have an entries() method, not draft data.
+                   (-> (synchronize! ctx (keyword (string/replace event "_" "-")))
+                       (.then (fn [_] js/undefined))))))
        (invoke pi "on" "session_shutdown" (fn [_event _ctx] (shutdown!))))
      {:status (fn [] @runtime-state)
       :synchronize! synchronize!

@@ -4,6 +4,12 @@ All notable changes to adam are documented here.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-09
+
+### Fixed
+
+- Pi lifecycle callbacks await serialized synchronization without exposing internal ClojureScript maps as event results, preventing `Invalid boundary entries: drafts is not iterable` at `turn_end` and preserving drafts from preceding extensions.
+
 ## [0.4.0] - 2026-10-09
 
 ### Scope
