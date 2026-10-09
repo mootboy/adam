@@ -37,7 +37,7 @@ Publish a precisely scoped 0.4.0 infrastructure artifact through the protected-m
 - [x] Release scope distinguishes implemented infrastructure from experimental optional protocol input and deferred native-producer integration.
 - [x] Package, lockfile, manifest and changelog agree on 0.4.0.
 - [x] Clean normal CI, reproducible runtimes, exact tarball/package checks and fresh disposable Neo4j validation pass.
-- [ ] Hosted Node 22.19/24 and Neo4j checks are green.
+- [x] Hosted Node 22.19/24 and Neo4j checks are green.
 - [ ] User confirms Pi recovery: source ownership and orphaned observation provenance/file links restored, not merely session totals.
 - [ ] Candidate host restart, explicit retrieval and worker completion/lease release are verified; outstanding/deleted Claude sources are accounted for and unchanged replay is healthy.
 - [ ] User approves and merges the release PR preserving history after these gates.
@@ -53,7 +53,7 @@ Local release preparation passes:
 - Fresh disposable Neo4j 5.26 on `127.0.0.1:7688`, with explicit disposable acknowledgement: eight live ClojureScript tests / 127 assertions plus packaged worker/Pi and scoped-teardown Node live cases pass.
 - `claude plugin validate .`, package dry-run and diff checks pass.
 
-Hosted validation is pending. The release PR must remain draft until user-confirmed operational acceptance; this is the blocking dependency. No production recovery commands, model calls, tags or publication performed.
+[Draft PR #27](https://github.com/mootboy/adam/pull/27), preparation commit `38241c6`: hosted Node 22.19/24 and Neo4j checks passed in [run 37927094705](https://github.com/mootboy/adam/actions/runs/37927094705); tag/publish jobs skipped. The release PR must remain draft until user-confirmed operational acceptance; this is the blocking dependency. No production recovery commands, model calls, tags or publication performed.
 
 User-reported recovery state before preparation: authorized stream-checkpoint reset/backlog draining restored 19/23 Claude sessions and 4,549/4,579 Claude entries; 92 Pi sessions and 701 orphaned observations still await `/adam:import --all`. These are reported facts, not independently verified acceptance. The remaining Claude sources/entries must be accounted for, not automatically assumed lost or recovered.
 
