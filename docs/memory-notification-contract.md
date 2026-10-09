@@ -1,6 +1,6 @@
 # Producer memory notifications v1
 
-Status: implemented on the unreleased Adam 0.4 development line (delivery step 6). The public spool, shared serialized worker, Pi/Claude composition, explicit repair paths, and deterministic/live acceptance are implemented. The separate reference producer and 0.4 release remain later increments.
+Status: implemented optional experimental input in the Adam 0.4.0 infrastructure release. The spool, shared serialized worker, Pi/Claude composition, explicit repair paths, and deterministic/live acceptance are implemented. The standalone producer and Adam's concrete native reader are separate follow-up work, not release dependencies. This protocol is not the required producer integration interface.
 
 **Producer-independence correction (2026-10-02):** this is documentation of existing spool mechanics, not a requirement that memory producers know Adam exists. The reference producer must not write this spool, discover Adam's installation, or start Adam's worker. Adam-owned discovery/adapters may use queued locators internally; native log ingestion must work without producer notifications. The reader/discovery implementation remains planned in [`plan-0.4.0.md`](plan-0.4.0.md). This revision makes no runtime, envelope, or recovery-semantic change.
 

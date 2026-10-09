@@ -82,7 +82,7 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 
 ## Memory protocol v1
 
-These protocol cases run deterministically in the normal suite. Lossless scanning and checkpoint planning are implemented without Neo4j; raw graph round-trip and resume behavior are covered by opt-in live validation. Aggregate memory projection and durable notification reconciliation are implemented on the unreleased 0.4 development line.
+These protocol cases run deterministically in the normal suite. Lossless scanning and checkpoint planning are implemented without Neo4j; raw graph round-trip and resume behavior are covered by opt-in live validation. Aggregate memory projection and durable notification reconciliation are included in the 0.4.0 infrastructure release. Protocol-v1 sidecars/spool are optional experimental input, not a mandatory producer integration.
 
 | Case | Expected result |
 | --- | --- |
@@ -201,9 +201,9 @@ These cases define the implemented 0.3 scanner, graph-storage, file-evidence, an
 | Supported producer entry is malformed | Projection reports an isolated diagnostic; replica remains valid |
 | Unknown producer schema version is present | Adapter does not guess or corrupt the projection |
 
-## Standalone producer and Adam-owned native ingestion (planned, not implemented)
+## Standalone producer and Adam-owned native ingestion (deferred beyond 0.4.0)
 
-The revised [0.4 plan](plan-0.4.0.md) supersedes producer-written Adam notifications as a requirement. Existing spool coverage below remains implementation evidence, not standalone/native-reader acceptance.
+The revised [0.4 plan](plan-0.4.0.md) scopes 0.4.0 to implemented infrastructure. The following acceptance belongs to separate producer/concrete-reader work; it does not gate this release. Producer-written Adam notifications are not required. Existing spool coverage below remains protocol-input evidence, not standalone/native-reader acceptance.
 
 | Given / when | Required behavior |
 | --- | --- |
@@ -216,7 +216,7 @@ The revised [0.4 plan](plan-0.4.0.md) supersedes producer-written Adam notificat
 | Discovery root or native schema is unsupported/unsafe | Adam fails in isolation with bounded diagnostics; producer need not change format or export data |
 | Lower-latency background ingestion is enabled later | Adam alone owns polling/watch scheduling, resource bounds and shutdown; producer never starts Adam |
 
-## Durable producer-memory reconciliation (existing protocol-v1 spool)
+## Durable producer-memory reconciliation (optional experimental protocol-v1 spool)
 
 | Given / when | Required behavior |
 | --- | --- |

@@ -4,6 +4,13 @@ All notable changes to adam are documented here.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-09
+
+### Scope
+
+- Memory infrastructure release: producer-scoped identities, aggregate projection, retained memory streams and reconciliation. Protocol-v1 sidecars/spool are optional experimental input, not an integration obligation for producers.
+- Standalone Claude memory generation and Adam's concrete native-format discovery/reader are separate, unimplemented follow-up work. Producers must generate, persist and recall independently; this release makes no automatic native-ingestion claim.
+
 ### Added
 
 - A normative producer-neutral memory protocol v1 contract with content-free source coverage, deterministic replay/conflict rules, stream-qualified provenance, and executable JSONL conformance fixtures for the staged Adam 0.4 implementation.

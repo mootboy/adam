@@ -1,6 +1,6 @@
 # Adam memory protocol v1
 
-Status: normative contract for the implemented protocol-v1 input format on the unreleased Adam 0.4 line.
+Status: normative contract for the optional experimental protocol-v1 input included in the Adam 0.4.0 infrastructure release. Experimental status does not weaken these implemented validation/replication rules; producers are not required to use this format.
 
 **Architectural scope correction (2026-10-02):** these frozen rules describe one supported input format; they are not a mandatory native persistence contract for standalone producers. Adam must not rely on producers knowing it exists. The reference Claude producer owns its native format and location; Adam owns a separate read-only discovery/adapter path, still to be implemented. Producers never have to export this format, populate Adam's inbox, or start its worker. See [`plan-0.4.0.md`](plan-0.4.0.md). Existing fixture/validator/storage behavior remains unchanged.
 
