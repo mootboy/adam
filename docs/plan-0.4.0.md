@@ -1,6 +1,6 @@
 # Adam 0.4.0: memory infrastructure release
 
-Status: release preparation; operational acceptance pending
+Status: release approved by the sole user after reported backup; runtime smoke deferred to post-release
 
 ## Release boundary
 
@@ -45,8 +45,8 @@ Tracked by [`020`](issues/020-release-0.4.0-memory-infrastructure.md).
 
 1. Package, lockfile, Claude manifest and changelog agree on 0.4.0. All four committed JavaScript runtimes are reproducible and the exact tarball passes consumer validation.
 2. Clean deterministic and disposable Neo4j suites pass; hosted Node 22.19/24 and Neo4j checks are green.
-3. Before merging the version bump, confirm post-incident ownership/provenance recovery and candidate restart/worker-completion acceptance. Import completion or session counts alone are insufficient. Production operations require separate authorization; a drained backlog alone does not establish why the earlier worker stalled.
-4. The user merges the release PR preserving history. Protected-main CI tags/publishes the exact tested merge; never create a tag early. Keep the PR draft while operational gates are pending.
+3. Post-incident ownership/provenance recovery has read-only DB evidence. On 2026-10-09 the sole user reported completing a backup and approved release without candidate restart/worker-completion or production migration smoke, accepting remaining runtime risk. Those checks move to post-release; they are not claimed passed. Production operations still require separate authorization; a drained backlog alone does not establish why the earlier worker stalled.
+4. Mark the release PR ready for the user to merge preserving history. Protected-main CI tags/publishes the exact tested merge; never create a tag early.
 5. After publication, install the same tagged artifact in Pi and Claude and confirm status, explicit retrieval and idempotent reconciliation. Publication/cutover is not recorded as completed before it happens.
 
 No public npm publication, runtime cleanup, generic adapter framework or new scheduler is part of this release.
