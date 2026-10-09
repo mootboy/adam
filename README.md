@@ -61,7 +61,7 @@ npm run watch
 Install a stable GitHub release tag:
 
 ```bash
-pi install git:github.com/mootboy/adam@v0.4.0
+pi install git:github.com/mootboy/adam@v0.4.1
 ```
 
 The repository is public and releases are distributed through GitHub. For local development, build and load the checkout directly:

@@ -26,7 +26,7 @@ This directory is adam's repository-local issue tracker. Use one Markdown file p
 
 - [`020`](020-release-0.4.0-memory-infrastructure.md) — Release 0.4.0 memory infrastructure (`in-progress`, release; user approved deferred operational smoke)
 
-- [`021`](021-repeated-invalid-boundary-entries-drafts-error.md) — Repeated Pi extension boundary error: `drafts is not iterable` (`ready`, bug; reproduced lifecycle return-value leak)
+- [`021`](021-repeated-invalid-boundary-entries-drafts-error.md) — Repeated Pi extension boundary error: `drafts is not iterable` (`done`, bug; lifecycle callbacks no longer leak boundary results)
 
 ## Naming
 
