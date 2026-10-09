@@ -22,6 +22,7 @@ This directory is adam's repository-local issue tracker. Use one Markdown file p
 - [`016`](016-recover-expired-memory-notifications.md) — Recover expired memory notifications after late source mirroring (`done`, bug)
 - [`017`](017-distinguish-parked-rejections-from-retry-failures.md) — Distinguish parked archive rejections from retryable repair failures (`proposed`, enhancement)
 - [`018`](018-show-parked-count-in-ordinary-status.md) — Show parked archive count in ordinary status (`proposed`, enhancement)
+- [`019`](019-isolate-live-test-identities-and-cleanup.md) — Isolate live-test identities and restrict cleanup to test-created sessions (`done`, critical bug)
 
 ## Naming
 

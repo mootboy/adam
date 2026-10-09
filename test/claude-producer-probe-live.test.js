@@ -4,6 +4,7 @@ import { chmod, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { isolatedAdamEnvironment } from "./support/adam-environment.js";
 
 const enabled = process.env.ADAM_TEST_CLAUDE === "1";
 const supported = process.platform === "linux";
@@ -12,7 +13,7 @@ const pluginRoot = path.resolve("test/fixtures/claude-producer-probe-plugin");
 function runClaude(outputDirectory) {
   return new Promise((resolve, reject) => {
     const environment = {
-      ...process.env,
+      ...isolatedAdamEnvironment(path.join(outputDirectory, "adam-state")),
       ADAM_PRODUCER_PROBE_DIR: outputDirectory,
     };
     delete environment.CLAUDECODE;

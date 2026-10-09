@@ -25,7 +25,33 @@
             ["node:path" :as node-path :refer [join]]))
 
 (defn- environment [key]
+  (when (and (= key "ADAM_TEST_NEO4J_URI")
+             (not= "1" (aget js/process.env "ADAM_TEST_NEO4J_DISPOSABLE")))
+    (throw (js/Error. "Live tests require ADAM_TEST_NEO4J_DISPOSABLE=1; never use production")))
   (aget js/process.env key))
+
+(defn- cleanup-fixtures!
+  [^js query-session user-uuids session-ids & [extra-ids]]
+  (let [parameters #js {:userIds (clj->js (mapv identity/user-urn user-uuids))
+                       :sessionIds (clj->js session-ids)
+                       :extraIds (clj->js (or extra-ids []))}]
+    (-> (.run query-session
+              "MATCH (u:AdamUser)-[:OWNS]->(s:AdamSession)
+               WHERE u.id IN $userIds AND s.id IN $sessionIds
+               OPTIONAL MATCH (s)-[:HAS_ENTRY|HAS_STREAM|HAS_MEMORY|HAS_MEMORY_STREAM]->(child)
+               OPTIONAL MATCH (s)-[:HAS_MEMORY_STREAM]->(:AdamMemoryStream)-[:HAS_RECORD]->(record)
+               WITH collect(DISTINCT s) + collect(DISTINCT child) + collect(DISTINCT record) AS nodes
+               UNWIND nodes AS n
+               WITH DISTINCT n WHERE n IS NOT NULL DETACH DELETE n"
+              parameters)
+        (.then (fn [_]
+                 (.run query-session
+                       "MATCH (n) WHERE n.id IN $extraIds DETACH DELETE n"
+                       parameters)))
+        (.then (fn [_]
+                 (.run query-session
+                       "MATCH (u:AdamUser) WHERE u.id IN $userIds AND NOT (u)--() DELETE u"
+                       parameters))))))
 
 (deftest live-session-round-trip-and-child-first-lineage
   (async done
@@ -62,7 +88,7 @@
               child-drop "{\"type\":\"custom\",\"id\":\"drop-live\",\"parentId\":\"reflection-live\",\"customType\":\"om.observations.dropped\",\"data\":{\"observationIds\":[\"aaaaaaaaaaaa\"],\"coversUpToId\":\"reflection-live\"}}"
               repository (evidence/build-repository
                           {:user-uuid user-uuid :root "/repo"
-                           :remote "git@github.com:AloiAI/adam.git"
+                           :remote (str "git@example.com:" user-uuid "/round-trip.git")
                            :commit "live-commit" :branch "live" :dirty? true})
               tools (atom {})
               _ (knowledge-surfaces/register-tool!
@@ -100,10 +126,8 @@
                              #js {:repositoryId (:id repository)})))
                     (.then
                      (fn [_]
-                       (.run query-session
-                             "MATCH (n) WHERE n.id CONTAINS $userUuid DETACH DELETE n"
-                             #js {:userUuid user-uuid})))
-                    (.catch (fn [_] nil))
+                       (cleanup-fixtures! query-session [user-uuid] (mapv #(identity/session-urn user-uuid %) ["parent-live" "child-live" "parent-first-live" "child-after-parent-live"]))))
+                    (.catch (fn [cleanup-error] (is false (str "fixture cleanup failed: " (.-message cleanup-error)))))
                     (.finally
                      (fn []
                        (rmSync directory #js {:recursive true :force true})
@@ -210,7 +234,7 @@
                    (is (= 1 (.toNumber (.get record "sources")))))
                  (.call (aget file-context-tool "execute") file-context-tool
                         "call-live"
-                        #js {:origin "https://github.com/AloiAI/adam.git"
+                        #js {:origin (str "https://example.com/" user-uuid "/round-trip.git")
                              :path "src/live.cljs"}
                         nil nil #js {:cwd "/unrelated/repository"})))
               (.then
@@ -307,10 +331,8 @@
               ^js query-session (.session driver #js {:database database})
               finish!
               (fn [error]
-                (-> (.run query-session
-                          "MATCH (n) WHERE n.id CONTAINS $userUuid DETACH DELETE n"
-                          #js {:userUuid user-uuid})
-                    (.catch (fn [_] nil))
+                (-> (cleanup-fixtures! query-session [user-uuid] [old-parent-id old-child-id new-parent-id new-child-id] [repository-id file-id])
+                    (.catch (fn [cleanup-error] (is false (str "fixture cleanup failed: " (.-message cleanup-error)))))
                     (.finally
                      (fn []
                        (-> (.close query-session)
@@ -525,11 +547,11 @@
               second-path (join directory "second.jsonl")
               first-repository (evidence/build-repository
                                 {:user-uuid first-user :root "/first-checkout"
-                                 :remote "git@github.com:AloiAI/adam.git"
+                                 :remote (str "git@example.com:" first-user "/canonical.git")
                                  :commit "first-commit" :branch "first" :dirty? false})
               second-repository (evidence/build-repository
                                  {:user-uuid second-user :root "/second-checkout"
-                                  :remote "https://github.com/AloiAI/adam.git"
+                                  :remote (str "https://example.com/" first-user "/canonical.git")
                                   :commit "second-commit" :branch "second" :dirty? false})
               write-session!
               (fn [path session-id memory-id content cwd]
@@ -560,10 +582,8 @@
                                    "MATCH (repository:AdamRepository {id: $repositoryId}) DETACH DELETE repository"
                                    #js {:repositoryId (:id first-repository)})))
                     (.then (fn [_]
-                             (.run query-session
-                                   "MATCH (n) WHERE n.id CONTAINS $firstUser OR n.id CONTAINS $secondUser DETACH DELETE n"
-                                   #js {:firstUser first-user :secondUser second-user})))
-                    (.catch (fn [_] nil))
+                             (cleanup-fixtures! query-session [first-user second-user] [(identity/session-urn first-user "first-session") (identity/session-urn second-user "second-session")])))
+                    (.catch (fn [cleanup-error] (is false (str "fixture cleanup failed: " (.-message cleanup-error)))))
                     (.finally
                      (fn []
                        (rmSync directory #js {:recursive true :force true})
@@ -671,10 +691,8 @@
                                    "MATCH (repository:AdamRepository {id: $repositoryId}) DETACH DELETE repository"
                                    #js {:repositoryId (:id repository)})))
                     (.then (fn [_]
-                             (.run query-session
-                                   "MATCH (n) WHERE n.id CONTAINS $userUuid DETACH DELETE n"
-                                   #js {:userUuid user-uuid})))
-                    (.catch (fn [_] nil))
+                             (cleanup-fixtures! query-session [user-uuid] [session-id])))
+                    (.catch (fn [cleanup-error] (is false (str "fixture cleanup failed: " (.-message cleanup-error)))))
                     (.finally
                      (fn []
                        (-> (.close query-session)
@@ -807,10 +825,8 @@
                                    "MATCH (repository:AdamRepository {id: $repositoryId}) DETACH DELETE repository"
                                    #js {:repositoryId (:id repository)})))
                     (.then (fn [_]
-                             (.run query-session
-                                   "MATCH (n) WHERE n.id CONTAINS $userUuid DETACH DELETE n"
-                                   #js {:userUuid user-uuid})))
-                    (.catch (fn [_] nil))
+                             (cleanup-fixtures! query-session [user-uuid] [session-id])))
+                    (.catch (fn [cleanup-error] (is false (str "fixture cleanup failed: " (.-message cleanup-error)))))
                     (.finally
                      (fn []
                        (rmSync root #js {:recursive true :force true})
@@ -909,10 +925,8 @@
                                    "MATCH (repository:AdamRepository {id: $repositoryId}) DETACH DELETE repository"
                                    #js {:repositoryId (:id repository)})))
                     (.then (fn [_]
-                             (.run query-session
-                                   "MATCH (n) WHERE n.id CONTAINS $userUuid DETACH DELETE n"
-                                   #js {:userUuid user-uuid})))
-                    (.catch (fn [_] nil))
+                             (cleanup-fixtures! query-session [user-uuid] [(identity/session-urn user-uuid "dropped-session")])))
+                    (.catch (fn [cleanup-error] (is false (str "fixture cleanup failed: " (.-message cleanup-error)))))
                     (.finally
                      (fn []
                        (rmSync directory #js {:recursive true :force true})
@@ -1049,10 +1063,8 @@
                           #js {:userId user-id})
                     (.then
                      (fn [_]
-                       (.run query-session
-                             "MATCH (n) WHERE n.id CONTAINS $userUuid DETACH DELETE n"
-                             #js {:userUuid user-uuid})))
-                    (.catch (fn [_] nil))
+                       (cleanup-fixtures! query-session [user-uuid] [(identity/session-urn user-uuid "claude-code" "session-123")])))
+                    (.catch (fn [cleanup-error] (is false (str "fixture cleanup failed: " (.-message cleanup-error)))))
                     (.finally
                      (fn []
                        (rmSync directory #js {:recursive true :force true})
@@ -1323,10 +1335,8 @@
                                    "MATCH (repository:AdamRepository {id: $repositoryId}) DETACH DELETE repository"
                                    #js {:repositoryId (:id repository)})))
                     (.then (fn [_]
-                             (.run query-session
-                                   "MATCH (n) WHERE n.id CONTAINS $userUuid DETACH DELETE n"
-                                   #js {:userUuid user-uuid})))
-                    (.catch (fn [_] nil))
+                             (cleanup-fixtures! query-session [user-uuid] [(identity/session-urn user-uuid "claude-code" "claude-session-1")])))
+                    (.catch (fn [cleanup-error] (is false (str "fixture cleanup failed: " (.-message cleanup-error)))))
                     (.finally
                      (fn []
                        (rmSync root #js {:recursive true :force true})
