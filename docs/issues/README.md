@@ -31,6 +31,8 @@ This directory is adam's repository-local issue tracker. Use one Markdown file p
 - [`022`](022-configurable-memory-derivations.md) — Configurable model-generated memory derivations ([0.5.0 plan](../plan-0.5.0.md); `in-progress`, enhancement; target 0.5.0)
 - [`023`](023-derivation-contracts-and-core.md) — Freeze derivation contracts and implement the deterministic core (`done`, enhancement; 0.5.0 stage 1)
 
+- [`024`](024-derivation-graph-storage-and-authorization.md) — Persist derivations with authorization and fenced refreshes (`in-progress`, enhancement; 0.5.0 stage 2)
+
 ## Naming
 
 Use `<number>-<short-kebab-case-title>.md`, for example:
