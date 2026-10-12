@@ -1,15 +1,25 @@
 (ns adam.derivation.core-test
   (:require [adam.derivation.config :as config]
             [adam.derivation.core :as core]
-            [adam.derivation.evidence-test :as fixtures]
-            [cljs.test :refer [async deftest is]]))
+            [cljs.test :refer [async deftest is testing]]
+            [clojure.test.check :as tc]
+            [clojure.test.check.generators :as gen]
+            [clojure.test.check.properties :as prop :include-macros true]))
+
+(def own "urn:adam:user:owner")
+(def other "urn:adam:user:other")
+(def session "urn:adam:session:owner:pi:session-a")
+(defn observation [id owner entry]
+  {:id id :owner-id owner :session-id session :kind :observation
+   :producer "test-producer" :content "A source-grounded preference"
+   :source-occasions [{:session-id session :stream-id "main" :entry-id entry}]})
 
 (def recipe (get (config/parse-config "derivations:\n  preferences:\n    version: 1\n    guidance: Preserve scope.\n") "preferences"))
 (def model {:provider "fake" :id "model-1" :context-window 20000 :max-output-tokens 8192})
-(def input {:reader-id fixtures/own :grants [] :name "preferences" :filter {:type :none}
-            :recipe recipe :model model :memories [(fixtures/observation "a" fixtures/own "user-1")]})
+(def input {:reader-id own :grants [] :name "preferences" :filter {:type :none}
+            :recipe recipe :model model :memories [(observation "a" own "user-1")]})
 (def conclusion {:id "c1" :content "Prefer simple boundaries" :category "architecture"
-                 :basis :explicit :scope-type :personal :scope-subject-ids [fixtures/own]
+                 :basis :explicit :scope-type :personal :scope-subject-ids [own]
                  :supporting-memory-ids ["a"] :conflicting-memory-ids []})
 
 (deftest response-json-is-closed-and-finish-status-is-not-model-controlled
@@ -95,12 +105,12 @@
 
 (deftest comparison-is-minimized-and-only-inherited-as-access-dependency
   (async done
-    (let [private-source (assoc (fixtures/observation "b" fixtures/other "user-2") :dropped? true)
-          prior (assoc conclusion :id "old" :scope-subject-ids [fixtures/other]
+    (let [private-source (assoc (observation "b" other "user-2") :dropped? true)
+          prior (assoc conclusion :id "old" :scope-subject-ids [other]
                        :supporting-memory-ids ["b"])
           comparison {:id "old-run" :input-memory-ids ["b"] :conclusions [prior] :private "must-not-send"}
           request (assoc input :memories [(first (:memories input)) private-source]
-                         :grants [{:owner-id fixtures/other :reader-id fixtures/own :permission "read"}]
+                         :grants [{:owner-id other :reader-id own :permission "read"}]
                          :comparison comparison)]
       (-> (core/refresh! {:measure-input (constantly 200)
                           :execute! (fn [model-request]
@@ -129,7 +139,7 @@
 
 (deftest empty-results-are-cached-and-input-order-does-not-change-fingerprint
   (async done
-    (let [calls (atom 0) a (first (:memories input)) b (fixtures/observation "b" fixtures/own "user-2")
+    (let [calls (atom 0) a (first (:memories input)) b (observation "b" own "user-2")
           deps {:measure-input (constantly 200)
                 :execute! (fn [_] (swap! calls inc) {:finish-reason :stop :conclusions [] :links []})}
           request (assoc input :memories [a b])]
@@ -142,7 +152,7 @@
 
 (deftest independent-occasions-in-one-session-strengthen-inferred-conclusions
   (async done
-    (let [request (update input :memories conj (fixtures/observation "b" fixtures/own "user-2"))
+    (let [request (update input :memories conj (observation "b" own "user-2"))
           item (assoc conclusion :basis :inferred :supporting-memory-ids ["a" "b"])]
       (-> (core/refresh! {:measure-input (constantly 200)
                           :execute! (fn [_] {:finish-reason :stop :conclusions [item] :links []})} request)
@@ -199,7 +209,7 @@
       (-> (core/refresh! {:measure-input (constantly 200)
                           :execute! (fn [_]
                                       (swap! calls inc)
-                                      (swap! current update :memories conj (fixtures/observation "b" fixtures/own "later"))
+                                      (swap! current update :memories conj (observation "b" own "later"))
                                       {:finish-reason :stop :conclusions [conclusion] :links []})} input)
           (.then (fn [{:keys [run]}]
                    (is (= :outdated (core/freshness @current run)))
@@ -207,16 +217,25 @@
           (.catch (fn [error] (is false (.-stack error)) (done)))))))
 
 (deftest source-content-is-limited-by-the-complete-request-not-a-sidecar-item-cap
-  (let [request (-> input
-                    (assoc-in [:model :context-window] 120000)
-                    (assoc-in [:memories 0 :content] (.repeat "x" 70000)))]
-    (is (= :prepared (:status (core/prepare-refresh request (constantly 12000)))))))
+  (async done
+    (let [request (-> input
+                      (assoc-in [:model :context-window] 120000)
+                      (assoc-in [:memories 0 :content] (.repeat "x" 70000)))]
+      (-> (core/refresh! {:measure-input (constantly 12000)
+                          :execute! (fn [_] {:finish-reason :stop :conclusions [conclusion] :links []})} request)
+          (.then (fn [result] (is (= :generated (:status result))) (done)))
+          (.catch (fn [error] (is false (.-stack error)) (done)))))))
 
 (deftest result-identities-separate-requesters-and-filter-buckets
-  (is (not= (core/derivation-id fixtures/own "preferences" {:type :none})
-            (core/derivation-id fixtures/own "preferences" {:type :language :value "python"})))
-  (is (not= (core/derivation-id fixtures/own "preferences" {:type :none})
-            (core/derivation-id fixtures/other "preferences" {:type :none}))))
+  (async done
+    (let [deps {:measure-input (constantly 200)
+                :execute! (fn [_] {:finish-reason :stop :conclusions [] :links []})}
+          requests [input (assoc input :reader-id other) (assoc input :filter {:type :language :value "python"})]]
+      (-> (js/Promise.all (to-array (map #(core/refresh! deps %) requests)))
+          (.then (fn [results]
+                   (let [ids (map #(get-in % [:run :derivation-id]) (array-seq results))]
+                     (is (= 3 (count (set ids))))) (done)))
+          (.catch (fn [error] (is false (.-stack error)) (done)))))))
 
 (deftest output-links-can-contradict-within-a-run-and-supersede-compatible-history
   (async done
@@ -232,4 +251,169 @@
                    (is (= (:id (first (:conclusions run))) (get-in run [:links 0 :from])))
                    (is (= (:id (second (:conclusions run))) (get-in run [:links 0 :to])))
                    (done)))
+          (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
+;; Test the refresh boundary, not the internal selection/role reducers.
+(defn attempt! [request response]
+  (let [calls (atom [])]
+    (-> (core/refresh! {:measure-input (constantly 200)
+                       :new-run-id (constantly "test-run")
+                       :now (constantly "2026-10-12T00:00:00Z")
+                       :execute! (fn [model-request] (swap! calls conj model-request) response)}
+                      request)
+        (.then (fn [result] {:result result :calls @calls})
+               (fn [error] {:code (config/error-code error) :calls @calls})))))
+
+(deftest evidence-contracts-through-the-refresh-interface
+  (async done
+    (let [a (observation "a" own "one")
+          b (observation "b" own "two")
+          r {:id "r" :owner-id own :session-id session :kind :reflection
+             :producer "test-producer" :content "A synthesized preference" :supporting-memory-ids ["a" "b"]}
+          inferred (assoc conclusion :basis :inferred :supporting-memory-ids ["a" "b"])
+          cases [{:label "genuine repetition in one session" :memories [a b] :claim inferred :generated? true}
+                 {:label "duplicate summaries are not repetition" :memories [a (observation "b" own "one")] :claim inferred}
+                 {:label "reflection repeats its supports, not another occasion" :memories [a (observation "b" own "one") r]
+                  :claim (assoc inferred :supporting-memory-ids ["a" "r"])}
+                 {:label "dropped support still grounds a reflection" :memories [(assoc a :dropped? true) (assoc b :dropped? true) r]
+                  :claim (assoc inferred :supporting-memory-ids ["r"]) :generated? true :candidates ["r"]}
+                 {:label "original anchors survive fork recording" :memories [(assoc a :session-id (str session "-fork"))
+                                                                             (assoc b :session-id (str session "-fork"))]
+                  :claim inferred :generated? true}
+                 {:label "copied ownership namespace does not manufacture repetition"
+                  :memories [a (assoc (observation "b" other "one") :session-id "urn:adam:session:other:pi:session-a"
+                                    :source-occasions [{:session-id "urn:adam:session:other:pi:session-a" :stream-id "main" :entry-id "one"}])]
+                  :grants [{:owner-id other :reader-id own :permission "read"}] :claim inferred}]]
+      (-> (js/Promise.all
+            (to-array (map (fn [{:keys [memories claim grants] :as case}]
+                             (-> (attempt! (assoc input :memories memories :grants grants)
+                                           {:finish-reason :stop :conclusions [claim] :links []})
+                                 (.then #(vector case %)))) cases)))
+          (.then (fn [pairs]
+                   (doseq [[{:keys [label generated? candidates]} {:keys [result code calls]}] (array-seq pairs)]
+                     (testing label
+                       (is (= (if generated? :generated nil) (:status result)))
+                       (is (= (when-not generated? :invalid-output) code))
+                       (is (= 1 (count calls)))
+                       (when candidates
+                         (is (= candidates (js->clj (aget (js/JSON.parse (:payload (first calls))) "candidate-memory-ids")))))))
+                   (done)))
+          (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
+(deftest dependency-and-sharing-contracts-through-refresh
+  (async done
+    (let [a (observation "a" own "one")
+          shared (assoc (observation "b" other "two") :dropped? true)
+          prior {:id "prior" :input-memory-ids ["b"] :conclusions [(assoc conclusion :id "old" :content "PRIVATE")]}
+          cases [{:label "direct read grant" :memories [a (observation "b" other "two")]
+                  :grants [{:owner-id other :reader-id own :permission "read"}] :ids ["a" "b"]}
+                 {:label "reverse grant is not access" :memories [a (observation "b" other "two")]
+                  :grants [{:owner-id own :reader-id other :permission "read"}] :ids ["a"]}
+                 {:label "grants do not transitively propagate" :memories [a (observation "b" other "two") (observation "c" "third" "three")]
+                  :grants [{:owner-id other :reader-id own :permission "read"} {:owner-id "third" :reader-id other :permission "read"}]
+                  :ids ["a" "b"]}
+                 {:label "comparison inherits authorized dependencies" :memories [a shared] :comparison prior
+                  :grants [{:owner-id other :reader-id own :permission "read"}] :ids ["a" "b"] :comparison? true}
+                 {:label "revocation withholds comparison" :memories [a shared] :comparison prior :ids ["a"]
+                  :diagnostics [:comparison-unavailable]}
+                 {:label "empty dependency claim cannot carry private text" :memories [a] :comparison (assoc prior :input-memory-ids [])
+                  :ids ["a"] :diagnostics [:comparison-unavailable]}
+                 {:label "missing reflection support fails before execution" :memories [{:id "r" :owner-id own :session-id session
+                                                                                       :kind :reflection :producer "test"
+                                                                                       :content "Preference" :supporting-memory-ids ["missing"]}]
+                  :code :unresolved-evidence}
+                 {:label "private reflection support fails closed" :memories [(observation "b" other "two")
+                                                                             {:id "r" :owner-id own :session-id session
+                                                                              :kind :reflection :producer "test"
+                                                                              :content "Preference" :supporting-memory-ids ["b"]}]
+                  :code :unauthorized}
+                 {:label "duplicate source identities fail before execution" :memories [a a] :code :invalid-memory}]]
+      (-> (js/Promise.all
+            (to-array (map (fn [case]
+                             (-> (attempt! (merge input (select-keys case [:memories :grants :comparison]))
+                                           {:finish-reason :stop :conclusions [] :links []})
+                                 (.then #(vector case %)))) cases)))
+          (.then (fn [pairs]
+                   (doseq [[{:keys [label ids diagnostics comparison? code] :as case} result] (array-seq pairs)]
+                     (testing label
+                       (is (= code (:code result)))
+                       (if code
+                         (is (empty? (:calls result)))
+                         (let [run (get-in result [:result :run])
+                               payload (js/JSON.parse (:payload (first (:calls result))))]
+                           (is (= ids (:input-memory-ids run)))
+                           (is (= (or diagnostics []) (:diagnostics run)))
+                           (is (= (boolean comparison?) (some? (aget payload "comparison"))))))))
+                   (done)))
+          (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
+(deftest selectors-through-configured-refresh-and-read-interfaces
+  (async done
+    (let [a (assoc (observation "a" own "one") :linked-paths ["src/A.PY"] :repository-origins ["github.com/example/repo"])
+          b (observation "b" own "two")
+          run (fn [selector]
+                (core/refresh-configured!
+                  {:load-input! (fn [_] (assoc input :memories [a b]))
+                   :measure-input (constantly 200)
+                   :execute! (fn [_] {:finish-reason :stop :conclusions [] :links []})}
+                  {"preferences" recipe} selector))
+          cases [[{} ["a" "b"]]
+                 [{:language "PY"} ["a"]]
+                 [{:repository "git@github.com:example/repo.git"} ["a"]]
+                 [{:repository "https://user:secret@github.com/example/repo.git"} ["a"]]
+                 [{:session session} ["a" "b"]]]]
+      (-> (js/Promise.all
+            (to-array (map (fn [[selector ids]] (-> (run selector) (.then #(vector selector ids %)))) cases)))
+          (.then (fn [rows]
+                   (doseq [[selector ids results] (array-seq rows)]
+                     (testing (pr-str selector)
+                       (is (= ids (get-in (first results) [:run :input-memory-ids])))))
+                   (let [read (core/normalize-read {})]
+                     (is (= {:filter nil :history? false :limit 10} read)))
+                   (doseq [request [{:history "true"} {:limit 21} {:limit 0} {:user "other"}]]
+                     (try (core/normalize-read request) (is false "invalid read request")
+                          (catch :default error (is (= :invalid-selector (config/error-code error))))))
+                   (js/Promise.all
+                     (to-array (map (fn [request] (-> (run request) (.catch config/error-code)))
+                                    [{:repository "git@github.com:example/repo" :language "python"}
+                                     {:session "session-a"} {:language "unknown"} {:name nil}
+                                     {:reader-id "impersonation"} {:repository nil}])))))
+          (.then (fn [codes] (is (= (repeat 6 :invalid-selector) (array-seq codes))) (done)))
+          (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
+(deftest generated-read-selectors-preserve-origin-equivalence
+  (let [result (tc/quick-check
+                 80
+                 (prop/for-all [suffix (gen/choose 1 100000) limit (gen/choose 1 20) history gen/boolean]
+                   (let [repo (str "example/repo-" suffix)
+                         request {:limit limit :history history}]
+                     (= (core/normalize-read (assoc request :repository (str "git@github.com:" repo ".git")))
+                        (core/normalize-read (assoc request :repository (str "https://user:secret@github.com/" repo ".git"))))))
+                 :seed 20261012)]
+    (is (:pass? result) (pr-str result))))
+
+(deftest generated-evidence-permutations-have-identical-snapshots
+  (let [result (tc/quick-check
+                 80
+                 (prop/for-all [ids (gen/vector-distinct (gen/choose 0 30) {:min-elements 1 :max-elements 10})]
+                   (let [memories (mapv #(observation (str "m-" %) own (str "user-" %)) ids)
+                         prepare #(core/prepare-refresh (assoc input :memories %) (constantly 200))]
+                     (= (:run (prepare memories)) (:run (prepare (vec (reverse memories)))))))
+                 :seed 20261012)]
+    (is (:pass? result) (pr-str result))))
+
+(deftest runtime-effects-do-not-reread-source-state-during-processing
+  (async done
+    (let [events (atom [])]
+      (-> (core/refresh-configured!
+            {:load-input! (fn [_] (swap! events conj :read) input)
+             :measure-input (constantly 200)
+             :new-run-id (fn [] (swap! events conj :identity) "captured-run")
+             :now (fn [] (swap! events conj :clock) "captured-time")
+             :execute! (fn [_] (swap! events conj :execute)
+                         {:finish-reason :stop :conclusions [conclusion] :links []})}
+            {"preferences" recipe} {})
+          (.then (fn [results]
+                   (is (= [:read :identity :clock :execute] @events))
+                   (is (= "captured-time" (get-in (first results) [:run :created-at]))) (done)))
           (.catch (fn [error] (is false (.-stack error)) (done)))))))

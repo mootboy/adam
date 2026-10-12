@@ -195,7 +195,7 @@ AdamDerivationRun
   provider, modelId, inputMemoryCount
 ```
 
-`configurationSnapshotJson` is a serialized validated configuration snapshot (guidance, evidence rules and effective limits), not a Neo4j map property or a copy of credentials. Effective provider/model are recorded separately. Exact input snapshot/hash encoding remains to be defined.
+`configurationSnapshotJson` is a serialized validated configuration snapshot (guidance, evidence rules and effective limits), not a Neo4j map property or a copy of credentials. Effective provider/model are recorded separately. [Contract v1](derivation-contract.md) pins the deterministic snapshot/hash encoding; graph integration must preserve and repair its dependency relationships.
 
 `USED_MEMORY` and recorded canonical `inputMemoryIds` cover all source-memory dependencies, including the dependencies inherited from comparison context, not just returned citations. Direct/historical evidence and inherited comparison dependencies must remain distinguishable in dependency bookkeeping; only genuine source occasions contribute to evidence strength. The compared run/conclusion identities must also be recorded for reproducibility.
 
