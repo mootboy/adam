@@ -14,12 +14,12 @@ A concrete Neo4j boundary shared by future Pi generation and Pi/MCP saved-result
 
 ## Acceptance
 
-- [ ] Unique derivation/run/conclusion constraints and deterministic user/name/filter identity.
-- [ ] Atomic token/expiry acquisition, renewal, crash recovery and stale-publisher fencing independent of the notification-worker lease.
+- [x] Unique derivation/run/conclusion constraints and deterministic user/name/filter identity.
+- [x] Atomic token/expiry acquisition, renewal, crash recovery and stale-publisher fencing independent of the notification-worker lease.
 - [ ] Authorized complete evidence snapshots, verified source provenance and directional/non-transitive grants.
-- [ ] Atomic publication of successful runs, conclusions, dependencies and latest pointer; successful empty history and failure preservation.
-- [ ] Saved latest/history reads reauthorize every recorded dependency, including comparison inheritance; missing ownership/dependencies fail closed.
-- [ ] Source-memory rebuild repairs stable-ID relationships without reducing permissions; revocation blocks cached/history reads.
+- [x] Atomic publication of successful runs, conclusions, dependencies and latest pointer; successful empty history and failure preservation.
+- [x] Saved latest/history reads reauthorize every recorded dependency, including comparison inheritance; missing ownership/dependencies fail closed.
+- [x] Source-memory rebuild repairs stable-ID relationships without reducing permissions; revocation blocks cached/history reads.
 - [ ] Synthetic interface tests and explicitly disposable live concurrency/rebuild/restart validation with isolated identities and exact cleanup.
 
 ## Progress
@@ -30,4 +30,10 @@ Synthetic interface tests cover bucket/principal binding, closed outcomes, inval
 
 Final foundation validation: clean CI passes all four ESM builds, 205 ClojureScript tests/935 assertions and 30 Node tests (26 pass/four opt-in skips); generated runtime drift, package dry-run and diff checks pass. Disposable live validation passes nine ClojureScript tests/138 assertions plus two packaged worker/cleanup cases. All committed runtime artifacts remain unchanged; no real model or production access occurred.
 
-Run/conclusion publication, evidence loading, authorization reads, dependency repair and full stage-2 acceptance remain unfinished.
+The second slice adds closed candidate validation, token-fenced atomic publication of runs/conclusions/dependencies and optional scoped links, bounded latest/history reads with live run-wide authorization, and explicit stable-ID relationship repair. Snapshot state is captured before repair writes. Comparison inheritance remains complete; malformed graph metadata and ambiguous ownership fail closed without returning saved text. Source data is never mutated.
+
+Disposable live coverage proves expiry and newer-token publisher fencing, retained supersession history and empty outcomes, revocation of an unreturned input blocking the entire run, rejection of a forged transitive grant, same-ID source-memory rebuild/repair across store restart, and rollback of a last-write uniqueness failure without changing latest. Normal interface tests cover malformed candidates before I/O, permission/missing-source fences, ambiguous ownership, wrong derivation parents, and rejection-only repairs. Schema/host/provider registration remains unchanged.
+
+Second-slice final validation: clean CI passes four ESM builds, 208 ClojureScript tests/983 assertions and 30 Node tests (26 pass/four opt-in skips), plus dist/package/diff gates. Fresh disposable Neo4j validation passes 10 tests/165 assertions and both packaged worker/cleanup cases. Generated artifacts remain unchanged; no real model or production access occurred.
+
+Authorized generation-input snapshot loading, verified original source occasions and full stage-2 acceptance remain unfinished. Repair and history reads are explicitly bounded pages with truncation; large-history paging/scheduling is not claimed.

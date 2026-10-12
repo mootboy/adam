@@ -18,6 +18,7 @@
                                         [{"userId" reader}] (reply query params))))})))
         tx #js {:run run}
         session #js {:run run :executeWrite (fn [f] (swap! transactions inc) (f tx))
+                     :executeRead (fn [f] (swap! transactions inc) (f tx))
                      :close (fn [] (swap! closes inc) (js/Promise.resolve nil))}]
     {:driver #js {:session (fn [_] session)} :calls calls :closes closes :transactions transactions}))
 
