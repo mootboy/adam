@@ -36,6 +36,12 @@ Native source-anchor extraction and provider tokenization certification are expl
 
 Public-interface red/green slices reproduced missing config/selector/evidence/core behavior, then read-bucket semantics, invalid comparison completeness, invalid/wrong model execution, output validation, cache/freshness, comparison minimization and native timeout overflow. Source-origin regressions additionally prove fork-recording context and copied ownership namespaces do not manufacture independent occasions. The initial slice passed all four release builds, 195 ClojureScript tests/822 assertions, Node/tarball tests, runtime drift and package/diff checks. PR follow-up adopts the four development principles in `AGENTS.md`: two local modules, normative Clojure specs, pure processing and parameterized interface tests with 240 seeded property trials. Follow-up clean validation passes all four release builds, 190 ClojureScript tests/859 assertions, 30 Node tests (26 pass/four expected skips), exact-tarball smoke, package/diff and committed-runtime drift checks. The lower test count reflects consolidation into parameterized interface cases, not removed behavior coverage. No generated artifact changes, real model calls or production graph access.
 
+### Correctness review follow-up
+
+Interface regressions reproduced comparison citation omissions (support and conflict), malformed/string-enum prior conclusions, ANSI source-content rejection, raw-remote selection, lost budget counts, wrong-bucket cache reuse, invalid-reader freshness and extensionless language matches. Strict comparison and saved-run specs now enforce complete declared dependencies; known enums normalize before validation. Source content remains opaque, remotes normalize without forwarding credentials, and named failures retain only validated budget counts. An explicit sequential test confirms one read per named refresh, not all-config preloading.
+
+Clean CI passes all four builds, 199 ClojureScript tests/898 assertions, 30 Node tests (26 pass/four expected skips), exact-tarball/package, runtime-drift and diff checks. Generated artifacts remain unchanged. No production access or real model calls.
+
 ## Non-goals
 
 Graph leases/publication/rebuild repair, source-anchor extraction, production provider/auth adapter, command/MCP registration, migration/version bump/release and production mutation. Stage 2 remains graph storage and authorization; source mirroring/evidence/producers remain untouched.

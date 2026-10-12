@@ -6,7 +6,7 @@ This freezes the storage-neutral stage-1 interfaces for the [0.5.0 plan](plan-0.
 
 `config.cljs` owns YAML parsing and its local Clojure specs. `core.cljs` keeps selector, evidence and output specs beside the refresh/read behavior that uses them; there are no separate selector/evidence modules or generic validation framework. YAML is a syntax parser, not the domain validator. Specs are normative, and failed checks never attach `explain-data` containing source values.
 
-Each named refresh reads its source snapshot once through the boundary callback. Selection/role accumulation, fingerprints, sizing and output processing are immutable transformations. Run identity/time are captured before execution; model execution and timeout cleanup are explicit effects. The returned candidate is published only by the later storage stage. Publication's transactional permission/freshness checks are a separate process, not permission to reread mutable state within derivation processing.
+Each named refresh reads its source snapshot once through the boundary callback. All-config refresh deliberately uses a per-name process boundary: read the first snapshot, finish its model call/outcome, then read the next snapshot. It does not preload every recipe's evidence, and never rereads mutable source state within a named refresh. Selection/role accumulation, fingerprints, sizing and output processing are immutable transformations. Run identity/time are captured before execution; model execution and timeout cleanup are explicit effects. The returned candidate is published only by the later storage stage. Publication's transactional permission/freshness checks are a separate process, not permission to reread mutable state within derivation processing.
 
 ## Configuration
 
@@ -27,10 +27,10 @@ A configuration is at most 256 KiB UTF-8. Unknown fields, duplicate keys, multip
 
 `core/refresh-configured!` accepts a request map with optional `name` and at most one of `repository`, `session`, `language`. The eventual host command tokenizer must preserve argument values; this core accepts structured requests, not an ad-hoc shell parser.
 
-- Git origins normalize through Adam's existing credential-stripping remote normalization. SSH/HTTPS equivalents select the same bucket; repository filter matching uses the source session's normalized `WORKED_ON` associations supplied in the snapshot, not inferred applicability.
+- Git origins normalize through Adam's existing credential-stripping remote normalization. SSH/HTTPS equivalents select the same bucket; repository filter matching normalizes both the selector and the source session's `WORKED_ON` origins supplied in the snapshot (raw remotes or canonical host/path), not inferred applicability. Serialized memory origins are credential-stripped canonical values.
 - Session requires the full `urn:adam:session:<user>:<pi|claude-code>:<session>` identity. Ownership/access is checked separately, never implied by this string.
 - No filter normalizes to `{type: none}` for refresh.
-- Language names are case-insensitive; aliases normalize to canonical names. File extensions are matched case-insensitively from verified linked repository-relative paths, never memory prose. Reflections receive linked paths through supporting observations in the later graph adapter.
+- Language names are case-insensitive; aliases normalize to canonical names. File extensions are matched case-insensitively in the final basename of verified linked repository-relative paths, never memory prose. Extensionless names such as `go`, `c` or `rs`, and dotted parent directories, do not count as extensions. Reflections receive linked paths through supporting observations in the later graph adapter.
 
 Initial language mapping:
 
@@ -65,7 +65,7 @@ Shared extensions match both languages. Unknown languages fail rather than silen
 
 The future graph/host adapter supplies the configured `reader-id`, direct grants and unique normalized memory rows. It must obtain ownership and source facts from the graph/authoritative entries, not from caller arguments or claims inside memory text. Source IDs are canonical stable graph identities in production; synthetic tests use opaque fixture IDs.
 
-Memory rows contain `id`, `owner-id`, `session-id`, `kind` (`observation`/`reflection`), `producer`, `content`, optional `dropped?`, source entries/contexts, repository origins/IDs and linked paths. Reflections additionally have canonical `supporting-memory-ids`. This core does not query Neo4j, discover users or infer ownership from prose.
+Memory rows contain `id`, `owner-id`, `session-id`, `kind` (`observation`/`reflection`), `producer`, `content`, optional `dropped?`, source entries/contexts, repository origins/IDs and linked paths. Reflections additionally have canonical `supporting-memory-ids`. Source content remains nonblank opaque text, including terminal control characters; JSON serialization escapes them rather than rejecting or altering the memory. Its bound is complete-request context sizing, not the identifier/guidance text spec. This core does not query Neo4j, discover users or infer ownership from prose.
 
 Direct grants contain `owner-id`, `reader-id`, `permission: "read"`; grants do not reverse or transitively expand. Authorization precedes selector matching and serialization. Dropped observations are not candidates; a selected reflection expands its observation supports. Missing/unauthorized support fails closed rather than silently weakening the evidence.
 
@@ -77,7 +77,7 @@ The pure core unions `(source-kind, original host session ID, stream ID, entry I
 
 ### Comparison and completeness
 
-One optional prior-run snapshot supplies `id`, `input-memory-ids`, `conclusions`. All original dependencies must resolve and be authorized before comparison text is serialized. Nonempty conclusions cannot claim zero dependencies. If comparison is unavailable, omit its text, report `comparison-unavailable`, and permit a fresh source-only derivation; do not expose private content or block remaining authorized evidence indefinitely.
+One optional prior-run snapshot supplies `id`, `input-memory-ids`, `conclusions`. All original dependencies must resolve and be authorized before comparison text is serialized. Nonempty conclusions cannot claim zero dependencies. Prior conclusions must satisfy the closed conclusion spec, with known string basis/scope enums normalized to keywords. Every supporting or conflicting memory ID must occur in the prior run's declared `input-memory-ids`; incomplete declarations withhold comparison rather than silently reducing inherited permissions. The same completeness spec protects cache reuse and saved-result freshness. If comparison is unavailable, omit its text, report `comparison-unavailable`, and permit a fresh source-only derivation; do not expose private content or block remaining authorized evidence indefinitely.
 
 Roles are explicit: `evidence`, `historical-support`, `comparison-dependency`. The dependency union covers all three, but inherited comparison dependencies do not become new source support or independent occasions. Comparison payload is minimized to known conclusion fields; unrelated prior-run metadata is never forwarded. Recorded IDs/hashes/roles permit later rebuild-safe relationship repair and revocation checks.
 
@@ -87,7 +87,7 @@ Roles are explicit: `evidence`, `historical-support`, `comparison-dependency`. T
 
 The stage-1 arithmetic reserves the effective output allowance plus 1024 provider-envelope headroom tokens. The input cap is the smaller of remaining context and an optional configured input cap. Model-aware tokenization/conservative measurement and verification of sufficient provider headroom are the real Pi adapter's responsibility in stage 3; this fake-executor stage does not claim to certify token counts for any hosted model. No real tokenizer/provider is installed here.
 
-Oversized input raises `input-too-large` with measured/available counts and actionable scope/budget guidance before execution. Invalid measurement fails. There is no truncation, sampling, batching or automatic retry. Effective limits and measured input are recorded separately from the requested recipe.
+Oversized input raises `input-too-large` with measured/available counts and actionable scope/budget guidance before execution. Sequential configured refresh retains those validated numeric counts in the named failure result, but never arbitrary exception data or provider messages. Invalid measurement fails. There is no truncation, sampling, batching or automatic retry. Effective limits and measured input are recorded separately from the requested recipe.
 
 ## Output and fake-executor seam
 
@@ -126,7 +126,7 @@ Version-1 fingerprint encoding is recursively key-sorted JSON; sets/unordered ev
 
 Input fingerprints include the selected source state and scope, not the newly generated comparison result. Per-dependency fingerprints/roles cover comparison inheritance for access/freshness. Configuration fingerprints cover the compiled recipe and internal policy version (currently 1); the resolved model key participates separately in refresh reuse. Bumping the policy version makes prior results outdated without changing stable derivation identity. Runs retain requested configuration/effective-limit snapshots, generating provider/model, dependency IDs/hashes/roles and comparison-run provenance, not copies of original memory content.
 
-A cache is reused only if source/configuration/model match, dependency completeness/authorization holds and dependency fingerprints match. Successful empty results are reusable; input ordering does not create a new call. `freshness` is evaluated in the original derivation identity context: changed source/configuration is `outdated`, missing/unauthorized dependencies are `unavailable`, and the current session model alone does not make a saved run stale. Cross-reader query visibility and graph-owner traversal are implemented and tested in stage 2, not inferred from this pure helper.
+A cache is reused only if its derivation identity and source/configuration/model match, dependency completeness/authorization holds and dependency fingerprints match. Invalid requesting identities and malformed saved dependency declarations are `unavailable`, not merely outdated. Successful empty results are reusable; input ordering does not create a new call. `freshness` is evaluated in the original derivation identity context: changed source/configuration is `outdated`, missing/unauthorized dependencies are `unavailable`, and the current session model alone does not make a saved run stale. Cross-reader query visibility and graph-owner traversal are implemented and tested in stage 2, not inferred from this pure helper.
 
 Latest publication is a graph concern: a completed run remains a candidate even if its inputs changed mid-call; the later publisher records latest-but-outdated rather than retrying. No core callback writes sources, producer records, graph nodes, locks or Pi boundary drafts.
 
