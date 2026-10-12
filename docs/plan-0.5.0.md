@@ -1,6 +1,6 @@
 # Adam 0.5.0 — Configurable memory derivations
 
-- Status: in progress; stage-1 contracts and deterministic core implemented, host/graph wiring deferred
+- Status: in progress; stage 1 implemented, stage-2 graph boundary/lease foundation underway; host wiring deferred
 - Tracking issue: [`022`](issues/022-configurable-memory-derivations.md)
 - Target: 0.5.0
 
@@ -275,7 +275,7 @@ Behavior reviewed and agreed one by one with the user. Checkboxes remain impleme
 Deliver this minor-release scope through reviewable implementation increments; exact tickets and boundaries follow the remaining implementation-contract decisions.
 
 1. **Contracts and deterministic core:** implemented under [issue 023](issues/023-derivation-contracts-and-core.md). [Contract v1](derivation-contract.md) freezes YAML/read schemas, selector normalization, dependency roles, source-occasion accounting, request sizing and result fingerprints, with synthetic/fake-executor coverage. No host commands, graph storage or real-model adapter are enabled.
-2. **Graph storage and authorization:** add derivation/run/conclusion identities, indexes, grants, history, fenced refresh leases and atomic publication. Prove revocation, comparison inheritance, memory-rebuild repair and fail-closed missing dependencies on a disposable graph.
+2. **Graph storage and authorization:** underway under [issue 024](issues/024-derivation-graph-storage-and-authorization.md), starting with the concrete principal-bound graph boundary and refresh lease. Remaining work adds derivation/run/conclusion identities, indexes, grants, history, fenced refresh leases and atomic publication. Prove revocation, comparison inheritance, memory-rebuild repair and fail-closed missing dependencies on a disposable graph.
 3. **Pi generation tracer:** wire explicit named refresh through Pi's model registry/authentication, context-aware budgets, timeout/cancellation and the one-call policy; then sequential all-config refresh with independent outcomes.
 4. **Reads and interpretation:** implement Pi command/tool and Claude read-only MCP parity, bounded latest/history results, freshness, prominent conflict/correction reporting and provenance traversal.
 5. **Acceptance and release:** complete deterministic, packaged-host and disposable graph restart/concurrency acceptance, plus separately approved real-model quality/cost probes. Only the final release-preparation increment updates versions/changelog for 0.5.0.
