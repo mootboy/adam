@@ -28,7 +28,7 @@ This directory is adam's repository-local issue tracker. Use one Markdown file p
 
 - [`021`](021-repeated-invalid-boundary-entries-drafts-error.md) — Repeated Pi extension boundary error: `drafts is not iterable` (`done`, bug; lifecycle callbacks no longer leak boundary results)
 
-- [`022`](022-configurable-memory-derivations.md) — Configurable model-generated memory derivations (`proposed`, enhancement; target 0.4.2)
+- [`022`](022-configurable-memory-derivations.md) — Configurable model-generated memory derivations ([0.5.0 plan](../plan-0.5.0.md); `proposed`, enhancement; target 0.5.0)
 
 ## Naming
 
