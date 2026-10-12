@@ -25,14 +25,15 @@ Outputs are rebuildable derived state, not authoritative producer memory. They n
 ### Included
 
 - One concrete preference derivation, configured through validated YAML; no general-purpose workflow engine.
-- Bounded, user-isolated input selection across producer-scoped observations and reflections, including memories without file links.
+- Bounded, authorization-filtered input selection across producer-scoped observations and reflections, including memories without file links. Own memories are eligible; the design also accommodates explicitly granted access from other users.
 - Model-generated classification and synthesis rather than lexical matching or hardcoded keyword rules.
 - Separate trusted execution controls (provider/model, consent, input/output limits, timeout, scheduling and cost guards) and interpretation guidance (categories, evidence thresholds, scope and conflict handling).
 - Supporting and conflicting canonical memory identities, source provenance, derivation/configuration version and input fingerprint on derived outputs.
 - Explicit/inferred basis and personal/repository/session scope; insufficient evidence and conflicting evidence are valid outcomes.
 - Idempotent cached results for unchanged input/configuration, visible freshness, and invalidation when supporting memory or configuration changes.
 - A bounded shared read surface available to Pi and Claude MCP; exact names remain to be agreed.
-- Explicit refresh first. Any lifecycle “hook” schedules background work and must never wait for a model during an interactive turn.
+- Explicit manual refresh only in 0.4.2; lifecycle/background automation is deferred.
+- A directed user-to-user read-grant design for future collective understanding, with inherited restrictions on derived results. Actual multi-user execution in 0.4.2 remains to be decided.
 
 ### Excluded
 
@@ -40,7 +41,8 @@ Outputs are rebuildable derived state, not authoritative producer memory. They n
 - Changes to producer-owned formats or authoritative session/transcript logs.
 - Recursive derivation from previous derived outputs, embeddings, automatic prompt injection, or automatic enforcement of inferred preferences.
 - Unrestricted model tools, arbitrary YAML code execution, a generic plugin/workflow framework, or a new polling daemon.
-- Silent cross-user input, unattended inherited-host-login use, or generation enabled by default.
+- Ungranted cross-user input, unattended inherited-host-login use, or model calls without derivation configuration and explicit refresh.
+- Automatic generation, grant-management UI, transitive grants, or purpose-specific permissions.
 - Implementation, schema migration, version bump, tagging or publication in this drafting increment.
 
 ## Illustrative configuration
@@ -90,7 +92,7 @@ The model proposes content; code validates the output schema, ownership, supplie
 ## Classification and evidence requirements
 
 - An explicit user request can establish a preference without repetition, but only within its stated scope.
-- A one-off assistant implementation choice without user endorsement is not a user preference.
+- A one-off assistant implementation choice without user endorsement is not a user preference. A user's correction of that choice is strong evidence of a preference, interpreted within the correction's stated scope; a local fix is not automatically a universal rule.
 - Inferred patterns require independent supporting evidence, not repeated wording alone. Multiple reflections ultimately supported by the same observation/source do not manufacture independent evidence.
 - “Use tabs in this repository” stays repository-scoped. Repository association through session activity alone does not prove a preference applies to that repository.
 - Preserve uncertainty and distinguish an observed request from a tool-verified fact or assistant assertion.
@@ -99,36 +101,66 @@ The model proposes content; code validates the output schema, ownership, supplie
 - Active observations and reflections are candidate inputs. Dropped observations may be expanded as provenance for a retained reflection, clearly marked historical, not independently promoted as current preferences. Changed/dropped support invalidates affected cached conclusions.
 - Treat all memory text as untrusted data. It must not override trusted execution controls or grant tools, consent or access to credentials.
 
-## Architecture boundary requiring an explicit decision
+## Agreed execution boundary
 
-Adam currently does not generate observations or reflections. This feature introduces model-generated derived understanding, so implementation must deliberately choose between an opt-in Adam-owned derivation subsystem and a separately configured executor behind an Adam-owned interface. Neither choice is approved merely by drafting this issue.
+The user selected an **Adam-owned internal derivation subsystem**. Configuration presence opts into the feature; without configuration there is no generation. In 0.4.2, generation happens only on explicit manual refresh. A separate enable/consent switch is not required by this design; the configuration and refresh must clearly identify the provider to which memory content is sent. The first provider and credential source still need to be selected. Credentials must remain outside prompt YAML, graph properties and diagnostics.
 
-In either case, meta-observations stay in a distinct derived namespace with separate failure/status handling. Model failure must not block source replication, existing memory projection/retrieval, producer execution or interactive lifecycle completion. No dependency on the separate Claude memory producer is required: existing indexed memories provide the inputs.
+This is an intentional addition to Adam's previous index-only responsibility, not permission to generate ordinary producer observations/reflections. Meta-observations stay in a distinct derived namespace with separate failure/status handling. Model failure must not block source replication, existing memory projection/retrieval, producer execution or interactive lifecycle completion. No dependency on the separate Claude memory producer is required: existing indexed memories provide the inputs.
+
+### Result freshness in plain language
+
+A derivation version identifies the recipe, not which memories it processed. New memories can arrive while that version stays unchanged. An input fingerprint identifies the selected memory state and effective configuration used for a completed result, so unchanged work can be reused and outdated results can be labeled honestly. Exact storage and fingerprint encoding remain implementation-contract decisions.
+
+Save each complete result together with its evidence. A successful refresh replaces the previous result atomically; failure preserves the previous result with truthful freshness/error status. Concurrent refreshes must not let an older run overwrite a newer result. Reads do not refresh or invoke a model.
+
+## User read grants and collective understanding
+
+The agreed relationship is directed from the evidence owner to the permitted reader:
+
+```text
+(owner:AdamUser)-[:GRANTS_MEMORY_ACCESS {
+  permission: "read"
+}]->(reader:AdamUser)
+```
+
+There is **no purpose property**. This models general memory read access, not a derivation-only grant. Initially it is an all-memories grant from that owner; repository-specific grants, identity federation and grant-management UI are not part of this draft.
+
+- Own memories are eligible without a self-grant.
+- A grant is directional, explicit and non-transitive. Alice granting Bob access does not grant Bob's readers access to Alice's memories.
+- Without a direct grant, another user's memory is inaccessible. Shared repository identity, a claimed group scope or colocated database state never supplies permission.
+- The requesting principal is Adam's configured user identity, not an arbitrary caller-supplied user ID.
+- Authorization is checked before input-selection limits and before any model transmission. It is rechecked on result reads, not cached as permanent permission.
+- Derived output inherits the restrictions of **all owners whose memory content was supplied to its model run**, including supporting/context/conflicting input, not only the citations the model elected to return. Another reader needs current direct access from every contributing owner (or must be that owner) before seeing the result text or evidence. Restricting citations alone is insufficient.
+- Revocation makes affected cached results inaccessible to readers who lost permission; it need not delete the original memories. Fresh synthesis can use the remaining authorized inputs. Configuration/version caching must never bypass access checks.
+- Evidence access and conclusion subject are separate: a conclusion may describe an individual, repository or group. Permission to combine memories is not evidence that contributors agree; disagreement and attribution remain visible.
+
+This is application-level authorization, not protection against unrestricted Neo4j credentials. Manual graph administration can establish/remove grants in a future multi-user acceptance environment; this documentation change creates no production grants. Existing own-user-only read surfaces remain unchanged until authorization is deliberately implemented and tested. Whether cross-user synthesis itself ships in 0.4.2 is still an open scope decision.
 
 ## Acceptance criteria
 
 - [ ] Validated YAML controls the first preference derivation; unsupported/unsafe configuration fails visibly without starting model work.
-- [ ] Generation is disabled by default and requires explicit provider/credential selection and consent to transmit memory content. Credentials are not written to YAML, graph state or diagnostics.
-- [ ] Inputs are bounded and restricted to the owning user's memories before selection limits; memories without file evidence are eligible.
+- [ ] Without derivation configuration no model calls occur; configured generation requires explicit manual refresh using the identified provider/credential source. Credentials are not written to YAML, graph state or diagnostics.
+- [ ] Inputs are bounded and filtered for current authorization before selection limits; memories without file evidence are eligible. Until multi-user execution is explicitly included, only the requesting user's memories are processed.
+- [ ] The grant contract has no purpose property and distinguishes permission from conclusion scope. If multi-user execution is included, tests prove directional/non-transitive access, denial without a grant, all-input-owner restrictions on cached results, and immediate read denial after revocation.
 - [ ] Output distinguishes explicit from inferred preferences, category and scope, with nonempty validated support identities for every conclusion.
-- [ ] Tests cover explicit repository-scoped requests, unendorsed assistant choices, insufficient evidence, conflicts/reversals, and duplicated support through reflections that must not satisfy independent-evidence thresholds.
+- [ ] Tests cover explicit repository-scoped requests, unendorsed assistant choices, user corrections as strong but scoped preference evidence, insufficient evidence, conflicts/reversals, and duplicated support through reflections that must not satisfy independent-evidence thresholds.
 - [ ] Derived provenance can be inspected back through producer/source session and supporting observations/reflections; missing or invalid support is never fabricated.
 - [ ] Unchanged inputs/configuration reuse successful results, including empty results. Input/configuration changes mark results stale; refresh commits a complete result atomically and does not present stale conclusions as current.
 - [ ] Failed, cancelled, invalid or timed-out generation preserves the prior result with truthful freshness/status and does not mark new input as successfully processed.
-- [ ] Background scheduling, if included, does not await model work in host lifecycle callbacks, has bounded retries and observable completion, and cannot alter Pi boundary drafts.
+- [ ] Normal lifecycle events and read calls never trigger generation in 0.4.2; explicit refresh is the only model-work trigger. Existing Pi boundary drafts and lifecycle completion remain unchanged.
 - [ ] Pi and Claude MCP expose equivalent bounded read-only results with explicit item/line/byte truncation; ordinary retrieval never invokes a model.
 - [ ] Source sessions, entries, producer memories and existing file-context behavior remain unchanged; model/configuration outages are isolated from those paths.
 - [ ] Normal tests use synthetic memories and a fake executor. Live model probes require explicit opt-in/cost limits; database validation runs only on a disposable instance with isolated identities and exact resource-scoped cleanup.
 
 ## Decisions to resolve before implementation
 
-1. Executor ownership and provider API: opt-in internal subsystem or separate executor; first supported provider/model and explicit credential policy.
+1. First supported provider/model and credential source for the agreed internal subsystem. “Credential policy” means which configured provider credentials to use, not an additional mandatory consent toggle.
 2. YAML location/schema, safe parsing and numerical input/output/call/timeout limits. Cost guards are not a guaranteed spend ceiling.
-3. Initial scope and input selection: all owned memories versus explicit repository/session selection; how to expose omissions and avoid biased conclusions from a bounded subset.
-4. Refresh/read command and tool names; whether 0.4.2 includes background scheduling or explicit refresh only.
-5. Derived storage identity, fingerprint/dependency tracking, cache invalidation and restart/concurrent-refresh semantics.
-6. Exact independent-evidence accounting, conflict/correction policy and how scoped assertions remain scoped.
-7. User acceptance of this deliberately expanded boundary and the proposed 0.4.2 release scope before a version/release PR.
+3. Initial input selection: all eligible memories versus explicit repository/session selection; how to expose omissions and avoid biased conclusions from a bounded subset. Decide whether 0.4.2 implements cross-user synthesis or only prepares the grant model for a later increment.
+4. Refresh/read command and tool names. Manual refresh only is settled; automation is later work.
+5. Derived storage identity and exact input/configuration fingerprinting, dependency tracking and restart/concurrent-refresh mechanics, following the result-preservation and access rules above.
+6. Exact independent-evidence accounting, conflict/correction policy and representation of personal/repository/group/session subjects.
+7. Final 0.4.2 implementation/release scope before a version/release PR. Internal subsystem ownership and configuration-based opt-in are settled.
 
 ## Validation
 
