@@ -2,7 +2,8 @@
   (:require [adam.derivation.config :as config]
             [adam.derivation.core :as core]
             [cljs.spec.alpha :as s]
-            ["node:crypto" :refer [randomUUID]]))
+            ["node:crypto" :refer [randomUUID]]
+            ["neo4j-driver" :as neo4j]))
 
 ;; One concrete graph boundary for future Pi generation and both hosts' reads.
 ;; The principal is injected from host identity, never a query/tool argument.
@@ -131,3 +132,380 @@
                             RETURN d.id AS id"
                            (clj->js params))
                          (.then (fn [result] {:status (if (seq (rows result)) :released :fenced)}))))))))))
+
+;; Persist the core's complete, closed candidate, not arbitrary model/host data.
+(s/def ::hash (s/and string? #(re-matches #"[0-9a-f]{64}" %)))
+(s/def ::created-at (s/and (config/text-spec 64) #(js/Number.isFinite (js/Date.parse %))))
+(s/def ::configuration-version ::config/version)
+(s/def ::configuration-fingerprint ::hash)
+(s/def ::input-fingerprint ::hash)
+(s/def ::configuration-snapshot-json (config/text-spec 1048576))
+(s/def ::measured-input-tokens ::core/token-count)
+(s/def ::input-memory-count ::core/token-count)
+(s/def ::provider ::config/provider)
+(s/def ::model-id ::config/id)
+(s/def ::model (s/and ::core/model (config/only-keys #{:provider :id :context-window :max-output-tokens})))
+(s/def ::dependency-fingerprints (s/map-of ::core/id ::hash))
+(s/def ::dependency-roles (s/map-of ::core/id (s/coll-of #{:evidence :historical-support :comparison-dependency}
+                                                       :kind set? :min-count 1)))
+(s/def ::comparison-run-id (s/nilable ::core/id))
+(s/def ::diagnostics (s/coll-of #{:comparison-unavailable} :kind vector? :max-count 100))
+(s/def ::max-input-tokens ::config/positive-integer)
+(s/def ::max-output-tokens ::config/positive-integer)
+(s/def ::timeout-ms (s/and ::config/positive-integer #(<= % 2147483647)))
+(s/def ::provider-headroom-tokens ::config/positive-integer)
+(s/def ::limits (s/and (s/keys :req-un [::max-output-tokens ::timeout-ms] :opt-un [::max-input-tokens])
+                      (config/only-keys #{:max-output-tokens :timeout-ms :max-input-tokens})))
+(s/def ::effective-limits
+  (s/and (s/keys :req-un [::max-input-tokens ::max-output-tokens ::timeout-ms ::provider-headroom-tokens])
+         (config/only-keys #{:max-input-tokens :max-output-tokens :timeout-ms :provider-headroom-tokens})))
+(s/def ::inferred-min-distinct-occasions ::config/positive-integer)
+(s/def ::scope-types (s/coll-of #{"personal" "repository" "group" "session"} :kind vector? :min-count 1 :distinct true))
+(s/def ::categories (s/map-of ::config/yaml-name (config/text-spec 8192) :max-count 64))
+(s/def ::recipe
+  (s/and (s/keys :req-un [::config/version ::config/guidance ::limits ::categories ::inferred-min-distinct-occasions ::scope-types]
+                 :opt-un [::config/model])
+         (config/only-keys #{:version :guidance :limits :categories :inferred-min-distinct-occasions :scope-types :model})))
+(s/def ::policy-version ::config/positive-integer)
+(s/def ::configuration-snapshot
+  (s/and (s/keys :req-un [::policy-version ::recipe ::effective-limits])
+         (config/only-keys #{:policy-version :recipe :effective-limits})))
+
+(defn- configuration-valid? [run]
+  (try
+    (let [snapshot (js->clj (js/JSON.parse (:configuration-snapshot-json run)) :keywordize-keys true)]
+      (and (s/valid? ::configuration-snapshot snapshot)
+           (= (:configuration-version run) (get-in snapshot [:recipe :version]))
+           (= (:configuration-fingerprint run) (core/fingerprint (select-keys snapshot [:policy-version :recipe])))))
+    (catch :default _ false)))
+
+(s/def ::publication
+  (s/and ::core/saved-run
+         (s/keys :req-un [::created-at ::configuration-version ::configuration-fingerprint ::configuration-snapshot-json
+                          ::input-fingerprint ::model ::provider ::model-id ::input-memory-count ::measured-input-tokens
+                          ::dependency-fingerprints ::dependency-roles ::comparison-run-id ::diagnostics ::core/links])
+         (config/only-keys #{:id :derivation-id :created-at :configuration-version :configuration-fingerprint
+                            :configuration-snapshot-json :input-fingerprint :model :provider :model-id
+                            :input-memory-count :measured-input-tokens :input-memory-ids :dependency-fingerprints
+                            :dependency-roles :comparison-run-id :diagnostics :conclusions :links})
+         #(re-matches #"urn:adam:derivation-run:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}" (:id %))
+         #(every? (fn [c] (re-matches #"urn:adam:derived-observation:[0-9a-f]{64}" (:id c))) (:conclusions %))
+         #(s/valid? (s/coll-of ::core/link :kind vector? :distinct true) (:links %))
+         #(= (set (:input-memory-ids %)) (set (keys (:dependency-fingerprints %))) (set (keys (:dependency-roles %))))
+         #(= (:input-memory-count %) (count (filter (fn [[_ roles]] (some roles [:evidence :historical-support])) (:dependency-roles %))))
+         #(every? (fn [id] (contains? (get (:dependency-roles %) id) :evidence))
+                  (mapcat :supporting-memory-ids (:conclusions %)))
+         #(every? (fn [id] (some (get (:dependency-roles %) id) [:evidence :historical-support]))
+                  (mapcat :conflicting-memory-ids (:conclusions %)))
+         #(= (:provider %) (get-in % [:model :provider]))
+         #(= (:model-id %) (get-in % [:model :id]))
+         configuration-valid?))
+
+(defn- decode-run [json]
+  (let [raw (js/JSON.parse json)]
+    (-> (js->clj raw :keywordize-keys true)
+        (assoc :dependency-fingerprints (js->clj (aget raw "dependency-fingerprints"))
+               :dependency-roles (into {} (map (fn [[id roles]] [id (set (map keyword roles))])
+                                             (js->clj (aget raw "dependency-roles")))))
+        (update :conclusions #(mapv (fn [c] (-> c (update :basis keyword) (update :scope-type keyword))) %))
+        (update :links #(mapv (fn [link] (update link :relation keyword)) %)))))
+
+;; Resolve every declared ID independently of relationship completeness. Never
+;; infer a reduced permission requirement from missing USED_MEMORY edges.
+(defn- dependencies! [^js tx principal ids run-id]
+  (-> (.run tx
+        "UNWIND $memoryIds AS memoryId
+         OPTIONAL MATCH (m) WHERE m.id = memoryId AND (m:AdamObservation OR m:AdamReflection)
+         OPTIONAL MATCH (s:AdamSession)-[:HAS_MEMORY]->(m)
+         OPTIONAL MATCH (owner:AdamUser)-[:OWNS]->(s)
+         WITH memoryId, m, collect(DISTINCT owner.id) AS ownerIds, collect(DISTINCT s.id) AS sessionIds
+         RETURN memoryId, ownerIds AS ownerIds, sessionIds,
+                CASE WHEN m:AdamObservation AND NOT m:AdamReflection THEN 'observation'
+                     WHEN m:AdamReflection AND NOT m:AdamObservation THEN 'reflection' END AS kind,
+                m.producer AS producer, m.content AS content,
+                (size(ownerIds) = 1 AND (ownerIds[0] = $readerId OR EXISTS {
+                  MATCH (:AdamUser {id: ownerIds[0]})-[:GRANTS_MEMORY_ACCESS {permission: 'read'}]->(:AdamUser {id: $readerId})
+                })) AS permitted,
+                EXISTS { MATCH (:AdamDerivationRun {id: $runId})-[:USED_MEMORY]->(m) } AS linked"
+        #js {:memoryIds (clj->js ids) :readerId principal :runId run-id})
+      (.then (fn [result]
+               (let [records (vec (rows result))
+                     by-id (group-by #(field % "memoryId") records)]
+                 (cond
+                   (or (not= (set ids) (set (keys by-id)))
+                       (some (fn [[_ matches]]
+                               (or (not= 1 (count matches))
+                                   (let [r (first matches)]
+                                     (not (and (= 1 (count (field r "ownerIds")))
+                                               (= 1 (count (field r "sessionIds")))
+                                               (s/valid? ::core/memory
+                                                 {:id (field r "memoryId") :owner-id (first (field r "ownerIds"))
+                                                  :session-id (first (field r "sessionIds")) :kind (keyword (field r "kind"))
+                                                  :producer (field r "producer") :content (field r "content")})))))) by-id))
+                   {:status :unresolved-evidence}
+                   (not-every? #(true? (field % "permitted")) records) {:status :unauthorized}
+                   :else {:status :available :linked? (every? #(true? (field % "linked")) records)}))))))
+
+(defn- require-dependencies! [tx principal ids run-id]
+  (-> (dependencies! tx principal ids run-id)
+      (.then (fn [result]
+               (when-not (= :available (:status result))
+                 (config/reject! (:status result) "complete authorized source dependencies are required"))
+               result))))
+
+(defn- candidate! [db request run]
+  (let [params (bucket db request)]
+    (when-not (and (s/valid? ::publication run)
+                   (= core/policy-version (aget (js/JSON.parse (:configuration-snapshot-json run)) "policy-version"))
+                   (= (:derivationId params) (:derivation-id run)))
+      (config/reject! :invalid-output "a complete validated candidate for this derivation is required"))
+    params))
+
+(defn- authorized-prior! [^js tx params run]
+  (if-not (:comparison-run-id run)
+    (js/Promise.resolve nil)
+    (-> (.run tx
+          "MATCH (:AdamUser {id: $readerId})-[:OWNS_DERIVATION]->(d:AdamDerivation {id: $derivationId})
+                 -[:HAS_RUN]->(r:AdamDerivationRun {id: $priorId}) RETURN r.runJson AS runJson"
+          (clj->js (assoc params :priorId (:comparison-run-id run))))
+        (.then (fn [result]
+                 (when-not (= 1 (count (rows result)))
+                   (config/reject! :unresolved-evidence "comparison history is unavailable"))
+                 (let [prior (try (decode-run (field (first (rows result)) "runJson"))
+                                  (catch :default _ nil))]
+                   (when-not (and (s/valid? ::publication prior)
+                                  (= (:id prior) (:comparison-run-id run))
+                                  (= (:derivation-id prior) (:derivation-id run))
+                                  (every? (set (:input-memory-ids run)) (:input-memory-ids prior))
+                                  (every? #(contains? (get (:dependency-roles run) %) :comparison-dependency)
+                                          (:input-memory-ids prior)))
+                     (config/reject! :invalid-output "comparison dependencies must remain complete"))
+                   (-> (require-dependencies! tx (:readerId params) (:input-memory-ids prior) (:id prior))
+                       (.then (fn [_] prior)))))))))
+
+(defn- valid-links? [run prior]
+  (let [current (into {} (map (juxt :id identity) (:conclusions run)))
+        previous (into {} (map (juxt :id identity) (:conclusions prior)))
+        all (merge previous current)]
+    (and (not-any? (set (keys previous)) (keys current))
+         (every? (fn [{:keys [from to relation]}]
+                   (let [source (get current from) target (get all to)]
+                     (and source target (not= from to)
+                          (= (:scope-type source) (:scope-type target))
+                          (= (set (:scope-subject-ids source)) (set (:scope-subject-ids target)))
+                          (or (= :contradicts relation) (contains? previous to))))) (:links run)))))
+
+(defn- write-candidate! [^js tx params run]
+  (let [parameters
+        (clj->js (merge params
+                  {:runId (:id run) :runJson (core/snapshot-json run) :createdAt (:created-at run)
+                   :memoryIds (:input-memory-ids run) :configurationVersion (:configuration-version run)
+                   :configurationFingerprint (:configuration-fingerprint run)
+                   :configurationSnapshotJson (:configuration-snapshot-json run)
+                   :inputFingerprint (:input-fingerprint run) :provider (:provider run) :modelId (:model-id run)
+                   :inputMemoryCount (:input-memory-count run) :comparisonRunId (:comparison-run-id run)}))
+        conclusions (clj->js (mapv (fn [c]
+                     {:id (:id c) :content (:content c) :category (:category c) :basis (name (:basis c))
+                      :scopeType (name (:scope-type c)) :scopeSubjectIds (:scope-subject-ids c)
+                      :supportingMemoryIds (:supporting-memory-ids c) :conflictingMemoryIds (:conflicting-memory-ids c)})
+                     (:conclusions run)))
+        writes
+        [["MATCH (r:AdamDerivationRun {id: $runId})
+           UNWIND $memoryIds AS id MATCH (m) WHERE m.id = id AND (m:AdamObservation OR m:AdamReflection)
+           MERGE (r)-[:USED_MEMORY]->(m)"
+          #js {:runId (:id run) :memoryIds (clj->js (:input-memory-ids run))}]
+         ["MATCH (r:AdamDerivationRun {id: $runId}) UNWIND $conclusions AS input
+           CREATE (c:AdamDerivedObservation {id: input.id})
+           SET c.content = input.content, c.category = input.category, c.basis = input.basis,
+               c.scopeType = input.scopeType, c.scopeSubjectIds = input.scopeSubjectIds,
+               c.supportingMemoryIds = input.supportingMemoryIds, c.conflictingMemoryIds = input.conflictingMemoryIds
+           CREATE (r)-[:HAS_CONCLUSION]->(c)
+           WITH c, input
+           CALL { WITH c, input UNWIND input.supportingMemoryIds AS id
+                  MATCH (m) WHERE m.id = id AND (m:AdamObservation OR m:AdamReflection)
+                  MERGE (c)-[:SUPPORTED_BY]->(m) }
+           CALL { WITH c, input UNWIND input.conflictingMemoryIds AS id
+                  MATCH (m) WHERE m.id = id AND (m:AdamObservation OR m:AdamReflection)
+                  MERGE (c)-[:CONFLICTING_EVIDENCE]->(m) }"
+          #js {:runId (:id run) :conclusions conclusions}]
+         ["UNWIND $links AS input
+           MATCH (a:AdamDerivedObservation {id: input.from}), (b:AdamDerivedObservation {id: input.to})
+           FOREACH (_ IN CASE WHEN input.relation = 'contradicts' THEN [1] ELSE [] END | MERGE (a)-[:CONTRADICTS]->(b))
+           FOREACH (_ IN CASE WHEN input.relation = 'supersedes' THEN [1] ELSE [] END | MERGE (a)-[:SUPERSEDES]->(b))"
+          #js {:links (clj->js (mapv #(update % :relation name) (:links run)))}]]]
+    (-> (.run tx
+          "MATCH (d:AdamDerivation {id: $derivationId})
+           WHERE d.refreshToken = $token AND d.refreshLeaseUntil > timestamp()
+           CREATE (r:AdamDerivationRun {id: $runId})
+           SET r.runJson = $runJson, r.createdAt = $createdAt,
+               r.inputMemoryIds = $memoryIds, r.configurationVersion = $configurationVersion,
+               r.configurationFingerprint = $configurationFingerprint,
+               r.configurationSnapshotJson = $configurationSnapshotJson,
+               r.inputFingerprint = $inputFingerprint, r.provider = $provider,
+               r.modelId = $modelId, r.inputMemoryCount = $inputMemoryCount,
+               r.comparisonRunId = $comparisonRunId
+           CREATE (d)-[:HAS_RUN]->(r)
+           WITH d, r OPTIONAL MATCH (d)-[old:LATEST_RUN]->() DELETE old
+           CREATE (d)-[:LATEST_RUN]->(r)
+           SET d.refreshToken = null, d.refreshLeaseUntil = null,
+               d.lastRefreshOutcome = 'succeeded', d.lastRefreshError = null
+           RETURN r.id AS id" parameters)
+        (.then (fn [result]
+                 (if-not (seq (rows result)) {:status :fenced}
+                   (-> (reduce (fn [pending [query parameters]]
+                                 (.then pending (fn [_] (.run tx query parameters))))
+                               (js/Promise.resolve nil) writes)
+                       (.then (fn [_] {:status :published :run-id (:id run)})))))))))
+
+(defn publish-refresh! [db request token run]
+  (-> (js/Promise.resolve)
+      (.then (fn []
+               (when-not (s/valid? ::token token)
+                 (config/reject! :invalid-lease "valid publication token is required"))
+               (let [params (assoc (candidate! db request run) :token token)]
+                 (write! db
+                   (fn [^js tx]
+                     (-> (.run tx
+                           "MATCH (:AdamUser {id: $readerId})-[:OWNS_DERIVATION]->(d:AdamDerivation {id: $derivationId})
+                            SET d.refreshLockVersion = coalesce(d.refreshLockVersion, 0) + 1
+                            WITH d WHERE d.refreshToken = $token AND d.refreshLeaseUntil > timestamp()
+                            RETURN true AS leaseValid" (clj->js params))
+                         (.then (fn [result]
+                                  (if-not (seq (rows result)) {:status :fenced}
+                                    (-> (require-dependencies! tx (:principal db) (:input-memory-ids run) nil)
+                                        (.then (fn [_] (authorized-prior! tx params run)))
+                                        (.then (fn [prior]
+                                                 (when-not (valid-links? run prior)
+                                                   (config/reject! :invalid-output "conclusion relationships require authorized compatible endpoints"))
+                                                 (write-candidate! tx params run)))))))))))))))
+
+;; Capture immutable run metadata first. Authorization is always resolved from
+;; current source ownership, never from a cached list of permitted users.
+(defn- run-records! [^js tx principal request]
+  (let [{:keys [name filter history? limit]} (core/normalize-read request)]
+    (-> (.run tx
+          "MATCH (:AdamUser {id: $readerId})-[:OWNS_DERIVATION]->(d:AdamDerivation)-[:HAS_RUN]->(r:AdamDerivationRun)
+           WHERE ($name IS NULL OR d.name = $name)
+             AND ($filterType IS NULL OR (d.filterType = $filterType AND d.filterValue = $filterValue))
+             AND ($history OR EXISTS { MATCH (d)-[:LATEST_RUN]->(r) })
+           WITH DISTINCT d, r ORDER BY r.createdAt DESC, r.id LIMIT $limit
+           OPTIONAL MATCH (parent:AdamDerivation)-[:HAS_RUN]->(r)
+           OPTIONAL MATCH (r)-[:HAS_CONCLUSION]->(c:AdamDerivedObservation)
+           RETURN d.id AS derivationId, d.name AS name, d.filterType AS filterType, d.filterValue AS filterValue,
+                  r.id AS runId, r.createdAt AS createdAt, r.runJson AS runJson, r.inputMemoryIds AS memoryIds,
+                  collect(DISTINCT parent.id) AS parents,
+                  (size([(r)-[:USED_MEMORY]->() | 1]) = size(r.inputMemoryIds)
+                   AND all(m IN [(r)-[:USED_MEMORY]->(m) | m] WHERE m.id IN r.inputMemoryIds)) AS dependenciesLinked,
+                  collect(DISTINCT c {.id, .content, .category, .basis, .scopeType, .scopeSubjectIds,
+                                      .supportingMemoryIds, .conflictingMemoryIds,
+                                      linked: all(id IN c.supportingMemoryIds WHERE EXISTS {
+                                        MATCH (c)-[:SUPPORTED_BY]->(m) WHERE m.id = id
+                                      }) AND all(id IN c.conflictingMemoryIds WHERE EXISTS {
+                                        MATCH (c)-[:CONFLICTING_EVIDENCE]->(m) WHERE m.id = id
+                                      })}) AS conclusions
+           ORDER BY createdAt DESC, runId"
+          #js {:readerId principal :name name :filterType (when filter (clojure.core/name (:type filter)))
+               :filterValue (:value filter) :history history? :limit ((.-int neo4j) (inc limit))})
+        (.then (fn [result] {:records (vec (take limit (rows result))) :truncated? (> (count (rows result)) limit)})))))
+
+(defn- stored-run [principal record]
+  (try
+    (let [run (decode-run (field record "runJson"))
+          filter (cond-> {:type (keyword (field record "filterType"))}
+                   (field record "filterValue") (assoc :value (field record "filterValue")))
+          name (field record "name")
+          derivation (field record "derivationId")
+          graph (mapv (fn [c] {:id (aget c "id") :content (aget c "content") :category (aget c "category")
+                              :basis (keyword (aget c "basis")) :scope-type (keyword (aget c "scopeType"))
+                              :scope-subject-ids (vec (aget c "scopeSubjectIds"))
+                              :supporting-memory-ids (vec (aget c "supportingMemoryIds"))
+                              :conflicting-memory-ids (vec (aget c "conflictingMemoryIds"))})
+                      (field record "conclusions"))]
+      (when (and (s/valid? ::publication run) (s/valid? ::config/name name)
+                 (contains? #{:none :repository :session :language} (:type filter))
+                 (= derivation (core/derivation-id principal name filter) (:derivation-id run))
+                 (= (:id run) (field record "runId"))
+                 (= [derivation] (vec (field record "parents")))
+                 (= (:input-memory-ids run) (vec (field record "memoryIds")))
+                 (= (sort-by :id graph) (sort-by :id (:conclusions run))))
+        {:name name :filter filter :run run
+         :conclusions-linked? (every? #(true? (aget % "linked")) (field record "conclusions"))
+         :dependencies-linked? (true? (field record "dependenciesLinked"))}))
+    (catch :default _ nil)))
+
+(defn- read-record! [tx principal record]
+  (if-let [{:keys [run conclusions-linked? dependencies-linked?] :as saved} (stored-run principal record)]
+    (-> (dependencies! tx principal (:input-memory-ids run) (:id run))
+        (.then (fn [result]
+                 (cond
+                   (not= :available (:status result)) {:status (:status result) :run-id (:id run)}
+                   (not (and (:linked? result) conclusions-linked? dependencies-linked?)) {:status :unresolved-evidence :run-id (:id run)}
+                   :else (assoc (dissoc saved :conclusions-linked? :dependencies-linked?) :status :available)))))
+    (js/Promise.resolve {:status :unresolved-evidence :run-id (field record "runId")})))
+
+(defn read-runs! [db request]
+  (-> (js/Promise.resolve)
+      (.then (fn []
+               (core/normalize-read request)
+               (with-session! db
+                 (fn [^js session]
+                   (.executeRead session
+                     (fn [tx]
+                       (-> (run-records! tx (:principal db) request)
+                           (.then (fn [{:keys [records truncated?]}]
+                                    (-> (reduce (fn [pending record]
+                                                  (.then pending (fn [items]
+                                                                   (-> (read-record! tx (:principal db) record)
+                                                                       (.then (fn [item] (conj items item)))))))
+                                                (js/Promise.resolve []) records)
+                                        (.then (fn [items] {:items items :truncated? truncated?}))))))))))))))
+
+(defn- repair-snapshot! [tx principal record]
+  (if-let [{:keys [run]} (stored-run principal record)]
+    (-> (dependencies! tx principal (:input-memory-ids run) (:id run))
+        (.then (fn [result] (assoc result :run run :record record :run-id (:id run)))))
+    (js/Promise.resolve {:status :unresolved-evidence :run-id (field record "runId")})))
+
+(defn- restore-links! [^js tx principal {:keys [status run record run-id]}]
+  (if-not (= :available status)
+    (js/Promise.resolve {:status status :run-id run-id})
+    (-> (.run tx
+          "MATCH (:AdamUser {id: $readerId})-[:OWNS_DERIVATION]->(d)-[:HAS_RUN]->(r:AdamDerivationRun {id: $runId})
+           WHERE r.runJson = $runJson
+           OPTIONAL MATCH (r)-[old:USED_MEMORY]->() DELETE old
+           WITH DISTINCT r
+           CALL { WITH r UNWIND r.inputMemoryIds AS id MATCH (m)
+                  WHERE m.id = id AND (m:AdamObservation OR m:AdamReflection)
+                  MERGE (r)-[:USED_MEMORY]->(m) }
+           WITH r OPTIONAL MATCH (r)-[:HAS_CONCLUSION]->(c)
+           OPTIONAL MATCH (c)-[old:SUPPORTED_BY|CONFLICTING_EVIDENCE]->() DELETE old
+           WITH DISTINCT r, c
+           CALL { WITH c UNWIND c.supportingMemoryIds AS id MATCH (m)
+                  WHERE m.id = id AND (m:AdamObservation OR m:AdamReflection)
+                  MERGE (c)-[:SUPPORTED_BY]->(m) }
+           CALL { WITH c UNWIND c.conflictingMemoryIds AS id MATCH (m)
+                  WHERE m.id = id AND (m:AdamObservation OR m:AdamReflection)
+                  MERGE (c)-[:CONFLICTING_EVIDENCE]->(m) }
+           RETURN DISTINCT r.id AS id"
+          #js {:readerId principal :runId (:id run) :runJson (field record "runJson")})
+        (.then (fn [result] {:status (if (seq (rows result)) :repaired :unresolved-evidence) :run-id run-id})))))
+
+(defn- sequential! [records work]
+  (reduce (fn [pending record]
+            (.then pending (fn [items]
+                             (-> (work record) (.then (fn [item] (conj items item)))))))
+          (js/Promise.resolve []) records))
+
+(defn repair-dependencies! [db request]
+  (-> (js/Promise.resolve)
+      (.then (fn []
+               (core/normalize-read request)
+               (write! db
+                 (fn [tx]
+                   (-> (run-records! tx (:principal db) (assoc request :history true))
+                       (.then (fn [{:keys [records truncated?]}]
+                                ;; Capture all candidate/dependency state before repairing any.
+                                (-> (sequential! records #(repair-snapshot! tx (:principal db) %))
+                                    (.then (fn [snapshots]
+                                             (sequential! snapshots #(restore-links! tx (:principal db) %))))
+                                    (.then (fn [items] {:items items :truncated? truncated?}))))))))))))
