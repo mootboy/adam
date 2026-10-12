@@ -63,7 +63,7 @@
   (let [lower (string/lower-case (string/trim value))] (get aliases lower lower)))
 
 (s/def ::repository
-  (s/and (config/text-spec 4096) #(normalize-origin %)))
+  (s/and (config/text-spec 4096) #(repository/normalize-git-remote %)))
 (s/def ::session
   (s/and (config/text-spec 2048) #(re-matches #"urn:adam:session:[^:\s]+:(?:pi|claude-code):[^\s]+" %)))
 (s/def ::language
@@ -137,7 +137,6 @@
   (s/and (s/keys :req-un [::id ::input-memory-ids ::conclusions])
          #(s/valid? (s/coll-of ::conclusion :kind vector?) (:conclusions %))
          #(s/valid? ::identity-vector (mapv :id (:conclusions %)))
-         #(or (empty? (:conclusions %)) (seq (:input-memory-ids %)))
          ;; Missing links must never imply fewer permission requirements.
          #(every? (set (:input-memory-ids %))
                   (mapcat (fn [item] (concat (:supporting-memory-ids item)
@@ -163,12 +162,17 @@
 (s/def ::derivation-id ::id)
 (s/def ::saved-run (s/and (s/keys :req-un [::derivation-id]) ::comparison))
 
-(defn- authorized-run-spec [reader-id grants by-id expected-id]
-  (s/and ::saved-run
+(defn- authorized-dependencies-spec [reader-id grants by-id]
+  (s/and (s/keys :req-un [::input-memory-ids])
          #(s/valid? ::reader-id reader-id)
-         #(= expected-id (:derivation-id %))
-         #(every? (fn [id] (when-let [memory (get by-id id)]
-                            (authorized? reader-id grants memory))) (:input-memory-ids %))))
+         #(every? (fn [id]
+                    (let [memory (get by-id id)]
+                      (and (s/valid? ::memory memory) (authorized? reader-id grants memory))))
+                  (:input-memory-ids %))))
+
+(defn- authorized-run-spec [reader-id grants by-id expected-id]
+  (s/and ::saved-run (authorized-dependencies-spec reader-id grants by-id)
+         #(= expected-id (:derivation-id %))))
 
 (defn- support-ids [memory]
   (if (= :reflection (:kind memory))
@@ -208,12 +212,10 @@
                             (update roles (:id memory) (fnil conj #{}) :evidence)
                             (support-ids memory)))
                   {} candidates)
-          comparison-available? (and comparison (s/valid? ::comparison comparison)
-                                     (every? #(and (get by-id %) (authorized? reader-id grants (get by-id %)))
-                                             (:input-memory-ids comparison)))
+          comparison-available? (s/valid? (s/and ::comparison (authorized-dependencies-spec reader-id grants by-id))
+                                        comparison)
           roles (if comparison-available?
                   (reduce (fn [roles id]
-                            (require-memory id)
                             (update roles id (fnil conj #{}) :comparison-dependency))
                           roles (:input-memory-ids comparison))
                   roles)]
@@ -321,7 +323,6 @@
                           #(s/valid? (identities source-ids 0) (:conflicting-memory-ids %))
                           #(s/valid? (identities (get subjects (:scope-type %))
                                                 (if (= :group (:scope-type %)) 2 1)) (:scope-subject-ids %))
-                          #(or (= :group (:scope-type %)) (= 1 (count (:scope-subject-ids %))))
                           #(or (= :explicit (:basis %))
                                (<= (:inferred-min-distinct-occasions recipe)
                                    (count (support-occasions snapshot (:supporting-memory-ids %))))))

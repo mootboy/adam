@@ -42,6 +42,8 @@ Interface regressions reproduced comparison citation omissions (support and conf
 
 Clean CI passes all four builds, 199 ClojureScript tests/898 assertions, 30 Node tests (26 pass/four expected skips), exact-tarball/package, runtime-drift and diff checks. Generated artifacts remain unchanged. No production access or real model calls.
 
+Optional re-review cleanup restores strict public repository selector syntax while retaining canonical memory-origin matching, removes redundant conclusion/comparison predicates, and withholds malformed comparison-only source rows instead of aborting authorized source-only generation. New interface cases reproduce both behaviors before correction. Clean CI passes 201 ClojureScript tests/914 assertions and 30 Node tests (26 pass/four expected skips); package/diff/runtime drift checks pass and all generated artifacts remain unchanged.
+
 ## Non-goals
 
 Graph leases/publication/rebuild repair, source-anchor extraction, production provider/auth adapter, command/MCP registration, migration/version bump/release and production mutation. Stage 2 remains graph storage and authorization; source mirroring/evidence/producers remain untouched.
