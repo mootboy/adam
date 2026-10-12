@@ -16,7 +16,7 @@ The user wants an additional configurable derivation layer: model-generated meta
 
 ## Outcome
 
-An explicitly enabled derivation synthesizes existing owned memories into bounded, inspectable conclusions. The first concrete derivation identifies architectural and style preferences, distinguishes explicit preferences from inferred patterns, and preserves supporting evidence, conflicts and scope.
+An explicitly enabled derivation synthesizes the requesting user's own memories and grant-authorized memories into bounded, inspectable conclusions. The first concrete derivation identifies architectural and style preferences, distinguishes explicit preferences from inferred patterns, and preserves supporting evidence, conflicts and scope.
 
 Outputs are rebuildable derived state, not authoritative producer memory. They never replace observations/reflections, append to source logs, or silently become user instructions. Retrieval is read-only and makes no model call.
 
@@ -25,15 +25,15 @@ Outputs are rebuildable derived state, not authoritative producer memory. They n
 ### Included
 
 - One concrete preference derivation, configured through validated YAML; no general-purpose workflow engine.
-- Bounded, authorization-filtered input selection across producer-scoped observations and reflections, including memories without file links. Own memories are eligible; the design also accommodates explicitly granted access from other users.
+- Bounded, authorization-filtered input selection across producer-scoped observations and reflections, including memories without file links. Own memories and memories made accessible by explicit grants are eligible in 0.4.2.
 - Model-generated classification and synthesis rather than lexical matching or hardcoded keyword rules.
 - Separate trusted execution controls (provider/model, consent, input/output limits, timeout, scheduling and cost guards) and interpretation guidance (categories, evidence thresholds, scope and conflict handling).
 - Supporting and conflicting canonical memory identities, source provenance, derivation/configuration version and input fingerprint on derived outputs.
-- Explicit/inferred basis and personal/repository/session scope; insufficient evidence and conflicting evidence are valid outcomes.
+- Explicit/inferred basis and personal/repository/group/session scope; insufficient evidence and conflicting evidence are valid outcomes.
 - Idempotent cached results for unchanged input/configuration, visible freshness, and invalidation when supporting memory or configuration changes.
 - A bounded shared read surface available to Pi and Claude MCP; exact names remain to be agreed.
 - Explicit manual refresh only in 0.4.2; lifecycle/background automation is deferred.
-- A directed user-to-user read-grant design for future collective understanding, with inherited restrictions on derived results. Actual multi-user execution in 0.4.2 remains to be decided.
+- Directed user-to-user read grants and grant-authorized cross-user synthesis in 0.4.2, with inherited restrictions on derived results.
 
 ### Excluded
 
@@ -71,7 +71,7 @@ derivations:
       require_supporting_memory_ids: true
       inferred_min_distinct_sessions: 2
     scope:
-      distinguish: [personal, repository, session]
+      distinguish: [personal, repository, group, session]
     conflicts:
       policy: retain_and_report
 ```
@@ -87,7 +87,7 @@ supporting_memories: ["<canonical-memory-id>", "<canonical-memory-id>"]
 conflicting_memories: []
 ```
 
-The model proposes content; code validates the output schema, ownership, supplied citation membership, configured limits and mechanically checkable evidence thresholds. Structural validation does not guarantee a conclusion is true; faithful interpretation requires evaluated examples and human inspection.
+The model proposes content; code validates the output schema, current authorization, supplied citation membership, configured limits and mechanically checkable evidence thresholds. Structural validation does not guarantee a conclusion is true; faithful interpretation requires evaluated examples and human inspection.
 
 ## Classification and evidence requirements
 
@@ -134,20 +134,21 @@ There is **no purpose property**. This models general memory read access, not a 
 - Revocation makes affected cached results inaccessible to readers who lost permission; it need not delete the original memories. Fresh synthesis can use the remaining authorized inputs. Configuration/version caching must never bypass access checks.
 - Evidence access and conclusion subject are separate: a conclusion may describe an individual, repository or group. Permission to combine memories is not evidence that contributors agree; disagreement and attribution remain visible.
 
-This is application-level authorization, not protection against unrestricted Neo4j credentials. Manual graph administration can establish/remove grants in a future multi-user acceptance environment; this documentation change creates no production grants. Existing own-user-only read surfaces remain unchanged until authorization is deliberately implemented and tested. Whether cross-user synthesis itself ships in 0.4.2 is still an open scope decision.
+This is application-level authorization, not protection against unrestricted Neo4j credentials. Manual graph administration can establish/remove grants for multi-user acceptance; this documentation change creates no production grants. Grant-authorized cross-user synthesis is included in 0.4.2. Existing own-user-only file-context surfaces retain their current behavior; the new derivation input/read paths implement and test the authorization contract above.
 
 ## Acceptance criteria
 
-- [ ] Validated YAML controls the first preference derivation; unsupported/unsafe configuration fails visibly without starting model work.
-- [ ] Without derivation configuration no model calls occur; configured generation requires explicit manual refresh using the identified provider/credential source. Credentials are not written to YAML, graph state or diagnostics.
-- [ ] Inputs are bounded and filtered for current authorization before selection limits; memories without file evidence are eligible. Until multi-user execution is explicitly included, only the requesting user's memories are processed.
-- [ ] The grant contract has no purpose property and distinguishes permission from conclusion scope. If multi-user execution is included, tests prove directional/non-transitive access, denial without a grant, all-input-owner restrictions on cached results, and immediate read denial after revocation.
+Reviewed and agreed one by one with the user on 2026-10-12. The duplicate manual-trigger criteria are combined below. Agreement on these behaviors does not resolve the implementation choices listed afterward.
+
+- [ ] YAML is validated before any model call. Invalid syntax, unknown options and invalid configured limits fail visibly rather than being silently ignored; exact checks follow the schema agreed before implementation.
+- [ ] Without derivation configuration no model calls occur; configured generation requires explicit manual refresh using the identified provider/credential source. Lifecycle events and read calls never trigger generation. Credentials may be referenced by source (for example, an environment-variable name) but secrets are not written to YAML, graph state or diagnostics. Existing Pi boundary drafts and lifecycle completion remain unchanged.
+- [ ] Inputs are bounded and filtered for current authorization before selection limits; both own and directly grant-authorized memories are eligible in 0.4.2, including memories without file evidence.
+- [ ] The grant contract has no purpose property and distinguishes permission from conclusion scope. Tests prove directional/non-transitive access, denial without a grant, all-input-owner restrictions on cached results, and immediate denial on subsequent reads after revocation.
 - [ ] Output distinguishes explicit from inferred preferences, category and scope, with nonempty validated support identities for every conclusion.
 - [ ] Tests cover explicit repository-scoped requests, unendorsed assistant choices, user corrections as strong but scoped preference evidence, insufficient evidence, conflicts/reversals, and duplicated support through reflections that must not satisfy independent-evidence thresholds.
-- [ ] Derived provenance can be inspected back through producer/source session and supporting observations/reflections; missing or invalid support is never fabricated.
-- [ ] Unchanged inputs/configuration reuse successful results, including empty results. Input/configuration changes mark results stale; refresh commits a complete result atomically and does not present stale conclusions as current.
-- [ ] Failed, cancelled, invalid or timed-out generation preserves the prior result with truthful freshness/status and does not mark new input as successfully processed.
-- [ ] Normal lifecycle events and read calls never trigger generation in 0.4.2; explicit refresh is the only model-work trigger. Existing Pi boundary drafts and lifecycle completion remain unchanged.
+- [ ] Derived provenance can be inspected back through producer/source session and supporting observations/reflections, with source expansion where available and authorized. Missing or inaccessible source is reported honestly; support is never fabricated or disclosed without permission.
+- [ ] Unchanged inputs/configuration reuse successful results, including empty results. Input/configuration changes mark results stale; refresh commits a complete result atomically. Still-authorized stale results may be read with a clear outdated label, never presented as current or automatically refreshed.
+- [ ] Failed, cancelled, invalid or timed-out generation preserves the prior result with truthful freshness/error status and does not mark new input as successfully processed. Preserved results still require current authorization and cannot bypass revoked access.
 - [ ] Pi and Claude MCP expose equivalent bounded read-only results with explicit item/line/byte truncation; ordinary retrieval never invokes a model.
 - [ ] Source sessions, entries, producer memories and existing file-context behavior remain unchanged; model/configuration outages are isolated from those paths.
 - [ ] Normal tests use synthetic memories and a fake executor. Live model probes require explicit opt-in/cost limits; database validation runs only on a disposable instance with isolated identities and exact resource-scoped cleanup.
@@ -156,11 +157,11 @@ This is application-level authorization, not protection against unrestricted Neo
 
 1. First supported provider/model and credential source for the agreed internal subsystem. “Credential policy” means which configured provider credentials to use, not an additional mandatory consent toggle.
 2. YAML location/schema, safe parsing and numerical input/output/call/timeout limits. Cost guards are not a guaranteed spend ceiling.
-3. Initial input selection: all eligible memories versus explicit repository/session selection; how to expose omissions and avoid biased conclusions from a bounded subset. Decide whether 0.4.2 implements cross-user synthesis or only prepares the grant model for a later increment.
+3. Initial input selection: all eligible memories versus explicit repository/session selection; how to expose omissions and avoid biased conclusions from a bounded subset. Own and explicitly grant-authorized cross-user inputs are settled as included in 0.4.2.
 4. Refresh/read command and tool names. Manual refresh only is settled; automation is later work.
 5. Derived storage identity and exact input/configuration fingerprinting, dependency tracking and restart/concurrent-refresh mechanics, following the result-preservation and access rules above.
 6. Exact independent-evidence accounting, conflict/correction policy and representation of personal/repository/group/session subjects.
-7. Final 0.4.2 implementation/release scope before a version/release PR. Internal subsystem ownership and configuration-based opt-in are settled.
+7. Final implementation breakdown and release readiness before a version/release PR. Internal subsystem ownership, configuration-based opt-in, manual refresh, cross-user grant-authorized inputs and the acceptance behaviors above are settled; no implementation or publication is authorized by this documentation review alone.
 
 ## Validation
 
