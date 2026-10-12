@@ -304,7 +304,9 @@
   (async done
     (let [a (observation "a" own "one")
           shared (assoc (observation "b" other "two") :dropped? true)
-          prior {:id "prior" :input-memory-ids ["b"] :conclusions [(assoc conclusion :id "old" :content "PRIVATE")]}
+          prior {:id "prior" :input-memory-ids ["b"]
+                 :conclusions [(assoc conclusion :id "old" :content "PRIVATE"
+                                      :scope-subject-ids [other] :supporting-memory-ids ["b"])]}
           cases [{:label "direct read grant" :memories [a (observation "b" other "two")]
                   :grants [{:owner-id other :reader-id own :permission "read"}] :ids ["a" "b"]}
                  {:label "reverse grant is not access" :memories [a (observation "b" other "two")]
@@ -416,4 +418,151 @@
           (.then (fn [results]
                    (is (= [:read :identity :clock :execute] @events))
                    (is (= "captured-time" (get-in (first results) [:run :created-at]))) (done)))
+          (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
+(deftest comparison-citations-cannot-omit-authorization-dependencies
+  (async done
+    (let [bob (assoc (observation "b" other "two") :dropped? true)
+          cases [[["b"] []] [["a"] ["b"]]]
+          call (fn [[supports conflicts]]
+                 (let [prior (assoc conclusion :id "prior-claim" :content "PRIVATE_BOB"
+                                    :supporting-memory-ids supports :conflicting-memory-ids conflicts)
+                       request (assoc input :memories [(first (:memories input)) bob]
+                                      :comparison {:id "prior" :input-memory-ids ["a"] :conclusions [prior]})]
+                   (attempt! request {:finish-reason :stop :conclusions [] :links []})))]
+      (-> (js/Promise.all (to-array (map call cases)))
+          (.then (fn [results]
+                   (doseq [{:keys [result calls]} (array-seq results)]
+                     (is (= :generated (:status result)))
+                     (is (= ["a"] (get-in result [:run :input-memory-ids])))
+                     (is (= [:comparison-unavailable] (get-in result [:run :diagnostics])))
+                     (is (not (.includes (:payload (first calls)) "PRIVATE_BOB"))))
+                   (done)))
+          (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
+(deftest malformed-and-graph-loaded-comparison-conclusions
+  (async done
+    (let [prior (assoc conclusion :id "prior-claim" :basis "explicit" :scope-type "personal")
+          call (fn [relation]
+                 (attempt! (assoc input :comparison {:id "prior" :input-memory-ids ["a"] :conclusions [prior]})
+                           {:finish-reason :stop :conclusions [conclusion]
+                            :links [{:relation relation :from "c1" :to "prior-claim"}]}))]
+      (-> (js/Promise.all (to-array (map call [:contradicts :supersedes])))
+          (.then (fn [results]
+                   (doseq [{:keys [result code]} (array-seq results)]
+                     (is (nil? code))
+                     (is (= :generated (:status result)))
+                     (is (= "prior-claim" (get-in result [:run :links 0 :to]))))
+                   (attempt! (assoc input :comparison {:id "broken" :input-memory-ids ["a"]
+                                                       :conclusions [(dissoc conclusion :supporting-memory-ids)]})
+                             {:finish-reason :stop :conclusions [] :links []})))
+          (.then (fn [{:keys [result]}]
+                   (is (= [:comparison-unavailable] (get-in result [:run :diagnostics]))) (done)))
+          (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
+(deftest source-text-preserves-terminal-control-characters
+  (async done
+    (let [request (assoc-in input [:memories 0 :content] "Source finding \u001b[31mred\u001b[0m")]
+      (-> (attempt! request {:finish-reason :stop :conclusions [conclusion] :links []})
+          (.then (fn [{:keys [result calls code]}]
+                   (is (nil? code))
+                   (is (= :generated (:status result)))
+                   (is (= (get-in request [:memories 0 :content])
+                          (aget (aget (aget (js/JSON.parse (:payload (first calls))) "memories") 0) "content")))
+                   (done)))
+          (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
+(deftest raw-memory-remotes-match-without-forwarding-credentials
+  (async done
+    (let [call (fn [origin]
+                 (core/refresh-configured!
+                   {:load-input! (fn [_] (assoc-in input [:memories 0 :repository-origins] [origin]))
+                    :measure-input (constantly 200)
+                    :execute! (fn [request]
+                                (is (not (.includes (:payload request) "secret")))
+                                {:finish-reason :stop :conclusions [] :links []})}
+                   {"preferences" recipe} {:repository "git@github.com:example/repo.git"}))]
+      (-> (js/Promise.all
+            (to-array (map call ["git@github.com:example/repo.git" "https://user:secret@github.com/example/repo.git"
+                                "github.com/example/repo"])))
+          (.then (fn [results]
+                   (doseq [rows (array-seq results)]
+                     (is (= ["a"] (get-in (first rows) [:run :input-memory-ids]))))
+                   (done)))
+          (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
+(deftest configured-refresh-keeps-actionable-budget-diagnostics
+  (async done
+    (-> (core/refresh-configured!
+          {:load-input! (fn [_] input) :measure-input (constantly 30000)
+           :execute! (fn [_] (is false "oversized input must not call executor"))}
+          {"preferences" recipe} {})
+        (.then (fn [[result]]
+                 (is (= :input-too-large (:code result)))
+                 (is (= 30000 (:measured-input-tokens result)))
+                 (is (= 10784 (:available-input-tokens result)))
+                 (done)))
+        (.catch (fn [error] (is false (.-stack error)) (done))))))
+
+(deftest wrong-bucket-cache-is-not-reused-and-invalid-readers-are-unavailable
+  (async done
+    (let [deps {:measure-input (constantly 200)
+                :execute! (fn [_] {:finish-reason :stop :conclusions [] :links []})}]
+      (-> (core/refresh! deps input)
+          (.then (fn [{:keys [run]}]
+                   (let [reader ""
+                         malformed (assoc input :reader-id reader
+                                          :grants [{:owner-id own :reader-id reader :permission "read"}])
+                         forged-bucket (assoc run :derivation-id (core/derivation-id reader "preferences" {:type :none}))]
+                     (is (= :unavailable (core/freshness malformed forged-bucket))))
+                   (core/refresh! deps (assoc input :name "different" :cached-run run))))
+          (.then (fn [result]
+                   (is (= :generated (:status result)))
+                   (is (= (core/derivation-id own "different" {:type :none}) (get-in result [:run :derivation-id])))
+                   (done)))
+          (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
+(deftest language-filter-requires-an-extension-in-the-file-basename
+  (async done
+    (let [cases [["go" "go"] ["c" "c"] ["rs" "rust"] ["foo.py/go" "python"] ["foo/go" "go"]]
+          call (fn [[path language]]
+                 (core/refresh-configured!
+                   {:load-input! (fn [_] (assoc-in input [:memories 0 :linked-paths] [path]))
+                    :measure-input (constantly 200)
+                    :execute! (fn [_] {:finish-reason :stop :conclusions [] :links []})}
+                   {"preferences" recipe} {:language language}))]
+      (-> (js/Promise.all (to-array (map call cases)))
+          (.then (fn [results]
+                   (doseq [rows (array-seq results)]
+                     (is (= [] (get-in (first rows) [:run :input-memory-ids]))))
+                   (done)))
+          (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
+(deftest malformed-cached-conclusions-do-not-relax-dependency-access
+  (async done
+    (let [deps {:measure-input (constantly 200)
+                :execute! (fn [_] {:finish-reason :stop :conclusions [conclusion] :links []})}]
+      (-> (core/refresh! deps input)
+          (.then (fn [{:keys [run]}]
+                   (let [forged (assoc-in run [:conclusions 0 :conflicting-memory-ids] ["b"])]
+                     (is (= :unavailable (core/freshness input forged)))
+                     (core/refresh! deps (assoc input :cached-run forged)))))
+          (.then (fn [result] (is (= :generated (:status result))) (done)))
+          (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
+(deftest all-config-refresh-captures-one-snapshot-per-name-before-its-model-call
+  (async done
+    (let [events (atom [])
+          deps {:load-input! (fn [{:keys [name]}] (swap! events conj [:read name])
+                               (assoc-in input [:memories 0 :content] name))
+                :measure-input (constantly 200)
+                :execute! (fn [{:keys [payload]}]
+                            (let [name (aget (aget (aget (js/JSON.parse payload) "memories") 0) "content")]
+                              (swap! events conj [:execute name])
+                              (js/Promise.resolve {:finish-reason :stop :conclusions [] :links []})))}]
+      (-> (core/refresh-configured! deps {"first" recipe "second" recipe} {})
+          (.then (fn [results]
+                   (is (= [:generated :generated] (mapv :status results)))
+                   (is (= [[:read "first"] [:execute "first"] [:read "second"] [:execute "second"]] @events))
+                   (done)))
           (.catch (fn [error] (is false (.-stack error)) (done)))))))

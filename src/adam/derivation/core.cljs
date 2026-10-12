@@ -21,6 +21,13 @@
 (defn derivation-id [reader-id name filter]
   (str "urn:adam:derivation:" (fingerprint [reader-id name filter])))
 
+(defn- normalize-origin [origin]
+  ;; Accept raw remotes and the canonical host/path rows supplied by graph adapters.
+  (when (string? origin)
+    (or (repository/normalize-git-remote origin)
+        (when (re-matches #"[^/:\s@?#]+/[^\s?#]+" origin)
+          (repository/normalize-git-remote (str "https://" origin))))))
+
 (defn- memory-payload [memory]
   (let [payload (select-keys memory [:id :owner-id :session-id :kind :producer :content
                                     :source-kind :source-session-id :timestamp :relevance
@@ -30,7 +37,9 @@
     (reduce (fn [result key]
               (if (contains? result key)
                 (update result key #(vec (sort-by snapshot-json (distinct %)))) result))
-            (assoc payload :dropped? (boolean (:dropped? memory)))
+            (cond-> (assoc payload :dropped? (boolean (:dropped? memory)))
+              (contains? payload :repository-origins)
+              (update :repository-origins #(keep normalize-origin %)))
             [:source-entries :source-occasions :supporting-memory-ids
              :repository-origins :repository-ids :linked-paths :source-contexts])))
 
@@ -54,7 +63,7 @@
   (let [lower (string/lower-case (string/trim value))] (get aliases lower lower)))
 
 (s/def ::repository
-  (s/and (config/text-spec 4096) #(repository/normalize-git-remote %)))
+  (s/and (config/text-spec 4096) #(normalize-origin %)))
 (s/def ::session
   (s/and (config/text-spec 2048) #(re-matches #"urn:adam:session:[^:\s]+:(?:pi|claude-code):[^\s]+" %)))
 (s/def ::language
@@ -79,7 +88,7 @@
         value (get request kind)]
     (cond-> {:filter (if kind
                        {:type kind :value (case kind
-                                            :repository (repository/normalize-git-remote value)
+                                            :repository (normalize-origin value)
                                             :language (language-name value)
                                             :session value)}
                        {:type :none})}
@@ -96,10 +105,10 @@
   (case type
     :none true
     :session (= value (:session-id memory))
-    :repository (contains? (set (:repository-origins memory)) value)
+    :repository (contains? (set (keep normalize-origin (:repository-origins memory))) value)
     :language (boolean
-                (some #(contains? (get language-extensions value)
-                                  (last (string/split (string/lower-case %) #"\.")))
+                (some #(when-let [[_ extension] (re-find #"\.([^./\\]+)$" (string/lower-case %))]
+                         (contains? (get language-extensions value) extension))
                       (:linked-paths memory)))
     false))
 
@@ -109,7 +118,9 @@
 (s/def ::owner-id ::id)
 (s/def ::reader-id ::id)
 (s/def ::session-id ::id)
-(s/def ::content (config/text-spec js/Number.MAX_SAFE_INTEGER))
+;; Source content is opaque evidence, not an identifier or terminal rendering.
+;; JSON serialization escapes control bytes; complete-request sizing is its bound.
+(s/def ::content (s/and string? #(not (string/blank? %))))
 (s/def ::producer (config/text-spec 256))
 (s/def ::kind #{:observation :reflection})
 (s/def ::identity-vector (s/coll-of ::id :kind vector? :distinct true))
@@ -124,13 +135,40 @@
 (s/def ::links (s/coll-of map? :kind vector?))
 (s/def ::comparison
   (s/and (s/keys :req-un [::id ::input-memory-ids ::conclusions])
-         #(or (empty? (:conclusions %)) (seq (:input-memory-ids %)))))
+         #(s/valid? (s/coll-of ::conclusion :kind vector?) (:conclusions %))
+         #(s/valid? ::identity-vector (mapv :id (:conclusions %)))
+         #(or (empty? (:conclusions %)) (seq (:input-memory-ids %)))
+         ;; Missing links must never imply fewer permission requirements.
+         #(every? (set (:input-memory-ids %))
+                  (mapcat (fn [item] (concat (:supporting-memory-ids item)
+                                            (:conflicting-memory-ids item))) (:conclusions %)))))
+
+(defn- normalize-conclusion [item]
+  (-> item
+      (update :basis #(get {"explicit" :explicit "inferred" :inferred} % %))
+      (update :scope-type #(get {"personal" :personal "repository" :repository
+                                "group" :group "session" :session} % %))))
+
+(defn- normalize-comparison [comparison]
+  (if (and (map? comparison) (s/valid? ::conclusions (:conclusions comparison)))
+    (update comparison :conclusions #(mapv normalize-conclusion %))
+    comparison))
 
 (defn- authorized? [reader-id grants {:keys [owner-id]}]
   (and (s/valid? ::owner-id owner-id)
        (or (= reader-id owner-id)
            (some #(and (= owner-id (:owner-id %)) (= reader-id (:reader-id %))
                        (= "read" (:permission %))) grants))))
+
+(s/def ::derivation-id ::id)
+(s/def ::saved-run (s/and (s/keys :req-un [::derivation-id]) ::comparison))
+
+(defn- authorized-run-spec [reader-id grants by-id expected-id]
+  (s/and ::saved-run
+         #(s/valid? ::reader-id reader-id)
+         #(= expected-id (:derivation-id %))
+         #(every? (fn [id] (when-let [memory (get by-id id)]
+                            (authorized? reader-id grants memory))) (:input-memory-ids %))))
 
 (defn- support-ids [memory]
   (if (= :reflection (:kind memory))
@@ -143,7 +181,8 @@
                      :or {filter {:type :none} grants []}}]
   (when-not (s/valid? ::reader-id reader-id)
     (config/reject! :unauthorized "requesting identity is required"))
-  (let [by-id (into {} (map (juxt :id identity) memories))
+  (let [comparison (normalize-comparison comparison)
+        by-id (into {} (map (juxt :id identity) memories))
         require-memory (fn [id]
                          (let [memory (get by-id id)]
                            (when-not memory (config/reject! :unresolved-evidence "memory dependency is missing"))
@@ -215,7 +254,11 @@
          (config/only-keys #{:id :content :category :basis :scope-type :scope-subject-ids
                             :supporting-memory-ids :conflicting-memory-ids})
          #(s/valid? (config/text-spec 128) (:id %))
-         #(s/valid? (config/text-spec 65536) (:content %))))
+         #(s/valid? (config/text-spec 65536) (:content %))
+         #(seq (:supporting-memory-ids %))
+         #(if (= :group (:scope-type %))
+            (<= 2 (count (:scope-subject-ids %)))
+            (= 1 (count (:scope-subject-ids %))))))
 (s/def ::relation #{:contradicts :supersedes})
 (s/def ::from ::id)
 (s/def ::to ::id)
@@ -258,10 +301,7 @@
       (config/reject! :invalid-output "model JSON requires conclusions and links arrays"))
     (-> value
         (assoc :finish-reason finish-reason)
-        (update :conclusions #(mapv (fn [item]
-                                     (-> item
-                                         (update :basis (fn [v] (when (string? v) (keyword v))))
-                                         (update :scope-type (fn [v] (when (string? v) (keyword v)))))) %))
+        (update :conclusions #(mapv normalize-conclusion %))
         (update :links #(mapv (fn [item]
                                (update item :relation (fn [v] (when (string? v) (keyword v))))) %)))))
 
@@ -312,14 +352,20 @@
 (s/def ::model
   (s/keys :req-un [::config/provider ::config/id ::context-window ::max-output-tokens]))
 
+(s/def ::token-count (s/and number? js/Number.isSafeInteger #(not (neg? %))))
+(s/def ::measured-input-tokens ::token-count)
+(s/def ::available-input-tokens ::token-count)
+(s/def ::budget-diagnostics (s/keys :req-un [::measured-input-tokens ::available-input-tokens]))
+
 (defn prepare-refresh [{:keys [reader-id name filter recipe model memories grants comparison cached-run]}
                        measure-input]
   (when-not (and (s/valid? ::config/name name) recipe (s/valid? ::model model)
                  (or (nil? (:model recipe))
                      (= (:model recipe) (select-keys model [:provider :id]))))
     (config/reject! :invalid-model "recipe and resolved model capabilities are required"))
-  (let [snapshot (select-input {:reader-id reader-id :filter filter :memories memories
-                                        :grants grants :comparison comparison})
+  (let [cached-run (normalize-comparison cached-run)
+        snapshot (select-input {:reader-id reader-id :filter filter :memories memories
+                                :grants grants :comparison comparison})
         selected (filterv #(some (:roles %) [:evidence :historical-support]) (:memories snapshot))
         input-fingerprint (fingerprint {:reader-id reader-id :filter filter
                                         :candidate-ids (:candidate-ids snapshot)
@@ -328,17 +374,14 @@
         model-key (select-keys model [:provider :id :context-window :max-output-tokens])
         by-id (into {} (map (juxt :id identity) memories))
         direct-ids (set (map :id selected))
-        reusable? (and cached-run
+        reusable? (and (s/valid? (authorized-run-spec reader-id grants by-id (derivation-id reader-id name filter)) cached-run)
                        (= input-fingerprint (:input-fingerprint cached-run))
                        (= configuration-fingerprint (:configuration-fingerprint cached-run))
                        (= model-key (:model cached-run))
-                       (s/valid? ::input-memory-ids (:input-memory-ids cached-run))
                        (every? (set (:input-memory-ids cached-run)) direct-ids)
                        (every? (fn [id]
-                                 (let [memory (get by-id id)]
-                                   (and memory (authorized? reader-id grants memory)
-                                        (= (fingerprint (memory-payload memory))
-                                           (get (:dependency-fingerprints cached-run) id)))))
+                                 (= (fingerprint (memory-payload (get by-id id)))
+                                    (get (:dependency-fingerprints cached-run) id)))
                                (:input-memory-ids cached-run)))]
     (if reusable?
       {:status :reused :run cached-run}
@@ -360,7 +403,7 @@
                                                                         :conflicting-memory-ids]) (:conclusions prior))})}
             text (snapshot-json payload)
             tokens (measure-input text model-key)]
-        (when-not (s/valid? (s/and number? js/Number.isSafeInteger #(not (neg? %))) tokens)
+        (when-not (s/valid? ::token-count tokens)
           (config/reject! :invalid-budget "request measurement must be a nonnegative integer"))
         (when (or (not (pos? cap)) (> tokens cap))
           (throw (ex-info "complete input exceeds context or configured budget; narrow scope or raise the input cap"
@@ -390,9 +433,8 @@
   (let [by-id (into {} (map (juxt :id identity) memories))
         ids (:input-memory-ids run)]
     (if-not (and (= (count by-id) (count memories))
-                 (= (derivation-id reader-id name filter) (:derivation-id run))
-                 (s/valid? ::input-memory-ids ids)
-                 (every? #(and (get by-id %) (authorized? reader-id grants (get by-id %))) ids))
+                 (s/valid? (authorized-run-spec reader-id grants by-id (derivation-id reader-id name filter))
+                           (normalize-comparison run)))
       :unavailable
       (try
         (let [snapshot (select-input {:reader-id reader-id :filter filter :memories memories :grants grants})
@@ -426,8 +468,12 @@
                         (.then (fn [input] (refresh! deps (assoc input :name name :filter filter :recipe (get recipes name)))))
                         (.then (fn [result] (conj results (assoc result :name name))))
                         (.catch (fn [error]
-                                  (conj results {:name name :status :failed
-                                                 :code (or (config/error-code error) :executor-failed)})))))))
+                                  (let [code (or (config/error-code error) :executor-failed)
+                                        data (ex-data error)]
+                                    (conj results
+                                          (cond-> {:name name :status :failed :code code}
+                                            (and (= :input-too-large code) (s/valid? ::budget-diagnostics data))
+                                            (merge (select-keys data [:measured-input-tokens :available-input-tokens])))))))))))
               (js/Promise.resolve []) names))))))
 
 (defn- complete-run [prepared response token timestamp]
