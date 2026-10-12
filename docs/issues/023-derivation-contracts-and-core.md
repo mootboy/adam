@@ -16,7 +16,7 @@ A testable, storage-neutral ClojureScript core prepares authorized model request
 
 ## Scope
 
-Four isolated modules under `src/adam/derivation/`: configuration, selectors, evidence and refresh core. YAML is a direct locked dependency. Fake callbacks supply model capabilities, full-request measurement, executor output and input snapshots; no real model, registry/auth store, Neo4j, host command/tool or background scheduling is invoked.
+Two modules under `src/adam/derivation/`: configuration and the cohesive refresh/read core. Clojure specs live beside their consumers; selection and role accumulation are immutable, source reads occur up front and candidate publication is deferred to the storage stage. YAML is a direct locked syntax-parser dependency. Fake callbacks supply model capabilities, full-request measurement, executor output and input snapshots; no real model, registry/auth store, Neo4j, host command/tool or background scheduling is invoked.
 
 Native source-anchor extraction and provider tokenization certification are explicit later integration requirements. Source grants/ownership come from trusted injected graph snapshots, never memory prose or caller identity claims.
 
@@ -34,7 +34,7 @@ Native source-anchor extraction and provider tokenization certification are expl
 
 ## Evidence
 
-Public-interface red/green slices reproduced missing config/selector/evidence/core behavior, then read-bucket semantics, invalid comparison completeness, invalid/wrong model execution, output validation, cache/freshness, comparison minimization and native timeout overflow. Source-origin regressions additionally prove fork-recording context and copied ownership namespaces do not manufacture independent occasions. Final clean validation: all four ESM release targets build; 195 ClojureScript tests with 822 assertions pass; 30 Node tests execute (26 pass, four expected opt-in skips), including exact-tarball smoke. `npm ci`, committed-runtime drift, package dry-run and diff checks pass. No generated runtime changed, real model was called or production graph accessed.
+Public-interface red/green slices reproduced missing config/selector/evidence/core behavior, then read-bucket semantics, invalid comparison completeness, invalid/wrong model execution, output validation, cache/freshness, comparison minimization and native timeout overflow. Source-origin regressions additionally prove fork-recording context and copied ownership namespaces do not manufacture independent occasions. The initial slice passed all four release builds, 195 ClojureScript tests/822 assertions, Node/tarball tests, runtime drift and package/diff checks. PR follow-up adopts the four development principles in `AGENTS.md`: two local modules, normative Clojure specs, pure processing and parameterized interface tests with 240 seeded property trials. Follow-up clean validation passes all four release builds, 190 ClojureScript tests/859 assertions, 30 Node tests (26 pass/four expected skips), exact-tarball smoke, package/diff and committed-runtime drift checks. The lower test count reflects consolidation into parameterized interface cases, not removed behavior coverage. No generated artifact changes, real model calls or production graph access.
 
 ## Non-goals
 

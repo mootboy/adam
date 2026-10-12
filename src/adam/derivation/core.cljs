@@ -1,7 +1,7 @@
 (ns adam.derivation.core
   (:require [adam.derivation.config :as config]
-            [adam.derivation.evidence :as evidence]
-            [adam.derivation.selector :as selector]
+            [adam.knowledge.evidence :as repository]
+            [cljs.spec.alpha :as s]
             [clojure.string :as string]
             ["node:crypto" :refer [createHash randomUUID]]))
 
@@ -34,14 +34,202 @@
             [:source-entries :source-occasions :supporting-memory-ids
              :repository-origins :repository-ids :linked-paths :source-contexts])))
 
-(defn- ids! [values allowed minimum]
-  (when-not (and (vector? values) (<= minimum (count values))
-                 (= (count values) (count (set values))) (every? allowed values))
-    (config/reject! :invalid-output "unknown, duplicate or missing evidence identities")))
+(def language-extensions
+  {"python" #{"py" "pyi"} "javascript" #{"js" "jsx" "mjs" "cjs"}
+   "typescript" #{"ts" "tsx" "mts" "cts"} "clojure" #{"clj" "cljc"}
+   "clojurescript" #{"cljs" "cljc"} "edn" #{"edn"}
+   "java" #{"java"} "kotlin" #{"kt" "kts"} "rust" #{"rs"} "go" #{"go"}
+   "ruby" #{"rb"} "c" #{"c" "h"} "cpp" #{"cpp" "cc" "cxx" "hpp" "h"}
+   "shell" #{"sh" "bash" "zsh"} "sql" #{"sql"} "html" #{"html" "htm"}
+   "css" #{"css"} "json" #{"json"} "yaml" #{"yaml" "yml"}
+   "markdown" #{"md" "markdown"}})
 
-(defn- output-fields! [value allowed]
-  (when-not (and (map? value) (every? allowed (keys value)))
-    (config/reject! :invalid-output "unknown structured output fields")))
+(def ^:private aliases
+  {"py" "python" "js" "javascript" "ts" "typescript"
+   "clj" "clojure" "cljs" "clojurescript" "c++" "cpp"
+   "sh" "shell" "yml" "yaml" "md" "markdown"})
+
+
+(defn- language-name [value]
+  (let [lower (string/lower-case (string/trim value))] (get aliases lower lower)))
+
+(s/def ::repository
+  (s/and (config/text-spec 4096) #(repository/normalize-git-remote %)))
+(s/def ::session
+  (s/and (config/text-spec 2048) #(re-matches #"urn:adam:session:[^:\s]+:(?:pi|claude-code):[^\s]+" %)))
+(s/def ::language
+  (s/and (config/text-spec 64) #(contains? language-extensions (language-name %))))
+(s/def ::history boolean?)
+(s/def ::limit (s/and ::config/positive-integer #(<= % 20)))
+
+(defn- single-filter? [request]
+  (<= (count (select-keys request [:repository :session :language])) 1))
+
+(s/def ::refresh-request
+  (s/and (s/keys :opt-un [::config/name ::repository ::session ::language])
+         (config/only-keys #{:name :repository :session :language}) single-filter?))
+(s/def ::read-request
+  (s/and (s/keys :opt-un [::config/name ::repository ::session ::language ::history ::limit])
+         (config/only-keys #{:name :repository :session :language :history :limit}) single-filter?))
+
+(defn- normalize-selector [request]
+  (when-not (s/valid? ::refresh-request request)
+    (config/reject! :invalid-selector "invalid refresh arguments"))
+  (let [kind (first (keys (select-keys request [:repository :session :language])))
+        value (get request kind)]
+    (cond-> {:filter (if kind
+                       {:type kind :value (case kind
+                                            :repository (repository/normalize-git-remote value)
+                                            :language (language-name value)
+                                            :session value)}
+                       {:type :none})}
+      (:name request) (assoc :name (:name request)))))
+
+(defn normalize-read [request]
+  (when-not (s/valid? ::read-request request)
+    (config/reject! :invalid-selector "invalid read arguments"))
+  (cond-> (assoc (normalize-selector (dissoc request :history :limit))
+                 :history? (get request :history false) :limit (get request :limit 10))
+    (empty? (select-keys request [:repository :session :language])) (assoc :filter nil)))
+
+(defn- matches-filter? [{:keys [type value]} memory]
+  (case type
+    :none true
+    :session (= value (:session-id memory))
+    :repository (contains? (set (:repository-origins memory)) value)
+    :language (boolean
+                (some #(contains? (get language-extensions value)
+                                  (last (string/split (string/lower-case %) #"\.")))
+                      (:linked-paths memory)))
+    false))
+
+
+;; Contracts live beside their consumers; spec errors never include source values.
+(s/def ::id (config/text-spec 2048))
+(s/def ::owner-id ::id)
+(s/def ::reader-id ::id)
+(s/def ::session-id ::id)
+(s/def ::content (config/text-spec js/Number.MAX_SAFE_INTEGER))
+(s/def ::producer (config/text-spec 256))
+(s/def ::kind #{:observation :reflection})
+(s/def ::identity-vector (s/coll-of ::id :kind vector? :distinct true))
+(s/def ::supporting-memory-ids ::identity-vector)
+(s/def ::input-memory-ids ::identity-vector)
+(s/def ::memory (s/keys :req-un [::id ::owner-id ::session-id ::content ::producer ::kind]))
+(s/def ::reflection
+  (s/and ::memory #(= :reflection (:kind %))
+         #(s/valid? ::identity-vector (:supporting-memory-ids %))
+         #(seq (:supporting-memory-ids %))))
+(s/def ::conclusions (s/coll-of map? :kind vector?))
+(s/def ::links (s/coll-of map? :kind vector?))
+(s/def ::comparison
+  (s/and (s/keys :req-un [::id ::input-memory-ids ::conclusions])
+         #(or (empty? (:conclusions %)) (seq (:input-memory-ids %)))))
+
+(defn- authorized? [reader-id grants {:keys [owner-id]}]
+  (and (s/valid? ::owner-id owner-id)
+       (or (= reader-id owner-id)
+           (some #(and (= owner-id (:owner-id %)) (= reader-id (:reader-id %))
+                       (= "read" (:permission %))) grants))))
+
+(defn- support-ids [memory]
+  (if (= :reflection (:kind memory))
+    (do (when-not (s/valid? ::reflection memory)
+          (config/reject! :unresolved-evidence "reflection support is incomplete"))
+        (:supporting-memory-ids memory))
+    []))
+
+(defn- select-input [{:keys [reader-id memories grants filter comparison]
+                     :or {filter {:type :none} grants []}}]
+  (when-not (s/valid? ::reader-id reader-id)
+    (config/reject! :unauthorized "requesting identity is required"))
+  (let [by-id (into {} (map (juxt :id identity) memories))
+        require-memory (fn [id]
+                         (let [memory (get by-id id)]
+                           (when-not memory (config/reject! :unresolved-evidence "memory dependency is missing"))
+                           (when-not (authorized? reader-id grants memory)
+                             (config/reject! :unauthorized "memory dependency is not authorized"))
+                           (when-not (s/valid? ::memory memory)
+                             (config/reject! :invalid-memory "incomplete memory snapshot"))
+                           memory))]
+    (when-not (= (count by-id) (count memories))
+      (config/reject! :invalid-memory "memory identities must be unique"))
+    (let [candidates (->> memories
+                          (filterv #(and (authorized? reader-id grants %)
+                                         (not (and (= :observation (:kind %)) (:dropped? %)))
+                                         (matches-filter? filter %)))
+                          (sort-by :id) vec)
+          roles (reduce
+                  (fn [roles memory]
+                    (require-memory (:id memory))
+                    (reduce (fn [roles id]
+                              (when-not (= :observation (:kind (require-memory id)))
+                                (config/reject! :unresolved-evidence "reflections must cite observations"))
+                              (update roles id (fnil conj #{}) :historical-support))
+                            (update roles (:id memory) (fnil conj #{}) :evidence)
+                            (support-ids memory)))
+                  {} candidates)
+          comparison-available? (and comparison (s/valid? ::comparison comparison)
+                                     (every? #(and (get by-id %) (authorized? reader-id grants (get by-id %)))
+                                             (:input-memory-ids comparison)))
+          roles (if comparison-available?
+                  (reduce (fn [roles id]
+                            (require-memory id)
+                            (update roles id (fnil conj #{}) :comparison-dependency))
+                          roles (:input-memory-ids comparison))
+                  roles)]
+      {:reader-id reader-id :filter filter
+       :memories (mapv #(assoc (get by-id %) :roles (get roles %)) (sort (keys roles)))
+       :candidate-ids (mapv :id candidates)
+       :comparison (when comparison-available? comparison)
+       :diagnostics (if (and comparison (not comparison-available?)) [:comparison-unavailable] [])})))
+
+(s/def ::stream-id (config/text-spec 512))
+(s/def ::entry-id (config/text-spec 512))
+(s/def ::occasion
+  (s/and (s/keys :req-un [::session-id ::stream-id ::entry-id])
+         #(re-matches #"urn:adam:session:[^:\s]+:([^:\s]+):([^\s]+)" (:session-id %))))
+
+(defn- support-occasions [snapshot ids]
+  (let [by-id (into {} (map (juxt :id identity) (:memories snapshot)))
+        source-ids (mapcat #(let [memory (get by-id %)]
+                             (if (= :reflection (:kind memory)) (support-ids memory) [%])) ids)]
+    (set (mapcat (fn [id]
+                   (keep (fn [{:keys [session-id stream-id entry-id] :as occasion}]
+                           (when (s/valid? ::occasion occasion)
+                             (let [[_ source-kind source-session-id]
+                                   (re-matches #"urn:adam:session:[^:\s]+:([^:\s]+):([^\s]+)" session-id)]
+                               [source-kind source-session-id stream-id entry-id])))
+                         (:source-occasions (get by-id id))))
+                 source-ids))))
+
+
+(s/def ::category ::config/name)
+(s/def ::basis #{:explicit :inferred})
+(s/def ::scope-type #{:personal :repository :group :session})
+(s/def ::scope-subject-ids ::identity-vector)
+(s/def ::conflicting-memory-ids ::identity-vector)
+(s/def ::conclusion
+  (s/and (s/keys :req-un [::id ::content ::category ::basis ::scope-type ::scope-subject-ids
+                         ::supporting-memory-ids ::conflicting-memory-ids])
+         (config/only-keys #{:id :content :category :basis :scope-type :scope-subject-ids
+                            :supporting-memory-ids :conflicting-memory-ids})
+         #(s/valid? (config/text-spec 128) (:id %))
+         #(s/valid? (config/text-spec 65536) (:content %))))
+(s/def ::relation #{:contradicts :supersedes})
+(s/def ::from ::id)
+(s/def ::to ::id)
+(s/def ::link
+  (s/and (s/keys :req-un [::relation ::from ::to]) (config/only-keys #{:relation :from :to})))
+(s/def ::wire-response
+  (s/and (s/keys :req-un [::conclusions ::links]) (config/only-keys #{:conclusions :links})))
+(s/def ::finish-reason #{:stop})
+(s/def ::response
+  (s/and (s/keys :req-un [::finish-reason ::conclusions ::links])
+         (config/only-keys #{:finish-reason :conclusions :links})
+         #(s/valid? (s/coll-of ::conclusion :kind vector?) (:conclusions %))
+         #(s/valid? (s/coll-of ::link :kind vector?) (:links %))
+         #(s/valid? ::identity-vector (mapv :id (:conclusions %)))))
 
 (def output-schema
   (let [ids {:type "array" :items {:type "string"} :uniqueItems true}
@@ -62,91 +250,75 @@
      :properties {"conclusions" {:type "array" :items conclusion}
                   "links" {:type "array" :items link}}}))
 
+
 (defn decode-response [text finish-reason]
   (let [value (try (js->clj (js/JSON.parse text) :keywordize-keys true)
                   (catch :default _ (config/reject! :invalid-output "invalid model JSON")))]
-    (output-fields! value #{:conclusions :links})
-    (when-not (and (vector? (:conclusions value)) (vector? (:links value)))
+    (when-not (s/valid? ::wire-response value)
       (config/reject! :invalid-output "model JSON requires conclusions and links arrays"))
     (-> value
         (assoc :finish-reason finish-reason)
-        (update :conclusions
-                #(mapv (fn [item]
-                         (when-not (map? item) (config/reject! :invalid-output "invalid conclusion"))
-                         (-> item
-                             (update :basis (fn [v] (when (string? v) (keyword v))))
-                             (update :scope-type (fn [v] (when (string? v) (keyword v)))))) %))
-        (update :links
-                #(mapv (fn [item]
-                         (when-not (map? item) (config/reject! :invalid-output "invalid link"))
-                         (update item :relation (fn [v] (when (string? v) (keyword v))))) %)))))
+        (update :conclusions #(mapv (fn [item]
+                                     (-> item
+                                         (update :basis (fn [v] (when (string? v) (keyword v))))
+                                         (update :scope-type (fn [v] (when (string? v) (keyword v)))))) %))
+        (update :links #(mapv (fn [item]
+                               (update item :relation (fn [v] (when (string? v) (keyword v))))) %)))))
 
-(defn validate-output [recipe snapshot response]
-  (output-fields! response #{:finish-reason :conclusions :links})
-  (when-not (and (map? response) (= :stop (:finish-reason response))
-                 (vector? (:conclusions response)) (vector? (:links response)))
-    (config/reject! :invalid-output "generation must be complete structured output"))
-  (let [memories (:memories snapshot)
-        candidate-ids (set (:candidate-ids snapshot))
-        evidence-ids (set (map :id (filter #(some (:roles %) [:evidence :historical-support]) memories)))
-        source-memories (filter #(contains? evidence-ids (:id %)) memories)
+(defn- output-spec [recipe snapshot]
+  (let [candidate-ids (set (:candidate-ids snapshot))
+        source-memories (filter #(some (:roles %) [:evidence :historical-support]) (:memories snapshot))
+        source-ids (set (map :id source-memories))
         owners (set (map :owner-id source-memories))
-        sessions (set (map :session-id source-memories))
-        repositories (set (mapcat :repository-ids source-memories))
-        conclusions (:conclusions response)]
-    (when-not (= (count conclusions) (count (set (map :id conclusions))))
-      (config/reject! :invalid-output "conclusion identities must be unique"))
-    (doseq [item conclusions]
-      (output-fields! item #{:id :content :category :basis :scope-type :scope-subject-ids
-                             :supporting-memory-ids :conflicting-memory-ids})
-      (when-not (and (config/text? (:id item) 128)
-                     (config/text? (:content item) 65536)
-                     (string? (:category item))
-                     (re-matches #"[a-z][a-z0-9_-]{0,63}" (:category item))
-                     (or (empty? (:categories recipe))
-                         (contains? (:categories recipe) (:category item)))
-                     (contains? #{:explicit :inferred} (:basis item))
-                     (keyword? (:scope-type item))
-                     (contains? (:scope-types recipe) (name (:scope-type item))))
-        (config/reject! :invalid-output "invalid conclusion classification"))
-      (ids! (:supporting-memory-ids item) candidate-ids 1)
-      (ids! (:conflicting-memory-ids item) evidence-ids 0)
-      (ids! (:scope-subject-ids item)
-            (case (:scope-type item) :personal owners :group owners
-                  :session sessions :repository repositories #{})
-            (if (= :group (:scope-type item)) 2 1))
-      (when (and (not= :group (:scope-type item)) (> (count (:scope-subject-ids item)) 1))
-        (config/reject! :invalid-output "non-group scope requires one subject"))
-      (when (and (= :inferred (:basis item))
-                 (< (count (evidence/support-occasions snapshot (:supporting-memory-ids item)))
-                    (:inferred-min-distinct-occasions recipe)))
-        (config/reject! :invalid-output "insufficient independent source occasions")))
-    (let [new-by-id (into {} (map (juxt :id identity) conclusions))
-          old-by-id (into {} (map (juxt :id identity) (get-in snapshot [:comparison :conclusions])))
-          by-id (merge old-by-id new-by-id)]
-      (when (some #(contains? old-by-id %) (keys new-by-id))
-        (config/reject! :invalid-output "new and comparison conclusion identities overlap"))
-      (doseq [link (:links response)]
-        (output-fields! link #{:relation :from :to})
-        (let [from (get new-by-id (:from link)) to (get by-id (:to link))]
-          (when-not (and from to (not= (:from link) (:to link))
-                         (contains? #{:contradicts :supersedes} (:relation link))
-                         (or (= :contradicts (:relation link)) (contains? old-by-id (:to link)))
-                         (= (:scope-type from) (:scope-type to))
-                         (= (set (:scope-subject-ids from)) (set (:scope-subject-ids to))))
-            (config/reject! :invalid-output "invalid or incompatible conclusion relationship")))))
-    response))
+        subjects {:personal owners :group owners :session (set (map :session-id source-memories))
+                  :repository (set (mapcat :repository-ids source-memories))}
+        identities (fn [allowed minimum]
+                     (s/coll-of allowed :kind vector? :distinct true :min-count minimum))
+        conclusion (s/and ::conclusion
+                          #(or (empty? (:categories recipe)) (contains? (:categories recipe) (:category %)))
+                          #(contains? (:scope-types recipe) (name (:scope-type %)))
+                          #(s/valid? (identities candidate-ids 1) (:supporting-memory-ids %))
+                          #(s/valid? (identities source-ids 0) (:conflicting-memory-ids %))
+                          #(s/valid? (identities (get subjects (:scope-type %))
+                                                (if (= :group (:scope-type %)) 2 1)) (:scope-subject-ids %))
+                          #(or (= :group (:scope-type %)) (= 1 (count (:scope-subject-ids %))))
+                          #(or (= :explicit (:basis %))
+                               (<= (:inferred-min-distinct-occasions recipe)
+                                   (count (support-occasions snapshot (:supporting-memory-ids %))))))
+        old-by-id (into {} (map (juxt :id identity) (get-in snapshot [:comparison :conclusions])))]
+    (s/and ::response
+           #(s/valid? (s/coll-of conclusion :kind vector?) (:conclusions %))
+           #(not-any? (partial contains? old-by-id) (map :id (:conclusions %)))
+           (fn [{:keys [conclusions links]}]
+             (let [new-by-id (into {} (map (juxt :id identity) conclusions))
+                   by-id (merge old-by-id new-by-id)
+                   link (s/and ::link
+                               #(contains? new-by-id (:from %))
+                               #(contains? by-id (:to %))
+                               #(not= (:from %) (:to %))
+                               #(or (= :contradicts (:relation %)) (contains? old-by-id (:to %)))
+                               #(= (:scope-type (get by-id (:from %))) (:scope-type (get by-id (:to %))))
+                               #(= (set (:scope-subject-ids (get by-id (:from %))))
+                                   (set (:scope-subject-ids (get by-id (:to %))))))]
+               (s/valid? (s/coll-of link :kind vector?) links))))))
+
+(defn- validate-output [recipe snapshot response]
+  (when-not (s/valid? (output-spec recipe snapshot) response)
+    (config/reject! :invalid-output "invalid, incomplete or unsupported derivation output"))
+  response)
+
+(s/def ::context-window ::config/positive-integer)
+(s/def ::max-output-tokens ::config/positive-integer)
+(s/def ::model
+  (s/keys :req-un [::config/provider ::config/id ::context-window ::max-output-tokens]))
 
 (defn prepare-refresh [{:keys [reader-id name filter recipe model memories grants comparison cached-run]}
                        measure-input]
-  (when-not (and (config/text? name 64) recipe
-                 (config/text? (:provider model) 256) (config/text? (:id model) 512)
-                 (config/positive-integer? (:context-window model))
-                 (config/positive-integer? (:max-output-tokens model))
+  (when-not (and (s/valid? ::config/name name) recipe (s/valid? ::model model)
                  (or (nil? (:model recipe))
                      (= (:model recipe) (select-keys model [:provider :id]))))
     (config/reject! :invalid-model "recipe and resolved model capabilities are required"))
-  (let [snapshot (evidence/select-input {:reader-id reader-id :filter filter :memories memories
+  (let [snapshot (select-input {:reader-id reader-id :filter filter :memories memories
                                         :grants grants :comparison comparison})
         selected (filterv #(some (:roles %) [:evidence :historical-support]) (:memories snapshot))
         input-fingerprint (fingerprint {:reader-id reader-id :filter filter
@@ -160,12 +332,11 @@
                        (= input-fingerprint (:input-fingerprint cached-run))
                        (= configuration-fingerprint (:configuration-fingerprint cached-run))
                        (= model-key (:model cached-run))
-                       (vector? (:input-memory-ids cached-run))
-                       (= (count (:input-memory-ids cached-run)) (count (set (:input-memory-ids cached-run))))
+                       (s/valid? ::input-memory-ids (:input-memory-ids cached-run))
                        (every? (set (:input-memory-ids cached-run)) direct-ids)
                        (every? (fn [id]
                                  (let [memory (get by-id id)]
-                                   (and memory (evidence/authorized? reader-id grants memory)
+                                   (and memory (authorized? reader-id grants memory)
                                         (= (fingerprint (memory-payload memory))
                                            (get (:dependency-fingerprints cached-run) id)))))
                                (:input-memory-ids cached-run)))]
@@ -189,7 +360,7 @@
                                                                         :conflicting-memory-ids]) (:conclusions prior))})}
             text (snapshot-json payload)
             tokens (measure-input text model-key)]
-        (when-not (and (number? tokens) (js/Number.isSafeInteger tokens) (not (neg? tokens)))
+        (when-not (s/valid? (s/and number? js/Number.isSafeInteger #(not (neg? %))) tokens)
           (config/reject! :invalid-budget "request measurement must be a nonnegative integer"))
         (when (or (not (pos? cap)) (> tokens cap))
           (throw (ex-info "complete input exceeds context or configured budget; narrow scope or raise the input cap"
@@ -220,11 +391,11 @@
         ids (:input-memory-ids run)]
     (if-not (and (= (count by-id) (count memories))
                  (= (derivation-id reader-id name filter) (:derivation-id run))
-                 (vector? ids) (= (count ids) (count (set ids)))
-                 (every? #(and (get by-id %) (evidence/authorized? reader-id grants (get by-id %))) ids))
+                 (s/valid? ::input-memory-ids ids)
+                 (every? #(and (get by-id %) (authorized? reader-id grants (get by-id %))) ids))
       :unavailable
       (try
-        (let [snapshot (evidence/select-input {:reader-id reader-id :filter filter :memories memories :grants grants})
+        (let [snapshot (select-input {:reader-id reader-id :filter filter :memories memories :grants grants})
               selected (filterv #(some (:roles %) [:evidence :historical-support]) (:memories snapshot))
               current-input (fingerprint {:reader-id reader-id :filter filter
                                           :candidate-ids (:candidate-ids snapshot)
@@ -242,7 +413,7 @@
   (-> (js/Promise.resolve)
       (.then
         (fn []
-          (let [{:keys [name filter]} (selector/normalize-refresh request)
+          (let [{:keys [name filter]} (normalize-selector request)
                 names (if name [name] (sort (keys recipes)))]
             (when (and name (not (contains? recipes name)))
               (config/reject! :unknown-derivation "named derivation is not configured"))
@@ -276,19 +447,20 @@
           (let [prepared (prepare-refresh input measure-input)]
             (if (= :reused (:status prepared))
               prepared
-              (let [controller (js/AbortController.)
-                    timer (atom nil)
-                    timeout (js/Promise.
-                              (fn [_ reject]
-                                (reset! timer (js/setTimeout
-                                                (fn [] (.abort controller)
-                                                  (reject (ex-info "derivation timed out" {:type :derivation :code :timeout})))
-                                                (get-in prepared [:request :timeout-ms])))))
+              ;; Capture run metadata up front. Domain processing below receives
+              ;; only this snapshot/response; no mutable source state is reread.
+              (let [token (new-run-id) timestamp (now)
+                    controller (js/AbortController.)
+                    timeout (js/Promise.withResolvers)
+                    timer (js/setTimeout
+                            (fn [] (.abort controller)
+                              ((.-reject timeout) (ex-info "derivation timed out" {:type :derivation :code :timeout})))
+                            (get-in prepared [:request :timeout-ms]))
                     work (-> (js/Promise.resolve)
                              (.then (fn [] (execute! (assoc (:request prepared) :signal (.-signal controller))))))]
-                (-> (js/Promise.race #js [work timeout])
+                (-> (js/Promise.race #js [work (.-promise timeout)])
                     (.then (fn [response]
                              (validate-output (:recipe input) (:snapshot prepared) response)
                              {:status :generated
-                              :run (complete-run prepared response (new-run-id) (now))}))
-                    (.finally #(js/clearTimeout @timer))))))))))
+                              :run (complete-run prepared response token timestamp)}))
+                    (.finally #(js/clearTimeout timer))))))))))

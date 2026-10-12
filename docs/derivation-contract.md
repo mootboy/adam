@@ -2,6 +2,12 @@
 
 This freezes the storage-neutral stage-1 interfaces for the [0.5.0 plan](plan-0.5.0.md). The implementation is in `src/adam/derivation/`; no command/tool, production model adapter, graph schema or background generation is registered by this increment.
 
+## Development structure
+
+`config.cljs` owns YAML parsing and its local Clojure specs. `core.cljs` keeps selector, evidence and output specs beside the refresh/read behavior that uses them; there are no separate selector/evidence modules or generic validation framework. YAML is a syntax parser, not the domain validator. Specs are normative, and failed checks never attach `explain-data` containing source values.
+
+Each named refresh reads its source snapshot once through the boundary callback. Selection/role accumulation, fingerprints, sizing and output processing are immutable transformations. Run identity/time are captured before execution; model execution and timeout cleanup are explicit effects. The returned candidate is published only by the later storage stage. Publication's transactional permission/freshness checks are a separate process, not permission to reread mutable state within derivation processing.
+
 ## Configuration
 
 `adam.derivation.config/parse-config` accepts YAML 1.2 and returns named compiled recipes in deterministic name order. `config-path` resolves an explicitly supplied absolute configuration root to `adam/derivations.yaml`; host file loading and missing-file disablement are wired in the Pi increment, not here.
@@ -19,7 +25,7 @@ A configuration is at most 256 KiB UTF-8. Unknown fields, duplicate keys, multip
 
 ## Requests and selectors
 
-`selector/normalize-refresh` accepts a map with optional `name` and at most one of `repository`, `session`, `language`. The eventual host command tokenizer must preserve argument values; this core accepts structured requests, not an ad-hoc shell parser.
+`core/refresh-configured!` accepts a request map with optional `name` and at most one of `repository`, `session`, `language`. The eventual host command tokenizer must preserve argument values; this core accepts structured requests, not an ad-hoc shell parser.
 
 - Git origins normalize through Adam's existing credential-stripping remote normalization. SSH/HTTPS equivalents select the same bucket; repository filter matching uses the source session's normalized `WORKED_ON` associations supplied in the snapshot, not inferred applicability.
 - Session requires the full `urn:adam:session:<user>:<pi|claude-code>:<session>` identity. Ownership/access is checked separately, never implied by this string.
@@ -53,7 +59,7 @@ Initial language mapping:
 
 Shared extensions match both languages. Unknown languages fail rather than silently creating an empty scope. Selecting a language excludes unlinked candidate memories explicitly; no filter retains eligible unlinked memories. Historical supporting observations can accompany selected reflections as provenance, not independent candidates.
 
-`normalize-read` accepts the same optional selector/name fields plus boolean `history` (default false) and integer `limit` (default 10, maximum 20). No read filter means list matching buckets of all filter types, **not** just the unfiltered bucket. There is no caller-supplied identity/provider/generation field. The read tool's fixed output envelope will be at most 200 lines or 12,000 UTF-8 bytes, with explicit omission/truncation metadata; actual paging/rendering is stage 4. Schema normalization already rejects unknown and combined selectors.
+`core/normalize-read` accepts the same optional selector/name fields plus boolean `history` (default false) and integer `limit` (default 10, maximum 20). No read filter means list matching buckets of all filter types, **not** just the unfiltered bucket. There is no caller-supplied identity/provider/generation field. The read tool's fixed output envelope will be at most 200 lines or 12,000 UTF-8 bytes, with explicit omission/truncation metadata; actual paging/rendering is stage 4. Schema normalization already rejects unknown and combined selectors.
 
 ## Trusted normalized evidence seam
 
@@ -85,7 +91,7 @@ Oversized input raises `input-too-large` with measured/available counts and acti
 
 ## Output and fake-executor seam
 
-`core/output-schema` defines closed JSON objects with exactly `conclusions` and `links`; `decode-response` parses them and takes the completion reason separately from trusted executor metadata. Model JSON cannot claim its own successful finish reason.
+`core/output-schema` describes the provider's wire format, not a schema-library validator. Local Clojure specs enforce closed output objects, classifications and context-dependent source/scope/link constraints. `decode-response` parses JSON with exactly `conclusions` and `links` and takes the completion reason separately from trusted executor metadata. Model JSON cannot claim its own successful finish reason.
 
 A conclusion has:
 
@@ -126,4 +132,4 @@ Latest publication is a graph concern: a completed run remains a candidate even 
 
 ## Validation boundary
 
-Normal tests exercise these public interfaces using synthetic rows and fake executor/measurement callbacks. This stage requires no live Neo4j, real model, inherited credentials or production mutations. Source-occasion extraction, provider certification, graph leases, rebuild repair, production commands and MCP registration remain later stages.
+Normal tests exercise the configuration and refresh/read interfaces using synthetic rows and fake executor/measurement callbacks. Parameterized cases cover evidence, sharing, comparison and selectors end to end; seeded `test.check` properties cover YAML round trips, origin equivalence and input-order invariance. `test.check` is a compiler/test dependency, not a runtime requirement. This stage requires no live Neo4j, real model, inherited credentials or production mutations. Source-occasion extraction, provider certification, graph leases, rebuild repair, production commands and MCP registration remain later stages.

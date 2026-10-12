@@ -1,4 +1,5 @@
 {:source-paths ["src" "test/cljs"]
+ :dependencies [[org.clojure/test.check "1.1.1"]]
  :builds
  {:extension
   {:target :esm
