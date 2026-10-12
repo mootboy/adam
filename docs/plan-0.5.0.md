@@ -1,6 +1,6 @@
 # Adam 0.5.0 — Configurable memory derivations
 
-- Status: planned; behavioral design agreed, implementation not started
+- Status: in progress; stage-1 contracts and deterministic core implemented, host/graph wiring deferred
 - Tracking issue: [`022`](issues/022-configurable-memory-derivations.md)
 - Target: 0.5.0
 
@@ -74,7 +74,7 @@ Without a filter, refresh considers all authorized eligible memories. Each refre
 - Session: canonical source-scoped session identity, avoiding equal host-local IDs across users/hosts.
 - Language: language of linked files, not language inferred from prose. Selecting it explicitly accepts exclusion of unlinked memories. Without a language filter, unlinked memories remain eligible.
 
-Exact language/extension mapping and repository-association query semantics must be specified and tested before implementation. No combined filters in the initial increment.
+The [stage-1 contract](derivation-contract.md) pins language/extension mapping and normalized selector semantics. Repository matching uses source-session `WORKED_ON` association, not asserted applicability; the graph adapter must supply and verify those associations. No combined filters in the initial increment.
 
 ## Public interfaces
 
@@ -98,7 +98,7 @@ Read-only surfaces:
 adam_derivations
 ```
 
-The tool is available in both Pi and Claude MCP. Listing/reading shows saved scope/filter, freshness, generating provider/model, conclusions and evidence. Default reads show the latest run per result identity; an explicit history option exposes older versions under the same authorization rules. Exact read arguments, history flag and item/line/byte bounds remain schema details to settle before coding.
+The tool is available in both Pi and Claude MCP. Listing/reading shows saved scope/filter, freshness, generating provider/model, conclusions and evidence. Default reads show the latest run per result identity; an explicit history option exposes older versions under the same authorization rules. The [stage-1 contract](derivation-contract.md) pins optional name/single-filter arguments, boolean history and bounded item limits. Rendering/paging and the host `--history` command boundary remain stage 4.
 
 ## Model input, budgets and completion
 
@@ -119,7 +119,7 @@ Production aggregates observed during this design discussion contained approxima
 - Explicit user requests or corrections can establish a preference without repetition, within their stated scope. A local correction is not automatically a universal rule.
 - An unendorsed assistant implementation choice is not a user preference.
 - Genuine repetition on distinct source occasions strengthens evidence, including within one session. Multiple summaries of the same occasion, or reflections repeating the same supporting observation, do not manufacture independent evidence. Sessions provide provenance, not the unit of independence.
-- The illustrative inferred threshold is two distinct occasions, configurable. Exact stream-qualified source-occasion deduplication must be mechanically defined and tested before implementation.
+- The default inferred threshold is two distinct occasions, configurable. Stage 1 unions verified stream-qualified activity anchors and expands reflection support without double-counting summaries; the later host/graph adapter must resolve those anchors from native source provenance, not assume every tool entry is a new occasion.
 - Keep explicit versus inferred basis, category and subject/scope. Personal, repository, group and session assertions remain distinct; a shared repository or read grant never establishes collective agreement.
 - Preserve uncertainty and distinguish user requests, assistant assertions and tool-verified facts. Code validates schema, authorization, citation membership, limits and checkable thresholds; valid citations alone do not prove a model's interpretation is true.
 - Active observations and reflections are eligible. Dropped observations can be expanded as historical support for retained reflections, not independently promoted as current preferences.
@@ -274,7 +274,7 @@ Behavior reviewed and agreed one by one with the user. Checkboxes remain impleme
 
 Deliver this minor-release scope through reviewable implementation increments; exact tickets and boundaries follow the remaining implementation-contract decisions.
 
-1. **Contracts and deterministic core:** freeze YAML/read schemas, selector normalization, dependency roles, source-occasion accounting, request sizing and result fingerprints with synthetic/fake-executor coverage.
+1. **Contracts and deterministic core:** implemented under [issue 023](issues/023-derivation-contracts-and-core.md). [Contract v1](derivation-contract.md) freezes YAML/read schemas, selector normalization, dependency roles, source-occasion accounting, request sizing and result fingerprints, with synthetic/fake-executor coverage. No host commands, graph storage or real-model adapter are enabled.
 2. **Graph storage and authorization:** add derivation/run/conclusion identities, indexes, grants, history, fenced refresh leases and atomic publication. Prove revocation, comparison inheritance, memory-rebuild repair and fail-closed missing dependencies on a disposable graph.
 3. **Pi generation tracer:** wire explicit named refresh through Pi's model registry/authentication, context-aware budgets, timeout/cancellation and the one-call policy; then sequential all-config refresh with independent outcomes.
 4. **Reads and interpretation:** implement Pi command/tool and Claude read-only MCP parity, bounded latest/history results, freshness, prominent conflict/correction reporting and provenance traversal.
@@ -284,7 +284,7 @@ Keep existing session replication, producer projection and notification-worker b
 
 ## Remaining implementation-contract details
 
-1. Exact YAML schema/parser validation, language mapping, repository/session selector normalization and optional model override resolution through the Pi SDK.
+1. Wire the frozen YAML/selector contracts and optional model override resolution through the Pi SDK; obtain verified graph provenance/occasion anchors for normalized rows.
 2. Input serialization/token sizing/headroom for supported models, exact occasion deduplication and support expansion rules. Provider cost guards cannot promise a strict spend ceiling.
 3. Read/tool arguments and history selection, bounded pagination/truncation, and precise user/group/scope subject validation.
 4. Canonical URN/hash encoding, configuration/input snapshots and comparison dependency roles, freshness checks, rebuild-safe relationship repair and indexes.
@@ -293,7 +293,7 @@ Keep existing session replication, producer projection and notification-worker b
 
 ## Validation
 
-Design/documentation only; no runtime feature is implemented. The sizing query was read-only and made no model call or graph mutation. Implementation should start with deterministic fake-executor and authorization/cache/rebuild regressions, then disposable graph restart/concurrency validation and both host read adapters. Real-model quality evaluation is separate opt-in acceptance.
+Stage 1 implements the storage-neutral core with deterministic fake-executor tests; no production generation command, graph schema or MCP derivation tool is registered. The sizing query was read-only and made no model call or graph mutation. Later stages require disposable graph restart/concurrency/rebuild validation and both host read adapters. Real-model quality evaluation remains separate opt-in acceptance.
 
 ## Notes
 

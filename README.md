@@ -18,6 +18,7 @@ Adam provides a full [Pi](https://pi.dev) extension and a [Claude Code](https://
 - [`docs/plan-0.3.3.md`](docs/plan-0.3.3.md) — active file-memory retrieval.
 - [`docs/plan-0.4.0.md`](docs/plan-0.4.0.md) — 0.4.0 infrastructure release scope and separate standalone-producer/native-reader follow-up.
 - [`docs/plan-0.5.0.md`](docs/plan-0.5.0.md) — planned configurable memory derivations, explicit Pi generation, multi-user grants and provenance-bearing result history.
+- [`docs/derivation-contract.md`](docs/derivation-contract.md) — implemented storage-neutral derivation contracts/core; graph and host integration remain planned.
 - [`docs/acceptance-matrix.md`](docs/acceptance-matrix.md) — deterministic and live acceptance cases for incremental delivery.
 - [`docs/issues/`](docs/issues/) — repository-local issue tracker and issue template.
 

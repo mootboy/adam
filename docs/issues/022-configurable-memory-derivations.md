@@ -2,7 +2,7 @@
 
 # Derive provenance-bearing meta-observations from existing memories
 
-- Status: proposed
+- Status: in-progress
 - Category: enhancement
 - Created: 2026-10-12
 - Owner: unassigned
@@ -21,13 +21,13 @@ The scope was originally proposed for 0.4.2 and was moved to 0.5.0 after review 
 
 ## Scope and acceptance
 
-The [plan's acceptance criteria](../plan-0.5.0.md#acceptance-criteria) are this issue's completion requirements. Behavior is agreed; remaining implementation-contract details must be pinned before implementation. Deliver in reviewable increments, with only the final increment preparing the 0.5.0 release.
+The [plan's acceptance criteria](../plan-0.5.0.md#acceptance-criteria) are this issue's completion requirements. Behavior is agreed; stage 1 is tracked by [issue 023](023-derivation-contracts-and-core.md) and [contract v1](../derivation-contract.md). Remaining graph/host integration contracts must be pinned before their respective stages. Deliver in reviewable increments, with only the final increment preparing the 0.5.0 release.
 
 No recursive evidence, automatic generation/injection, Claude refresh, producer/source-log rewrites or mandatory producer integration. This planning change does not authorize production mutations, grants, release/version changes or publication.
 
 ## Validation
 
-Documentation-only planning. No implementation or completion evidence yet. The plan records the read-only corpus-sizing findings, deterministic/fake-executor requirements and disposable-only database acceptance.
+Stage-1 deterministic core implementation is underway; this overall release issue is not complete. Stage-specific evidence is tracked in issue 023. The plan records the read-only corpus-sizing findings, deterministic/fake-executor requirements and disposable-only database acceptance.
 
 ## Notes
 
