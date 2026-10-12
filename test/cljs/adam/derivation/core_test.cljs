@@ -566,3 +566,39 @@
                    (is (= [[:read "first"] [:execute "first"] [:read "second"] [:execute "second"]] @events))
                    (done)))
           (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
+(deftest repository-selectors-reject-ambiguous-shorthand-before-loading
+  (async done
+    (let [deps {:load-input! (fn [_] (is false "invalid selectors must not load evidence"))
+                :execute! (fn [_] (is false "invalid selectors must not call the model"))}]
+      (-> (js/Promise.all
+            (to-array (map #(-> (core/refresh-configured! deps {"preferences" recipe} {:repository %})
+                               (.catch config/error-code))
+                           ["foo/bar" "github.com/example/repo"])))
+          (.then (fn [codes]
+                   (is (= [:invalid-selector :invalid-selector] (vec (array-seq codes))))
+                   (done)))
+          (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
+(deftest malformed-comparison-only-memories-are-withheld-without-blocking-source
+  (async done
+    (let [historical (assoc (observation "b" other "two") :dropped? true)
+          invalid [(assoc historical :content nil) (dissoc historical :producer)
+                   (assoc historical :session-id nil)]
+          call (fn [memory]
+                 (attempt! (assoc input :memories [(first (:memories input)) memory]
+                                  :grants [{:owner-id other :reader-id own :permission "read"}]
+                                  :comparison {:id "prior" :input-memory-ids ["b"]
+                                               :conclusions [(assoc conclusion :id "old" :content "PRIVATE_BOB"
+                                                                    :supporting-memory-ids ["b"])]})
+                           {:finish-reason :stop :conclusions [conclusion] :links []}))]
+      (-> (js/Promise.all (to-array (map call invalid)))
+          (.then (fn [results]
+                   (doseq [{:keys [result code calls]} (array-seq results)]
+                     (is (nil? code))
+                     (is (= :generated (:status result)))
+                     (is (= ["a"] (get-in result [:run :input-memory-ids])))
+                     (is (= [:comparison-unavailable] (get-in result [:run :diagnostics])))
+                     (is (not (.includes (:payload (first calls)) "PRIVATE_BOB"))))
+                   (done)))
+          (.catch (fn [error] (is false (.-stack error)) (done)))))))
