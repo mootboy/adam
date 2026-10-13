@@ -138,10 +138,15 @@
                           CREATE (third)-[:GRANTS_MEMORY_ACCESS {permission: 'read'}]->(owner)
                           WITH [reader, owner, third] AS users
                           UNWIND range(0, 2) AS i WITH users[i] AS user, i
-                          CREATE (s:AdamSession {id: $sessions[i]})
+                          CREATE (s:AdamSession {id: $sessions[i], sourceKind: 'pi', sourceSessionId: last(split($sessions[i], ':'))})
                           CREATE (m:AdamObservation {id: $memories[i], producer: 'synthetic', content: 'Prefer scoped simple boundaries'})
                           CREATE (user)-[:OWNS]->(s), (s)-[:HAS_MEMORY]->(m)" params)))
-              (.then (fn [_] (fake-run! (assoc input :comparison {:id "missing" :input-memory-ids ["unavailable"] :conclusions []}) nil false)))
+              (.then (fn [_] (store/load-input! db {:name "preferences"})))
+              (.then (fn [snapshot]
+                       (is (= (set (take 2 memory-ids)) (set (map :id (:memories snapshot)))))
+                       (is (= [{:owner-id owner :reader-id reader :permission "read"}] (:grants snapshot)))
+                       (is (nil? (:comparison snapshot)))
+                       (fake-run! (assoc input :comparison {:id "missing" :input-memory-ids ["unavailable"] :conclusions []}) nil false)))
               (.then (fn [{:keys [run]}]
                        (is (= [:comparison-unavailable] (:diagnostics run)))
                        (reset! first-run (register! run))
@@ -190,6 +195,10 @@
               (.then (fn [result]
                        (is (= [:unauthorized :unauthorized] (mapv :status (:items result))))
                        (is (not-any? :run (:items result)))
+                       (store/load-input! db {:name "preferences"})))
+              (.then (fn [snapshot]
+                       (is (= [(first memory-ids)] (mapv :id (:memories snapshot))))
+                       (is (= {:id "unavailable"} (:comparison snapshot)))
                        ;; Simulate a model candidate completed from the earlier authorized snapshot.
                        (-> (fake-run! comparison-input @second-run false)
                            (.then (fn [{:keys [run]}]
