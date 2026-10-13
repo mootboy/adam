@@ -437,3 +437,52 @@
                           (.finally #(.close session))
                           (.finally #(.close driver)))))
           (.finally done)))))
+
+(deftest live-source-stream-denies-ownership-drift-after-metadata
+  (async done
+    (let [env js/process.env uuid (randomUUID)
+          reader (str "urn:adam:user:" uuid) other (str "urn:adam:user:" uuid "-other")
+          sid (str "urn:adam:session:" uuid ":pi:ownership-race")
+          ids [reader other sid (str "entry:" uuid) (str "memory:" uuid)]
+          driver ((.-driver neo4j) (aget env "ADAM_TEST_NEO4J_URI")
+                  (.basic (.-auth neo4j) (aget env "ADAM_TEST_NEO4J_USERNAME") (aget env "ADAM_TEST_NEO4J_PASSWORD")))
+          database (or (aget env "ADAM_TEST_NEO4J_DATABASE") "neo4j")
+          session (.session driver #js {:database database})
+          params (clj->js {:ids ids :raw "{\"id\":\"u\",\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"Use pure functions\"}}"})
+          proxy #js {:session
+                     (fn [options]
+                       (let [actual (.session driver options)]
+                         #js {:close (fn [] (.close actual))
+                              :executeRead
+                              (fn [work]
+                                (.executeRead actual
+                                  (fn [tx]
+                                    (work #js {:run
+                                               (fn [query query-params]
+                                                 (if (re-find #"AS activityEntry" query)
+                                                   #js {:subscribe
+                                                        (fn [observer]
+                                                          (-> (.run session
+                                                                "MATCH (reader:AdamUser {id: $ids[0]})-[old:OWNS]->(s:AdamSession {id: $ids[2]}),
+                                                                       (other:AdamUser {id: $ids[1]})
+                                                                 DELETE old CREATE (other)-[:OWNS]->(s)" params)
+                                                              (.then (fn [_] (.subscribe (.run tx query query-params) observer)))
+                                                              (.catch (fn [error] ((aget observer "onError") error)))))}
+                                                   (.run tx query query-params)))})))) }))}
+          db (store/with-driver proxy database reader)]
+      (-> (.run session
+            "CREATE (reader:AdamUser {id: $ids[0]}), (other:AdamUser {id: $ids[1]}),
+                    (s:AdamSession {id: $ids[2], sourceKind: 'pi', sourceSessionId: 'ownership-race'}),
+                    (e:AdamEntry {id: $ids[3], entryId: 'u', streamId: 'main', rawJson: $raw}),
+                    (m:AdamObservation {id: $ids[4], memoryId: 'm', producer: 'synthetic', content: 'Use pure functions'})
+             CREATE (reader)-[:OWNS]->(s), (s)-[:HAS_ENTRY]->(e), (s)-[:HAS_MEMORY]->(m), (m)-[:SOURCED_FROM]->(e),
+                    (other)-[:GRANTS_MEMORY_ACCESS {permission: 'read'}]->(reader)" params)
+          (.then (fn [_] (store/load-input! db {:name "preferences"})))
+          (.then (fn [snapshot]
+                   (is (= 1 (count (:memories snapshot))))
+                   (is (= [] (get-in snapshot [:memories 0 :source-occasions]))
+                       "a newly granting owner cannot replace the captured owner mid-read")))
+          (.catch (fn [error] (is false (.-stack error))))
+          (.finally (fn [] (-> (.run session "MATCH (n) WHERE n.id IN $ids DETACH DELETE n" params)
+                              (.finally #(.close session)) (.finally #(.close driver)))))
+          (.finally done)))))

@@ -10,18 +10,21 @@
 
 (defn- fixture
   ([memory-rows] (fixture memory-rows {}))
-  ([memory-rows {:keys [prior-rows dependency-rows activity-rows duplicate-rows activity-error]}]
-   (let [calls (atom []) closes (atom 0) session-options (atom nil)
+  ([memory-rows {:keys [prior-rows dependency-rows activity-rows duplicate-rows activity-error activity-callback-error]}]
+   (let [calls (atom []) closes (atom 0) session-options (atom nil) activity-row-reads (atom 0)
          record (fn [row] #js {:get (fn [key] (get row key))})
          tx #js {:run (fn [query params]
                         (swap! calls conj {:query query :params params})
                         (if (re-find #"AS activityEntry" query)
                           #js {:subscribe (fn [observer]
+                                            (when activity-callback-error
+                                              ((aget observer "onNext") #js {:get (fn [_] (swap! activity-row-reads inc)
+                                                                                  (throw (js/Error. "row-read-failed")))}))
                                             (doseq [row activity-rows
                                                     :let [source (get row "activitySession")]
                                                     :when (= (aget params "sessionId") (aget source "id"))
                                                     entry (array-seq (aget source "entries"))]
-                                              ((aget observer "onNext") (record {"activityEntry" entry})))
+                                              ((aget observer "onNext") #js {:get (fn [_] (swap! activity-row-reads inc) entry)}))
                                             (if activity-error ((aget observer "onError") activity-error)
                                                 ((aget observer "onCompleted") #js {})))}
                           (js/Promise.resolve
@@ -40,7 +43,7 @@
      {:driver #js {:session (fn [options] (reset! session-options options)
                             #js {:executeRead (fn [work] (work tx))
                                  :close (fn [] (swap! closes inc) (js/Promise.resolve))})}
-      :calls calls :closes closes :session-options session-options})))
+      :calls calls :closes closes :session-options session-options :activity-row-reads activity-row-reads})))
 
 (deftest source-driver-streams-are-consumed-without-buffering-and-close-on-error
   (async done
@@ -52,20 +55,25 @@
                "sourceEntries" #js [#js {:streamId "main" :entryId "u"}]
                "inputMemory" #js {:id "m" :producer "synthetic" :content "Preference"}}
           attempt (fn [failure?]
-                    (let [{:keys [driver calls closes session-options]} (fixture [row] {:activity-rows [(source sid "s" [parent]) (source parent "p" [])]
-                                                                                       :activity-error (when failure? (js/Error. "stream-unavailable"))})]
+                    (let [{:keys [driver calls closes session-options activity-row-reads]} (fixture [row] {:activity-rows [(source sid "s" [parent]) (source parent "p" [])]
+                                                                                       :activity-error (when (= :sdk failure?) (js/Error. "stream-unavailable"))
+                                                                                       :activity-callback-error (= :callback failure?)})]
                       (-> (store/load-input! (store/with-driver driver "neo4j" reader) {:name "preferences"})
                           (.then (fn [snapshot]
                                    (is (not failure?))
                                    (is (= [{:session-id parent :stream-id "main" :entry-id "u"}] (get-in snapshot [:memories 0 :source-occasions])))
                                    (is (= 2 (count (filter #(re-find #"AS activityEntry" (:query %)) @calls)))))
-                                 (fn [error] (is failure?) (is (= "stream-unavailable" (.-message error)))))
+                                 (fn [error] (is failure?) (is (= (if (= :callback failure?) "row-read-failed" "stream-unavailable") (.-message error)))))
                           (.then (fn [_]
                                    (is (= 1 @closes))
-                                   (is (= 1 (aget @session-options "fetchSize")))
+                                   (is (= 100 (aget @session-options "fetchSize")))
+                                   (when (= :callback failure?) (is (= 1 @activity-row-reads)))
+                                   (doseq [{:keys [query params]} @calls :when (re-find #"AS activityEntry" query)]
+                                     (is (= reader (aget params "ownerId")))
+                                     (is (re-find #"other <> owner" query)))
                                    (is (every? #(not (re-find #"rawJson" (:query %)))
                                                (filter #(re-find #"AS activitySession" (:query %)) @calls))))))))]
-      (-> (js/Promise.all #js [(attempt false) (attempt true)])
+      (-> (js/Promise.all #js [(attempt false) (attempt :sdk) (attempt :callback)])
           (.catch (fn [error] (is false (.-stack error)))) (.finally done)))))
 
 (deftest authorized-input-snapshots-are-complete-and-closed
