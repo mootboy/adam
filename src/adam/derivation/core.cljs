@@ -465,7 +465,7 @@
                 (.then pending
                   (fn [results]
                     (-> (js/Promise.resolve)
-                        (.then (fn [] (load-input! {:name name :filter filter :recipe (get recipes name)})))
+                        (.then (fn [] (load-input! (assoc request :name name))))
                         (.then (fn [input] (refresh! deps (assoc input :name name :filter filter :recipe (get recipes name)))))
                         (.then (fn [result] (conj results (assoc result :name name))))
                         (.catch (fn [error]
@@ -474,7 +474,9 @@
                                     (conj results
                                           (cond-> {:name name :status :failed :code code}
                                             (and (= :input-too-large code) (s/valid? ::budget-diagnostics data))
-                                            (merge (select-keys data [:measured-input-tokens :available-input-tokens])))))))))))
+                                            (merge (select-keys data [:measured-input-tokens :available-input-tokens]))
+                                            (and (= :unresolved-evidence code) (s/valid? ::config/positive-integer (:invalid-source-count data)))
+                                            (assoc :invalid-source-count (:invalid-source-count data)))))))))))
               (js/Promise.resolve []) names))))))
 
 (defn- complete-run [prepared response token timestamp]

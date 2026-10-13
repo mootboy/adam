@@ -1,7 +1,7 @@
 (ns adam.derivation.store
   (:require [adam.derivation.config :as config]
             [adam.derivation.core :as core]
-            [adam.replica.identity :as identity]
+            [clojure.string :as string]
             [cljs.spec.alpha :as s]
             ["node:crypto" :refer [randomUUID]]
             ["neo4j-driver" :as neo4j]))
@@ -482,14 +482,40 @@
              (vec (rest (re-matches #"urn:adam:session:[^:\s]+:([^:\s]+):([^\s]+)"
                                    (first (:input-session-ids %))))))))
 
+(defn- invalid-input-source! []
+  (throw (ex-info "source ownership, identity or supports are inconsistent"
+                  {:type :derivation :code :unresolved-evidence :invalid-source-count 1})))
+
+(defn- input-producer [source-kind producer]
+  (if (and (= "pi" source-kind) (string/blank? producer)) "pi-observational-memory" producer))
+
+(defn- input-supports [value source-kind session-id records]
+  (let [declared (vec (or (aget value "supportingObservationIds") []))
+        ids (mapv #(aget % "id") records)
+        producer (input-producer source-kind (aget value "producer"))
+        record-spec (s/and
+                      #(s/valid? ::core/id (aget % "id"))
+                      #(contains? (set declared) (aget % "memoryId"))
+                      #(= producer (input-producer source-kind (aget % "producer")))
+                      #(= [session-id] (vec (distinct (aget % "sessionIds")))))]
+    (when-not (and (seq declared) (s/valid? ::core/identity-vector declared)
+                  (s/valid? ::core/identity-vector ids)
+                  (= (count declared) (count records))
+                  (= (set declared) (set (map #(aget % "memoryId") records)))
+                  (s/valid? (s/coll-of record-spec :kind vector?) records))
+      (invalid-input-source!))
+    ids))
+
 (defn- input-memories! [^js tx principal]
   (-> (.run tx
         "MATCH (reader:AdamUser {id: $readerId})
-         MATCH (owner:AdamUser)-[:OWNS]->(:AdamSession)-[:HAS_MEMORY]->(m)
-         WHERE (m:AdamObservation OR m:AdamReflection)
-           AND (owner = reader OR EXISTS {
-             MATCH (owner)-[:GRANTS_MEMORY_ACCESS {permission: 'read'}]->(reader)
-           })
+         CALL { WITH reader RETURN reader AS owner
+                UNION
+                WITH reader MATCH (owner:AdamUser)-[:GRANTS_MEMORY_ACCESS {permission: 'read'}]->(reader)
+                RETURN owner }
+         WITH DISTINCT owner
+         MATCH (owner)-[:OWNS]->(:AdamSession)-[:HAS_MEMORY]->(m)
+         WHERE m:AdamObservation OR m:AdamReflection
          WITH DISTINCT m
          MATCH (allOwner:AdamUser)-[:OWNS]->(s:AdamSession)-[:HAS_MEMORY]->(m)
          WITH m, collect(DISTINCT allOwner.id) AS ownerIds, collect(DISTINCT s.id) AS sessionIds,
@@ -497,10 +523,16 @@
          WITH m, ownerIds, sessionIds, sessions[0] AS s
          CALL { WITH m, s OPTIONAL MATCH (m)-[:SOURCED_FROM]->(entry:AdamEntry)<-[:HAS_ENTRY]-(s)
                 RETURN collect(DISTINCT entry {.entryId, streamId: coalesce(entry.streamId, 'main')}) AS sourceEntries }
-         CALL { WITH m OPTIONAL MATCH (m)-[:ABOUT]->(f:AdamCodeFile)
-                RETURN collect(DISTINCT f.relativePath) AS linkedPaths }
+         CALL { WITH m OPTIONAL MATCH (m)-[:ABOUT]->(direct:AdamCodeFile)
+                WITH m, collect(DISTINCT direct.relativePath) AS directPaths
+                OPTIONAL MATCH (m:AdamReflection)-[:SUPPORTED_BY]->(:AdamObservation)-[:ABOUT]->(supported:AdamCodeFile)
+                WITH directPaths, collect(DISTINCT supported.relativePath) AS supportedPaths
+                RETURN directPaths + supportedPaths AS linkedPaths }
+         CALL { WITH m OPTIONAL MATCH (m)-[:SUPPORTED_BY]->(support:AdamObservation)
+                RETURN collect(DISTINCT support {.id, .memoryId, .producer,
+                  sessionIds: [(support)<-[:HAS_MEMORY]-(supportSession:AdamSession) | supportSession.id]}) AS supportRecords }
          CALL { WITH s OPTIONAL MATCH (s)-[:WORKED_ON]->(repo:AdamRepository)
-                RETURN collect(DISTINCT repo.normalizedRemote) AS repositoryOrigins,
+                RETURN collect(DISTINCT repo.normalizedOrigin) AS repositoryOrigins,
                        collect(DISTINCT repo.id) AS repositoryIds }
          RETURN ownerIds, sessionIds, s.sourceKind AS sourceKind,
                 coalesce(s.sourceSessionId, s.piSessionId) AS sourceSessionId,
@@ -510,7 +542,7 @@
                              .supportingObservationIds} END AS inputMemory,
                 CASE WHEN m:AdamObservation AND NOT m:AdamReflection THEN 'observation'
                      WHEN m:AdamReflection AND NOT m:AdamObservation THEN 'reflection' END AS kind,
-                sourceEntries, linkedPaths, repositoryOrigins, repositoryIds
+                sourceEntries, linkedPaths, repositoryOrigins, repositoryIds, supportRecords
          ORDER BY m.id"
         #js {:readerId principal})
       (.then (fn [result]
@@ -523,10 +555,10 @@
                                     (s/valid? ::input-source
                                               {:input-owner-ids owners :input-session-ids sessions
                                                :source-kind source-kind :source-session-id source-id}))
-                       (config/reject! :unresolved-evidence "source ownership and kind must be unambiguous"))
+                       (invalid-input-source!))
                      (cond-> {:id (aget value "id") :owner-id (first owners) :session-id (first sessions)
-                              :kind kind :producer (aget value "producer") :content (aget value "content")
-                              :dropped? (= true (aget value "dropped"))
+                              :kind kind :producer (input-producer source-kind (aget value "producer")) :content (aget value "content")
+                              :dropped? (and (= :observation kind) (= true (aget value "dropped")))
                               :source-kind source-kind :source-session-id source-id
                               :timestamp (aget value "timestamp") :relevance (aget value "relevance")
                               :recording-entry-id (aget value "recordingEntryId")
@@ -541,9 +573,7 @@
                               :repository-ids (vec (field row "repositoryIds"))}
                        (= :reflection kind)
                        (assoc :supporting-memory-ids
-                              (mapv #(identity/observation-urn (subs (first owners) 14) source-kind source-id
-                                                               (aget value "producer") %)
-                                    (or (aget value "supportingObservationIds") []))))))
+                              (input-supports value source-kind (first sessions) (vec (field row "supportRecords")))))))
                  (rows result))))))
 
 (defn load-input! [db request]
@@ -561,6 +591,8 @@
                                       (input-memories! tx principal)))
                              (.then (fn [memories]
                                       (let [snapshot {:reader-id principal :memories memories
+                                                      ;; This DTO grant list reflects the Cypher authorization predicate,
+                                                      ;; not independent grant discovery. Publication reauthorizes it.
                                                       :grants (mapv (fn [owner] {:owner-id owner :reader-id principal :permission "read"})
                                                                     (sort (disj (set (map :owner-id memories)) principal)))}]
                                         (-> (run-records! tx principal (assoc request :limit 1) (:derivationId params))
