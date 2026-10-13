@@ -288,3 +288,57 @@
                               (.finally #(.close session))
                               (.finally #(.close driver)))))
               (.finally done)))))))
+
+(deftest live-input-repository-and-reflection-language-selection
+  (async done
+    (let [env js/process.env
+          uuid (randomUUID) reader (str "urn:adam:user:" uuid)
+          sid (str "urn:adam:session:" uuid ":pi:input")
+          ids [reader sid (str "repo:" uuid) (str "file:" uuid) (str "observation:" uuid) (str "reflection:" uuid)]
+          ^js driver ((.-driver neo4j) (aget env "ADAM_TEST_NEO4J_URI")
+                      (.basic (.-auth neo4j) (aget env "ADAM_TEST_NEO4J_USERNAME") (aget env "ADAM_TEST_NEO4J_PASSWORD")))
+          database (or (aget env "ADAM_TEST_NEO4J_DATABASE") "neo4j")
+          ^js session (.session driver #js {:database database})
+          db (store/with-driver driver database reader)
+          params #js {:ids (clj->js ids)}
+          recipe (get (config/parse-config "derivations:\n  preferences:\n    version: 1\n    guidance: Preserve scope.\n") "preferences")
+          model {:provider "fake" :id "model" :context-window 20000 :max-output-tokens 8192}
+          check! (fn [request]
+                   (-> (store/load-input! db request)
+                       (.then (fn [snapshot]
+                                (let [filter (:filter (core/normalize-read request))
+                                      prepared (core/prepare-refresh
+                                                 (assoc snapshot :name "preferences" :recipe recipe :model model
+                                                        :filter filter) (constantly 100))]
+                                  (is (= (set (take-last 2 ids)) (set (get-in prepared [:snapshot :candidate-ids])))))))))]
+      (-> (.run session
+            "CREATE (u:AdamUser {id: $ids[0]}), (s:AdamSession {id: $ids[1], sourceKind: 'pi', sourceSessionId: 'input'}),
+                    (repo:AdamRepository {id: $ids[2], normalizedOrigin: 'example.com/repo'}),
+                    (file:AdamCodeFile {id: $ids[3], relativePath: 'src/a.cljs'}),
+                    (o:AdamObservation {id: $ids[4], memoryId: 'obs', producer: 'synthetic', content: 'Prefer simple boundaries'}),
+                    (r:AdamReflection {id: $ids[5], producer: 'synthetic', content: 'Scoped synthesis', supportingObservationIds: ['obs']})
+             CREATE (u)-[:OWNS]->(s), (s)-[:WORKED_ON]->(repo), (s)-[:HAS_MEMORY]->(o), (s)-[:HAS_MEMORY]->(r),
+                    (o)-[:ABOUT]->(file), (r)-[:SUPPORTED_BY]->(o)" params)
+          (.then (fn [_] (check! {:name "preferences" :repository "git@example.com:repo.git"})))
+          (.then (fn [_] (check! {:name "preferences" :language "cljs"})))
+          (.then (fn [_]
+                   (.run session "MATCH (r:AdamReflection {id: $ids[5]}) SET r.supportingObservationIds = ['wrong']" params)))
+          (.then (fn [_]
+                   (-> (store/load-input! db {:name "preferences"})
+                       (.then (fn [_] (is false "graph/declared support mismatch must fail closed")))
+                       (.catch (fn [error]
+                                 (is (= :unresolved-evidence (config/error-code error)))
+                                 (is (= 1 (:invalid-source-count (ex-data error)))))))))
+          (.then (fn [_]
+                   (.run session "MATCH (r:AdamReflection {id: $ids[5]}), (o:AdamObservation {id: $ids[4]})
+                                  SET r.supportingObservationIds = ['obs'], r.producer = '', o.producer = ''" params)))
+          (.then (fn [_] (store/load-input! db {:name "preferences"})))
+          (.then (fn [snapshot]
+                   (is (= #{"pi-observational-memory"} (set (map :producer (:memories snapshot)))))
+                   (is (= [(nth ids 4)] (:supporting-memory-ids (first (filter #(= :reflection (:kind %)) (:memories snapshot))))))))
+          (.catch (fn [error] (is false (.-stack error))))
+          (.finally (fn []
+                      (-> (.run session "MATCH (n) WHERE n.id IN $ids DETACH DELETE n" params)
+                          (.finally #(.close session))
+                          (.finally #(.close driver)))))
+          (.finally done)))))
