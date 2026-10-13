@@ -6,6 +6,10 @@
             ["neo4j-driver" :as neo4j]
             ["node:crypto" :refer [randomUUID]]))
 
+;; Fail before registering any live test, including direct compiled-target runs.
+(when-not (= "1" (aget js/process.env "ADAM_TEST_NEO4J_DISPOSABLE"))
+  (throw (js/Error. "Live derivation tests require ADAM_TEST_NEO4J_DISPOSABLE=1; never use production")))
+
 (deftest live-refresh-lease-concurrency-expiry-and-failure-preservation
   (async done
     (let [env js/process.env
