@@ -20,11 +20,11 @@
     (config/reject! :unauthorized "configured graph principal and database are required"))
   {:driver driver :database database :principal principal})
 
-(defn- with-session! [{:keys [driver database]} work]
+(defn- with-session! [{:keys [driver database fetch-size]} work]
   (-> (js/Promise.resolve)
       (.then (fn []
                (let [^js driver driver
-                     ^js session (.session driver #js {:database database})]
+                     ^js session (.session driver (clj->js (cond-> {:database database} fetch-size (assoc :fetchSize fetch-size))))]
                  (-> (js/Promise.resolve)
                      (.then #(work session))
                      (.finally #(.close session))))))))
@@ -646,7 +646,7 @@
 (defn- activity-source [source]
   (when (s/valid? ::input-source {:input-owner-ids (:ownerIds source) :input-session-ids [(:id source)]
                                 :source-kind (:sourceKind source) :source-session-id (:sourceSessionId source)})
-    (let [entries (keep #(parsed-activity source %) (:entries source))
+    (let [entries (:entries source)
           grouped (group-by (juxt :streamId :entryId) entries)]
       (let [records (into {} (keep (fn [[key items]] (when (= 1 (count items)) [key (first items)]))) grouped)
             call-type (if (= "pi" (:sourceKind source)) "toolCall" "tool_use")
@@ -843,6 +843,31 @@
                                                        [(:streamId duplicate) (:entryId duplicate)])))])
                                    sources)))))))))
 
+(defn- stream-activity! [^js tx principal source]
+  (js/Promise.
+    (fn [resolve reject]
+      (let [entries #js []]
+        ;; Subscribe directly: awaiting this Result would buffer every raw row.
+        (.subscribe
+          (.run tx
+            "MATCH (reader:AdamUser {id: $readerId}), (owner:AdamUser)-[:OWNS]->(s:AdamSession {id: $sessionId})
+             WHERE owner = reader OR EXISTS { MATCH (owner)-[:GRANTS_MEMORY_ACCESS {permission: 'read'}]->(reader) }
+             WITH DISTINCT s MATCH (s)-[:HAS_ENTRY]->(e:AdamEntry)
+             RETURN e {.entryId, streamId: coalesce(e.streamId, 'main'), .rawJson} AS activityEntry"
+            (clj->js {:readerId principal :sessionId (:id source)}))
+          #js {:onNext (fn [row]
+                         (try
+                           (let [entry (field row "activityEntry")]
+                             (when-let [compact (parsed-activity source
+                                               {:entryId (aget entry "entryId") :streamId (aget entry "streamId")
+                                                :rawJson (aget entry "rawJson")})]
+                               (.push entries compact)))
+                           (catch :default error (reject error))))
+               :onError reject
+               :onCompleted (fn [_]
+                              (try (resolve (activity-source (assoc source :entries (array-seq entries))))
+                                   (catch :default error (reject error))))})))))
+
 (defn- activity-input! [^js tx principal memories]
   (if (empty? memories)
     (js/Promise.resolve memories)
@@ -856,34 +881,29 @@
            WITH DISTINCT original
            CALL { WITH original OPTIONAL MATCH (allOwner:AdamUser)-[:OWNS]->(original)
                   RETURN collect(DISTINCT allOwner.id) AS ownerIds }
-           CALL { WITH original OPTIONAL MATCH (original)-[:HAS_ENTRY]->(e:AdamEntry)
-                  RETURN collect(e {.entryId, streamId: coalesce(e.streamId, 'main'), .rawJson}) AS entries }
            RETURN original {.id, .sourceKind, sourceSessionId: coalesce(original.sourceSessionId, original.piSessionId),
                             parentDeclared: original.parentSession IS NOT NULL,
                             parentIds: [(original)-[:FORKED_FROM]->(parent:AdamSession) | parent.id],
-                            ownerIds: ownerIds, entries: entries} AS activitySession"
+                            ownerIds: ownerIds} AS activitySession"
           (clj->js {:readerId principal
                     :sourceSessions (->> memories (map #(hash-map :ownerId (:owner-id %) :sessionId (:session-id %))) distinct vec)}))
         (.then (fn [result]
-                 (let [sources (->> (rows result)
-                                    (keep (fn [row]
-                                            (let [raw (field row "activitySession")]
-                                              (activity-source
-                                                {:id (aget raw "id") :sourceKind (aget raw "sourceKind") :sourceSessionId (aget raw "sourceSessionId")
-                                                 :ownerIds (vec (aget raw "ownerIds")) :parentIds (vec (aget raw "parentIds"))
-                                                 :parentDeclared (aget raw "parentDeclared")
-                                                 :entries (map (fn [entry] {:entryId (aget entry "entryId") :streamId (aget entry "streamId")
-                                                                           :rawJson (aget entry "rawJson")})
-                                                               (array-seq (aget raw "entries")))}))))
-                                    (map #(vector (:id %) %)) (into {}))]
-                   (-> (exclude-copied-claude-requests! tx principal sources)
-                       (.then (fn [sources] (mapv #(assoc % :source-occasions (verified-occasions sources %)) memories))))))))))
+                 (reduce (fn [pending row]
+                           (.then pending
+                             (fn [sources]
+                               (let [source (js->clj (field row "activitySession") :keywordize-keys true)]
+                                 (-> (stream-activity! tx principal source)
+                                     (.then (fn [compact] (cond-> sources compact (assoc (:id compact) compact)))))))))
+                         (js/Promise.resolve {}) (rows result))))
+        (.then (fn [sources]
+                 (-> (exclude-copied-claude-requests! tx principal sources)
+                     (.then (fn [sources] (mapv #(assoc % :source-occasions (verified-occasions sources %)) memories)))))))))
 
 (defn load-input! [db request]
   (-> (js/Promise.resolve)
       (.then (fn []
                (let [params (bucket db request) principal (:principal db)]
-                 (with-session! db
+                 (with-session! (assoc db :fetch-size 1)
                    (fn [^js session]
                      (.executeRead session
                        (fn [^js tx]

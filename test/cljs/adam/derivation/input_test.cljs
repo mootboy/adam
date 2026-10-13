@@ -10,24 +10,63 @@
 
 (defn- fixture
   ([memory-rows] (fixture memory-rows {}))
-  ([memory-rows {:keys [prior-rows dependency-rows activity-rows duplicate-rows]}]
-  (let [calls (atom []) closes (atom 0)
-        tx #js {:run (fn [query params]
-                      (swap! calls conj {:query query :params params})
-                      (js/Promise.resolve
-                        #js {:records (to-array
-                           (map (fn [row] #js {:get (fn [key] (get row key))})
-                             (cond
-                               (re-find #"RETURN u.id AS userId" query) [{"userId" reader}]
-                               (re-find #"AS inputMemory" query) memory-rows
-                               (re-find #"AS activitySession" query) activity-rows
-                               (re-find #"AS duplicateClaudeRequest" query) duplicate-rows
-                               (re-find #"AS parents" query) prior-rows
-                               (re-find #"AS ownerIds" query) dependency-rows
-                               :else [])))}))}]
-    {:driver #js {:session (fn [_] #js {:executeRead (fn [work] (work tx))
-                                      :close (fn [] (swap! closes inc) (js/Promise.resolve))})}
-     :calls calls :closes closes})))
+  ([memory-rows {:keys [prior-rows dependency-rows activity-rows duplicate-rows activity-error]}]
+   (let [calls (atom []) closes (atom 0) session-options (atom nil)
+         record (fn [row] #js {:get (fn [key] (get row key))})
+         tx #js {:run (fn [query params]
+                        (swap! calls conj {:query query :params params})
+                        (if (re-find #"AS activityEntry" query)
+                          #js {:subscribe (fn [observer]
+                                            (doseq [row activity-rows
+                                                    :let [source (get row "activitySession")]
+                                                    :when (= (aget params "sessionId") (aget source "id"))
+                                                    entry (array-seq (aget source "entries"))]
+                                              ((aget observer "onNext") (record {"activityEntry" entry})))
+                                            (if activity-error ((aget observer "onError") activity-error)
+                                                ((aget observer "onCompleted") #js {})))}
+                          (js/Promise.resolve
+                            #js {:records (to-array
+                                            (map record
+                                              (cond
+                                                (re-find #"RETURN u.id AS userId" query) [{"userId" reader}]
+                                                (re-find #"AS inputMemory" query) memory-rows
+                                                (re-find #"AS activitySession" query)
+                                                (map (fn [row] (let [metadata (js/Object.assign #js {} (get row "activitySession"))]
+                                                                 (js-delete metadata "entries") {"activitySession" metadata})) activity-rows)
+                                                (re-find #"AS duplicateClaudeRequest" query) duplicate-rows
+                                                (re-find #"AS parents" query) prior-rows
+                                                (re-find #"AS ownerIds" query) dependency-rows
+                                                :else [])))})))}]
+     {:driver #js {:session (fn [options] (reset! session-options options)
+                            #js {:executeRead (fn [work] (work tx))
+                                 :close (fn [] (swap! closes inc) (js/Promise.resolve))})}
+      :calls calls :closes closes :session-options session-options})))
+
+(deftest source-driver-streams-are-consumed-without-buffering-and-close-on-error
+  (async done
+    (let [sid "urn:adam:session:reader:pi:s" parent "urn:adam:session:reader:pi:p"
+          entry #js {:entryId "u" :streamId "main" :rawJson "{\"id\":\"u\",\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"Hello\"}}"}
+          source (fn [id host parents] {"activitySession" #js {:id id :sourceKind "pi" :sourceSessionId host
+                                                               :ownerIds #js [reader] :parentIds (to-array parents) :entries #js [entry]}})
+          row {"ownerIds" [reader] "sessionIds" [sid] "sourceKind" "pi" "sourceSessionId" "s" "kind" "observation"
+               "sourceEntries" #js [#js {:streamId "main" :entryId "u"}]
+               "inputMemory" #js {:id "m" :producer "synthetic" :content "Preference"}}
+          attempt (fn [failure?]
+                    (let [{:keys [driver calls closes session-options]} (fixture [row] {:activity-rows [(source sid "s" [parent]) (source parent "p" [])]
+                                                                                       :activity-error (when failure? (js/Error. "stream-unavailable"))})]
+                      (-> (store/load-input! (store/with-driver driver "neo4j" reader) {:name "preferences"})
+                          (.then (fn [snapshot]
+                                   (is (not failure?))
+                                   (is (= [{:session-id parent :stream-id "main" :entry-id "u"}] (get-in snapshot [:memories 0 :source-occasions])))
+                                   (is (= 2 (count (filter #(re-find #"AS activityEntry" (:query %)) @calls)))))
+                                 (fn [error] (is failure?) (is (= "stream-unavailable" (.-message error)))))
+                          (.then (fn [_]
+                                   (is (= 1 @closes))
+                                   (is (= 1 (aget @session-options "fetchSize")))
+                                   (is (every? #(not (re-find #"rawJson" (:query %)))
+                                               (filter #(re-find #"AS activitySession" (:query %)) @calls))))))))]
+      (-> (js/Promise.all #js [(attempt false) (attempt true)])
+          (.catch (fn [error] (is false (.-stack error)))) (.finally done)))))
 
 (deftest authorized-input-snapshots-are-complete-and-closed
   (async done
