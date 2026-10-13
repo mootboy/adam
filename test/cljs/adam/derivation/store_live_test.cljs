@@ -300,7 +300,37 @@
           database (or (aget env "ADAM_TEST_NEO4J_DATABASE") "neo4j")
           ^js session (.session driver #js {:database database})
           db (store/with-driver driver database reader)
-          params #js {:ids (clj->js ids)}
+          entries [{:id (str "activity-user:" uuid) :entryId "user" :streamId "main"
+                    :rawJson "{\"id\":\"user\",\"type\":\"message\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"Use specs.\"}}"}
+                   {:id (str "activity-call:" uuid) :entryId "call" :streamId "main"
+                    :rawJson "{\"id\":\"call\",\"type\":\"message\",\"parentId\":\"user\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"t\",\"name\":\"read\"}]}}"}
+                   {:id (str "activity-result:" uuid) :entryId "result" :streamId "main"
+                    :rawJson "{\"id\":\"result\",\"type\":\"message\",\"parentId\":\"call\",\"message\":{\"role\":\"toolResult\",\"toolCallId\":\"t\",\"content\":[]}}"}]
+          claude-sid (str "urn:adam:session:" uuid ":claude-code:claude-input")
+          claude-memory (str "claude-observation:" uuid)
+          fork-sid (str "urn:adam:session:" uuid ":pi:fork")
+          fork-memory (str "fork-observation:" uuid)
+          native (fn [id stream value] {:id (str "native:" uuid ":" id) :entryId id :streamId stream
+                                        :rawJson (js/JSON.stringify (clj->js (assoc value :uuid id :sessionId "claude-input")))})
+          claude-entries
+          [(native "claude-user" "main" {:type "user" :parentUuid nil :message {:role "user" :content "Use specs."}})
+           (native "claude-call" "main" {:type "assistant" :parentUuid "claude-user" :requestId "r"
+                                        :message {:role "assistant" :content [{:type "tool_use" :id "ct" :name "Read"}]}})
+           (native "claude-result" "main" {:type "user" :parentUuid "claude-user" :sourceToolAssistantUUID "claude-call"
+                                          :message {:role "user" :content [{:type "tool_result" :tool_use_id "ct" :content "Read done."}]}})
+           (native "agent-call" "main" {:type "assistant" :parentUuid "claude-user"
+                                       :message {:role "assistant" :content [{:type "tool_use" :id "at" :name "Agent"}]}})
+           (native "agent-result" "main" {:type "user" :parentUuid "agent-call" :sourceToolAssistantUUID "agent-call"
+                                         :toolUseResult {:agentId "child"}
+                                         :message {:role "user" :content [{:type "tool_result" :tool_use_id "at" :content "Handback"}]}})
+           (native "child-call" "agent:child" {:type "assistant" :parentUuid nil :agentId "child"
+                                             :message {:role "assistant" :content [{:type "tool_use" :id "child-t" :name "Read"}]}})]
+          fork-entry (assoc (first entries) :id (str "fork-entry:" uuid))
+          cleanup-ids (into ids (concat (map :id entries) (map :id claude-entries)
+                                       [claude-sid claude-memory fork-sid fork-memory (:id fork-entry)]))
+          params #js {:ids (clj->js ids) :entries (clj->js entries) :cleanupIds (clj->js cleanup-ids)
+                      :claudeSessionId claude-sid :claudeMemoryId claude-memory :claudeEntries (clj->js claude-entries)
+                      :forkSessionId fork-sid :forkMemoryId fork-memory :forkEntry (clj->js fork-entry)}
           recipe (get (config/parse-config "derivations:\n  preferences:\n    version: 1\n    guidance: Preserve scope.\n") "preferences")
           model {:provider "fake" :id "model" :context-window 20000 :max-output-tokens 8192}
           check! (fn [request]
@@ -322,6 +352,16 @@
           (.then (fn [_] (check! {:name "preferences" :repository "git@example.com:repo.git"})))
           (.then (fn [_] (check! {:name "preferences" :language "cljs"})))
           (.then (fn [_]
+                   (.run session "MATCH (s:AdamSession {id: $ids[1]}), (o:AdamObservation {id: $ids[4]})
+                                  UNWIND $entries AS input CREATE (e:AdamEntry) SET e = input
+                                  CREATE (s)-[:HAS_ENTRY]->(e)
+                                  FOREACH (_ IN CASE WHEN input.entryId IN ['call', 'result'] THEN [1] ELSE [] END |
+                                    CREATE (o)-[:SOURCED_FROM]->(e))" params)))
+          (.then (fn [_] (store/load-input! db {:name "preferences"})))
+          (.then (fn [snapshot]
+                   (is (= [{:session-id sid :stream-id "main" :entry-id "user"}]
+                          (:source-occasions (first (filter #(= :observation (:kind %)) (:memories snapshot))))))))
+          (.then (fn [_]
                    (.run session "MATCH (r:AdamReflection {id: $ids[5]}) SET r.supportingObservationIds = ['wrong']" params)))
           (.then (fn [_]
                    (-> (store/load-input! db {:name "preferences"})
@@ -336,9 +376,28 @@
           (.then (fn [snapshot]
                    (is (= #{"pi-observational-memory"} (set (map :producer (:memories snapshot)))))
                    (is (= [(nth ids 4)] (:supporting-memory-ids (first (filter #(= :reflection (:kind %)) (:memories snapshot))))))))
+          (.then (fn [_]
+                   (.run session "MATCH (u:AdamUser {id: $ids[0]}), (parent:AdamSession {id: $ids[1]})
+                                  CREATE (c:AdamSession {id: $claudeSessionId, sourceKind: 'claude-code', sourceSessionId: 'claude-input'}),
+                                         (o:AdamObservation {id: $claudeMemoryId, memoryId: 'claude-obs', producer: 'synthetic', content: 'Use specs'}),
+                                         (fork:AdamSession {id: $forkSessionId, sourceKind: 'pi', sourceSessionId: 'fork', parentSession: 'locator'}),
+                                         (copy:AdamEntry), (fo:AdamObservation {id: $forkMemoryId, memoryId: 'fork-obs', producer: 'synthetic', content: 'Use specs'})
+                                  SET copy = $forkEntry
+                                  CREATE (u)-[:OWNS]->(c), (c)-[:HAS_MEMORY]->(o), (u)-[:OWNS]->(fork),
+                                         (fork)-[:FORKED_FROM]->(parent), (fork)-[:HAS_ENTRY]->(copy),
+                                         (fork)-[:HAS_MEMORY]->(fo), (fo)-[:SOURCED_FROM]->(copy)
+                                  WITH c, o UNWIND $claudeEntries AS input CREATE (e:AdamEntry) SET e = input
+                                  CREATE (c)-[:HAS_ENTRY]->(e)
+                                  FOREACH (_ IN CASE WHEN input.entryId IN ['claude-call','claude-result','child-call'] THEN [1] ELSE [] END |
+                                    CREATE (o)-[:SOURCED_FROM]->(e))" params)))
+          (.then (fn [_] (store/load-input! db {:name "preferences"})))
+          (.then (fn [snapshot]
+                   (let [by-id (into {} (map (juxt :id identity)) (:memories snapshot))]
+                     (is (= [{:session-id sid :stream-id "main" :entry-id "user"}] (:source-occasions (get by-id fork-memory))))
+                     (is (= [{:session-id claude-sid :stream-id "main" :entry-id "claude-user"}] (:source-occasions (get by-id claude-memory)))))))
           (.catch (fn [error] (is false (.-stack error))))
           (.finally (fn []
-                      (-> (.run session "MATCH (n) WHERE n.id IN $ids DETACH DELETE n" params)
+                      (-> (.run session "MATCH (n) WHERE n.id IN $cleanupIds DETACH DELETE n" params)
                           (.finally #(.close session))
                           (.finally #(.close driver)))))
           (.finally done)))))
