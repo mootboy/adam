@@ -622,14 +622,18 @@
                         :when (and (= "assistant" (get-in record [:value :message :role]))
                                    (= call-type (:type block)) (string? (:id block)))]
                     [[(:streamId record) (:id block)] record])]
-        (assoc source :records records :calls (into {} (map (fn [[key items]] [key (mapv second items)])) (group-by first calls)))))))
+        (assoc source :records records :calls (into {} (map (fn [[key items]] [key (mapv second items)])) (group-by first calls))
+               :agent-results (group-by #(get-in % [:value :toolUseResult :agentId])
+                                        (filter #(= "main" (:streamId %)) (vals records)))
+               :fragments (group-by #(vector (:streamId %) (get-in % [:value :requestId])) (vals records)))))))
 
 (defn- original-activity [sources source record]
   (loop [source source seen #{}]
     (let [key [(:streamId record) (:entryId record)]
           current (get-in source [:records key])
           parents (:parentIds source)]
-      (when (and current (= (:rawJson record) (:rawJson current)) (not (contains? seen (:id source))))
+      (when (and current (= (:rawJson record) (:rawJson current)) (not (contains? seen (:id source)))
+                 (not (contains? (:duplicate-requests source) key)))
         (cond
           (> (count parents) 1) nil
           (seq parents)
@@ -645,7 +649,22 @@
 
 (s/def ::request-content
   (s/or :text (s/and string? #(not (string/blank? %)))
-        :blocks (s/coll-of map? :kind vector? :min-count 1)))
+        :blocks (s/and (s/coll-of map? :kind vector? :min-count 1)
+               #(some (fn [block] (or (#{"image" "document"} (:type block))
+                                      (and (= "text" (:type block)) (string? (:text block))
+                                           (not (string/blank? (:text block)))))) %))))
+
+(defn- injected-request? [value]
+  (let [message (:message value)
+        source (or (:source message) (:origin message) (:source value) (:origin value))
+        content (:content message)
+        text (if (string? content) content
+                 (string/join "\n" (keep #(when (= "text" (:type %)) (:text %)) (when (vector? content) content))))]
+    (or (#{"extension" "custom" "system"} source)
+        (:isSynthetic value) (:isSynthetic message)
+        (some #(string/starts-with? (string/triml text) %)
+              ["<task-notification>" "<teammate-message" "<command-name>" "<local-command-stdout>"
+               "<local-command-stderr>" "<system-reminder>" "[Request interrupted by user"]))))
 
 (defn- pi-activity [sources source stream-id entry-id]
   (loop [entry-id entry-id seen #{}]
@@ -654,7 +673,8 @@
         (when (and (= "message" type) (not (contains? seen entry-id))
                    (not (or (:isSynthetic value) (:isSynthetic message))))
           (case (:role message)
-            "user" (when (s/valid? ::request-content (:content message)) (original-activity sources source record))
+            "user" (when (and (s/valid? ::request-content (:content message)) (not (injected-request? value)))
+                     (original-activity sources source record))
             "assistant" (recur parentId (conj seen entry-id))
             "toolResult"
             (let [calls (get (:calls source) [stream-id (:toolCallId message)])]
@@ -708,10 +728,8 @@
              (not= "main" stream-id)
              ;; A child prompt/handback is not a new human confirmation. Join only
              ;; through structured Agent-result identity, never returned prose.
-             (let [agent-id (subs stream-id 6)
-                   parents (filter #(and (= "main" (:streamId %))
-                                         (= agent-id (get-in % [:value :toolUseResult :agentId])))
-                                   (vals (:records source)))]
+             (let [agent-id (when (string/starts-with? stream-id "agent:") (subs stream-id 6))
+                   parents (when agent-id (get (:agent-results source) agent-id))]
                (when (= 1 (count parents))
                  (let [result (first parents) calls (claude-result-call source result)]
                    (when (and (seq calls)
@@ -730,12 +748,12 @@
                  (let [anchors (when calls
                                  (mapv #(claude-activity sources source stream-id (:entryId %) seen false) calls))]
                    (when (and (seq anchors) (every? some? anchors) (= 1 (count (set anchors)))) (first anchors)))))
-             (= "user" type) (when (s/valid? ::request-content (:content message)) (original-activity sources source record))
+             (= "user" type) (when (and (s/valid? ::request-content (:content message)) (not (injected-request? value)))
+                                (original-activity sources source record))
              (claude-parent source stream-id parentUuid)
              (recur stream-id (claude-parent source stream-id parentUuid) seen fragments?)
              (and fragments? (string? requestId))
-             (let [fragments (filter #(and (= stream-id (:streamId %)) (= requestId (get-in % [:value :requestId])))
-                                     (vals (:records source)))
+             (let [fragments (get (:fragments source) [stream-id requestId])
                    anchors (->> fragments
                                 (keep #(claude-activity sources source stream-id (:entryId %) seen false))
                                 distinct vec)]
@@ -750,6 +768,38 @@
                   "claude-code" (claude-activity sources source (:stream-id %) (:entry-id %))
                   nil))
          distinct (sort-by (juxt :session-id :stream-id :entry-id)) vec)))
+
+(defn- exclude-copied-claude-requests! [^js tx principal sources]
+  (let [requests (->> (vals sources)
+                      (filter #(= "claude-code" (:sourceKind %)))
+                      (mapcat (fn [source]
+                                (for [record (vals (:records source))
+                                      :when (and (= "main" (:streamId record))
+                                                 (= "user" (get-in record [:value :type])))]
+                                  {:ownerId (first (:ownerIds source)) :streamId "main" :entryId (:entryId record)})))
+                      distinct vec)]
+    (if (empty? requests)
+      (js/Promise.resolve sources)
+      (-> (.run tx
+            "MATCH (reader:AdamUser {id: $readerId})
+             UNWIND $owners AS wanted
+             MATCH (owner:AdamUser {id: wanted.id})
+             WHERE owner = reader OR EXISTS { MATCH (owner)-[:GRANTS_MEMORY_ACCESS {permission: 'read'}]->(reader) }
+             MATCH (owner)-[:OWNS]->(s:AdamSession)-[:HAS_ENTRY]->(e:AdamEntry)
+             WHERE s.sourceKind = 'claude-code' AND e.entryId IN wanted.entryIds
+               AND coalesce(e.streamId, 'main') = 'main'
+             WITH owner.id AS ownerId, e.entryId AS entryId, count(DISTINCT s.id) AS copies WHERE copies > 1
+             RETURN {ownerId: ownerId, entryId: entryId, streamId: 'main'} AS duplicateClaudeRequest"
+            (clj->js {:readerId principal :owners (mapv (fn [[owner rows]] {:id owner :entryIds (mapv :entryId rows)})
+                                                      (group-by :ownerId requests))}))
+          (.then (fn [result]
+                   (let [duplicates (map #(js->clj (field % "duplicateClaudeRequest") :keywordize-keys true) (rows result))]
+                     (into {} (map (fn [[id source]]
+                                     [id (assoc source :duplicate-requests
+                                                (set (for [duplicate duplicates
+                                                           :when (= (:ownerId duplicate) (first (:ownerIds source)))]
+                                                       [(:streamId duplicate) (:entryId duplicate)])))])
+                                   sources)))))))))
 
 (defn- activity-input! [^js tx principal memories]
   (if (empty? memories)
@@ -776,7 +826,8 @@
                  (let [sources (->> (rows result)
                                     (keep #(activity-source (js->clj (field % "activitySession") :keywordize-keys true)))
                                     (map #(vector (:id %) %)) (into {}))]
-                   (mapv #(assoc % :source-occasions (verified-occasions sources %)) memories)))))))
+                   (-> (exclude-copied-claude-requests! tx principal sources)
+                       (.then (fn [sources] (mapv #(assoc % :source-occasions (verified-occasions sources %)) memories))))))))))
 
 (defn load-input! [db request]
   (-> (js/Promise.resolve)
