@@ -12,7 +12,7 @@
 (s/def ::lease-ms (s/and ::config/positive-integer #(<= % 86400000)))
 (s/def ::token (config/text-spec 128))
 (s/def ::failure #{:timeout :cancelled :executor-failed :invalid-output :input-too-large
-                  :invalid-model :invalid-budget :invalid-memory :unresolved-evidence :unauthorized})
+                  :invalid-model :invalid-budget :invalid-memory :unresolved-evidence :unauthorized :schema-unavailable})
 
 (defn with-driver [driver database principal]
   (when-not (and (s/valid? ::principal principal) (s/valid? ::database database))
@@ -32,13 +32,29 @@
 (defn- field [^js record key] (.get record key))
 (defn- integer [^js value] (if (number? value) value (.toNumber value)))
 
+(def ^:private derivation-labels ["AdamDerivation" "AdamDerivationRun" "AdamDerivedObservation"])
+(s/def ::schema-labels (s/and (s/coll-of string? :kind vector?)
+                            #(every? (set %) derivation-labels)))
+
+(defn- require-schema! [^js tx]
+  (-> (.run tx
+        "SHOW CONSTRAINTS YIELD type, labelsOrTypes, properties
+         WHERE type = 'UNIQUENESS' AND properties = ['id']
+         RETURN collect(labelsOrTypes[0]) AS labels")
+      (.then (fn [result]
+               (let [labels (when-let [row (first (rows result))] (vec (field row "labels")))]
+                 (when-not (s/valid? ::schema-labels labels)
+                   (config/reject! :schema-unavailable "initialize derivation id constraints before graph writes")))))))
+
 (defn- write! [{:keys [principal] :as db} work]
   (with-session! db
     (fn [^js session]
       (.executeWrite session
         (fn [tx]
-          (-> (.run tx "MATCH (u:AdamUser {id: $readerId}) RETURN u.id AS userId"
-                    #js {:readerId principal})
+          (-> (require-schema! tx)
+              (.then (fn [_]
+                       (.run tx "MATCH (u:AdamUser {id: $readerId}) RETURN u.id AS userId"
+                             #js {:readerId principal})))
               (.then (fn [result]
                        (if (seq (rows result)) (work tx) {:status :unavailable})))))))))
 
@@ -51,7 +67,7 @@
                             (str "CREATE CONSTRAINT " (.toLowerCase label) "_id IF NOT EXISTS "
                                  "FOR (n:" label ") REQUIRE n.id IS UNIQUE")))))
               (js/Promise.resolve nil)
-              ["AdamDerivation" "AdamDerivationRun" "AdamDerivedObservation"]))))
+              derivation-labels))))
 
 (defn- bucket [{:keys [principal]} request]
   (when-not (and (s/valid? ::core/refresh-request request) (s/valid? ::config/name (:name request)))
@@ -67,7 +83,7 @@
                (when-not (s/valid? ::lease-ms lease-ms)
                  (config/reject! :invalid-lease "lease must be between 1 and 86400000 milliseconds; longer work renews it"))
                ;; Token allocation is outside the retried write transaction.
-               (let [params (assoc (bucket db request) :token (randomUUID) :leaseMs lease-ms)]
+               (let [params (assoc (bucket db request) :token (randomUUID) :leaseMs ((.-int neo4j) lease-ms))]
                  (write! db
                    (fn [tx]
                      (-> (.run tx
@@ -100,7 +116,7 @@
       (.then (fn []
                (when-not (and (s/valid? ::token token) (s/valid? ::lease-ms lease-ms))
                  (config/reject! :invalid-lease "valid token and bounded renewal are required"))
-               (let [params (assoc (bucket db request) :token token :leaseMs lease-ms)]
+               (let [params (assoc (bucket db request) :token token :leaseMs ((.-int neo4j) lease-ms))]
                  (write! db
                    (fn [tx]
                      (-> (.run tx
@@ -135,7 +151,10 @@
 
 ;; Persist the core's complete, closed candidate, not arbitrary model/host data.
 (s/def ::hash (s/and string? #(re-matches #"[0-9a-f]{64}" %)))
-(s/def ::created-at (s/and (config/text-spec 64) #(js/Number.isFinite (js/Date.parse %))))
+(s/def ::created-at
+  (s/and (config/text-spec 24)
+         #(re-matches #"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z" %)
+         #(try (= % (.toISOString (js/Date. %))) (catch :default _ false))))
 (s/def ::configuration-version ::config/version)
 (s/def ::configuration-fingerprint ::hash)
 (s/def ::input-fingerprint ::hash)
@@ -192,6 +211,7 @@
          #(every? (fn [c] (re-matches #"urn:adam:derived-observation:[0-9a-f]{64}" (:id c))) (:conclusions %))
          #(s/valid? (s/coll-of ::core/link :kind vector? :distinct true) (:links %))
          #(= (set (:input-memory-ids %)) (set (keys (:dependency-fingerprints %))) (set (keys (:dependency-roles %))))
+         #(or (:comparison-run-id %) (not-any? (fn [roles] (contains? roles :comparison-dependency)) (vals (:dependency-roles %))))
          #(= (:input-memory-count %) (count (filter (fn [[_ roles]] (some roles [:evidence :historical-support])) (:dependency-roles %))))
          #(every? (fn [id] (contains? (get (:dependency-roles %) id) :evidence))
                   (mapcat :supporting-memory-ids (:conclusions %)))
@@ -207,6 +227,7 @@
         (assoc :dependency-fingerprints (js->clj (aget raw "dependency-fingerprints"))
                :dependency-roles (into {} (map (fn [[id roles]] [id (set (map keyword roles))])
                                              (js->clj (aget raw "dependency-roles")))))
+        (update :diagnostics #(mapv keyword %))
         (update :conclusions #(mapv (fn [c] (-> c (update :basis keyword) (update :scope-type keyword))) %))
         (update :links #(mapv (fn [link] (update link :relation keyword)) %)))))
 
@@ -295,6 +316,9 @@
                           (= (set (:scope-subject-ids source)) (set (:scope-subject-ids target)))
                           (or (= :contradicts relation) (contains? previous to))))) (:links run)))))
 
+(defn- dependency-roles [run]
+  (clj->js (into {} (map (fn [[id roles]] [id (vec (sort (map name roles)))]) (:dependency-roles run)))))
+
 (defn- write-candidate! [^js tx params run]
   (let [parameters
         (clj->js (merge params
@@ -312,8 +336,8 @@
         writes
         [["MATCH (r:AdamDerivationRun {id: $runId})
            UNWIND $memoryIds AS id MATCH (m) WHERE m.id = id AND (m:AdamObservation OR m:AdamReflection)
-           MERGE (r)-[:USED_MEMORY]->(m)"
-          #js {:runId (:id run) :memoryIds (clj->js (:input-memory-ids run))}]
+           MERGE (r)-[used:USED_MEMORY]->(m) SET used.roles = $dependencyRoles[id]"
+          #js {:runId (:id run) :memoryIds (clj->js (:input-memory-ids run)) :dependencyRoles (dependency-roles run)}]
          ["MATCH (r:AdamDerivationRun {id: $runId}) UNWIND $conclusions AS input
            CREATE (c:AdamDerivedObservation {id: input.id})
            SET c.content = input.content, c.category = input.category, c.basis = input.basis,
@@ -476,7 +500,7 @@
            WITH DISTINCT r
            CALL { WITH r UNWIND r.inputMemoryIds AS id MATCH (m)
                   WHERE m.id = id AND (m:AdamObservation OR m:AdamReflection)
-                  MERGE (r)-[:USED_MEMORY]->(m) }
+                  MERGE (r)-[used:USED_MEMORY]->(m) SET used.roles = $dependencyRoles[id] }
            WITH r OPTIONAL MATCH (r)-[:HAS_CONCLUSION]->(c)
            OPTIONAL MATCH (c)-[old:SUPPORTED_BY|CONFLICTING_EVIDENCE]->() DELETE old
            WITH DISTINCT r, c
@@ -487,7 +511,7 @@
                   WHERE m.id = id AND (m:AdamObservation OR m:AdamReflection)
                   MERGE (c)-[:CONFLICTING_EVIDENCE]->(m) }
            RETURN DISTINCT r.id AS id"
-          #js {:readerId principal :runId (:id run) :runJson (field record "runJson")})
+          #js {:readerId principal :runId (:id run) :runJson (field record "runJson") :dependencyRoles (dependency-roles run)})
         (.then (fn [result] {:status (if (seq (rows result)) :repaired :unresolved-evidence) :run-id run-id})))))
 
 (defn- sequential! [records work]
