@@ -4,11 +4,13 @@
             [adam.derivation.store :as store]
             [adam.derivation.publication-test :as publication]
             [adam.derivation.store-test :refer [reader]]
+            [clojure.string :as string]
+            ["node:fs" :refer [readFileSync]]
             [cljs.test :refer-macros [deftest is async]]))
 
 (defn- fixture
   ([memory-rows] (fixture memory-rows {}))
-  ([memory-rows {:keys [prior-rows dependency-rows activity-rows]}]
+  ([memory-rows {:keys [prior-rows dependency-rows activity-rows duplicate-rows]}]
   (let [calls (atom []) closes (atom 0)
         tx #js {:run (fn [query params]
                       (swap! calls conj {:query query :params params})
@@ -19,6 +21,7 @@
                                (re-find #"RETURN u.id AS userId" query) [{"userId" reader}]
                                (re-find #"AS inputMemory" query) memory-rows
                                (re-find #"AS activitySession" query) activity-rows
+                               (re-find #"AS duplicateClaudeRequest" query) duplicate-rows
                                (re-find #"AS parents" query) prior-rows
                                (re-find #"AS ownerIds" query) dependency-rows
                                :else [])))}))}]
@@ -153,6 +156,12 @@
           cases [{:label "call and result share one user request" :entries [u a r] :cites ["call" "result"] :expected [anchor]}
                  {:label "citation strings alone are not verified" :entries [] :cites ["user"] :expected []}
                  {:label "summaries are not confirmations" :entries [u a r summary] :cites ["summary"] :expected []}
+                 {:label "extension-origin user injection" :entries [(entry "user" nil {:role "user" :source "extension" :content "Injected"})]
+                  :cites ["user"] :expected []}
+                 {:label "image-only native request" :entries [(entry "user" nil {:role "user" :content [{:type "image" :data "synthetic"}]})]
+                  :cites ["user"] :expected [anchor]}
+                 {:label "empty text blocks do not confirm" :entries [(entry "user" nil {:role "user" :content [{:type "text" :text ""}]})]
+                  :cites ["user"] :expected []}
                  {:label "cycle cannot anchor" :entries [(entry "cycle" "cycle" {:role "assistant" :content []})] :cites ["cycle"] :expected []}
                  {:label "new user activity is distinct" :entries [u (entry "second" "user" {:role "user" :content "Repeat correction."})]
                   :cites ["user" "second"] :expected [(assoc anchor :entry-id "second") anchor]}]
@@ -222,19 +231,49 @@
                   :cites [["main" "continued"]] :expected [anchor]}
                  {:records [u agent handback child] :cites [["main" "handback"] ["agent:child" "child-call"]] :expected [anchor]}
                  {:records [u child] :cites [["agent:child" "child-call"]] :expected []}
+                 {:records [u call result] :cites [["main" "result"]] :duplicates [{"duplicateClaudeRequest" #js {:ownerId reader :entryId "user" :streamId "main"}}] :expected []}
+                 {:records [(entry "injected" nil "user" "<task-notification>Complete</task-notification>" {})]
+                  :cites [["main" "injected"]] :expected []}
+                 {:records [(entry "injected" nil "user" "[Request interrupted by user]" {})]
+                  :cites [["main" "injected"]] :expected []}
+                 {:records [(entry "injected" nil "user" "<command-name>/compact</command-name>" {})]
+                  :cites [["main" "injected"]] :expected []}
                  {:records [u (entry "agent-call" "user" "assistant"
                                       [{:type "tool_use" :id "agent-tool" :name "Read"}
                                        {:type "tool_use" :id "different" :name "Agent"}] {}) handback child]
                   :cites [["agent:child" "child-call"]] :expected []}
                  {:records [u (entry "new" nil "user" "Correction after compaction." {})]
                   :cites [["main" "new"]] :expected [(assoc anchor :entry-id "new")]}]
-          attempt (fn [{:keys [records cites expected]}]
+          attempt (fn [{:keys [records cites expected duplicates]}]
                     (let [row {"ownerIds" [reader] "sessionIds" [sid] "sourceKind" "claude-code" "sourceSessionId" "s" "kind" "observation"
                                "sourceEntries" (clj->js (mapv (fn [[stream id]] {:streamId stream :entryId id}) cites))
                                "inputMemory" #js {:id "memory-a" :producer "synthetic" :content "Scoped preference"}}
-                          {:keys [driver]} (fixture [row] {:activity-rows [{"activitySession" (clj->js {:id sid :sourceKind "claude-code" :sourceSessionId "s"
+                          {:keys [driver]} (fixture [row] {:duplicate-rows duplicates :activity-rows [{"activitySession" (clj->js {:id sid :sourceKind "claude-code" :sourceSessionId "s"
                                                                                                     :ownerIds [reader] :entries records :parentIds []})}]})]
                       (-> (store/load-input! (store/with-driver driver "neo4j" reader) {:name "preferences"})
                           (.then (fn [snapshot] (is (= expected (get-in snapshot [:memories 0 :source-occasions]))))))))]
       (-> (js/Promise.all (to-array (map attempt cases)))
           (.then (fn [_] (done))) (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
+(deftest actual-claude-fork-requests-cannot-confirm-the-same-event-twice
+  (async done
+    (let [lines (string/split-lines (readFileSync "test/fixtures/derivation/claude-fork-user-copies.jsonl" "utf8"))
+          records (mapv #(js->clj (js/JSON.parse %) :keywordize-keys true) lines)
+          host-id (:sessionId (last records))
+          sid (str "urn:adam:session:reader:claude-code:" host-id)
+          copies (filterv #(= host-id (:sessionId %)) records)
+          entries (mapv (fn [record] {:entryId (:uuid record) :streamId "main" :rawJson (js/JSON.stringify (clj->js record))}) copies)
+          duplicate-rows (mapv (fn [record] {"duplicateClaudeRequest" #js {:ownerId reader :streamId "main" :entryId (:uuid record)}}) copies)
+          row {"ownerIds" [reader] "sessionIds" [sid] "sourceKind" "claude-code" "sourceSessionId" host-id "kind" "observation"
+               "sourceEntries" (clj->js (mapv (fn [record] {:streamId "main" :entryId (:uuid record)}) copies))
+               "inputMemory" #js {:id "memory-a" :producer "synthetic" :content "Copied request"}}
+          {:keys [driver]} (fixture [row] {:duplicate-rows duplicate-rows
+                                          :activity-rows [{"activitySession" (clj->js {:id sid :sourceKind "claude-code" :sourceSessionId host-id
+                                                                                     :ownerIds [reader] :entries entries :parentIds []})}]})]
+      (is (= 2 (count copies)))
+      (is (= 2 (count (set (map :sessionId records)))))
+      (is (= 2 (count (set (map :uuid records)))))
+      (-> (store/load-input! (store/with-driver driver "neo4j" reader) {:name "preferences"})
+          (.then (fn [snapshot] (is (= [] (get-in snapshot [:memories 0 :source-occasions])))))
+          (.catch (fn [error] (is false (.-stack error))))
+          (.finally done)))))

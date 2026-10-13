@@ -327,10 +327,12 @@
                                              :message {:role "assistant" :content [{:type "tool_use" :id "child-t" :name "Read"}]}})]
           fork-entry (assoc (first entries) :id (str "fork-entry:" uuid))
           cleanup-ids (into ids (concat (map :id entries) (map :id claude-entries)
-                                       [claude-sid claude-memory fork-sid fork-memory (:id fork-entry)]))
+                                       [claude-sid claude-memory fork-sid fork-memory (:id fork-entry)
+                                        (str "urn:adam:session:" uuid ":claude-code:memoryless-copy") (str "copy-request:" uuid)]))
           params #js {:ids (clj->js ids) :entries (clj->js entries) :cleanupIds (clj->js cleanup-ids)
                       :claudeSessionId claude-sid :claudeMemoryId claude-memory :claudeEntries (clj->js claude-entries)
-                      :forkSessionId fork-sid :forkMemoryId fork-memory :forkEntry (clj->js fork-entry)}
+                      :forkSessionId fork-sid :forkMemoryId fork-memory :forkEntry (clj->js fork-entry)
+                      :copySessionId (str "urn:adam:session:" uuid ":claude-code:memoryless-copy") :copyEntryId (str "copy-request:" uuid)}
           recipe (get (config/parse-config "derivations:\n  preferences:\n    version: 1\n    guidance: Preserve scope.\n") "preferences")
           model {:provider "fake" :id "model" :context-window 20000 :max-output-tokens 8192}
           check! (fn [request]
@@ -395,6 +397,15 @@
                    (let [by-id (into {} (map (juxt :id identity)) (:memories snapshot))]
                      (is (= [{:session-id sid :stream-id "main" :entry-id "user"}] (:source-occasions (get by-id fork-memory))))
                      (is (= [{:session-id claude-sid :stream-id "main" :entry-id "claude-user"}] (:source-occasions (get by-id claude-memory)))))))
+          (.then (fn [_]
+                   (.run session "MATCH (u:AdamUser {id: $ids[0]})
+                                  CREATE (s:AdamSession {id: $copySessionId, sourceKind: 'claude-code', sourceSessionId: 'memoryless-copy'}),
+                                         (e:AdamEntry {id: $copyEntryId, entryId: 'claude-user', streamId: 'main', type: 'user'})
+                                  CREATE (u)-[:OWNS]->(s), (s)-[:HAS_ENTRY]->(e)" params)))
+          (.then (fn [_] (store/load-input! db {:name "preferences"})))
+          (.then (fn [snapshot]
+                   (is (= [] (:source-occasions (first (filter #(= claude-memory (:id %)) (:memories snapshot)))))
+                       "memoryless original/copy sessions participate in duplicate detection")))
           (.catch (fn [error] (is false (.-stack error))))
           (.finally (fn []
                       (-> (.run session "MATCH (n) WHERE n.id IN $cleanupIds DETACH DELETE n" params)
