@@ -121,12 +121,15 @@
 
 (deftest malformed-source-outcomes-retain-content-free-diagnostic-counts
   (async done
-    (let [{:keys [driver]} (fixture [{"ownerIds" [reader "other"] "sessionIds" [] "inputMemory" nil}])
+    (let [{:keys [driver]} (fixture (conj (vec (repeat 3 {"ownerIds" [reader "other"] "sessionIds" [] "inputMemory" nil}))
+                                              {"ownerIds" [reader] "sessionIds" ["urn:adam:session:reader:pi:s"]
+                                               "sourceKind" "pi" "sourceSessionId" "s" "kind" "observation"
+                                               "inputMemory" #js {:id "healthy" :producer "synthetic" :content "Healthy evidence"}}))
           deps {:load-input! #(store/load-input! (store/with-driver driver "neo4j" reader) %)
                 :execute! (fn [_] (is false "malformed evidence must never execute"))}
           recipes (config/parse-config "derivations:\n  preferences:\n    version: 1\n    guidance: Preserve scope.\n")]
       (-> (core/refresh-configured! deps recipes {:name "preferences"})
           (.then (fn [outcomes]
-                   (is (= [{:name "preferences" :status :failed :code :unresolved-evidence :invalid-source-count 1}] outcomes))))
+                   (is (= [{:name "preferences" :status :failed :code :unresolved-evidence :invalid-source-count 3}] outcomes))))
           (.catch (fn [error] (is false (.-stack error))))
           (.finally done)))))
