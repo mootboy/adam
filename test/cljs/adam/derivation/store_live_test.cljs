@@ -328,11 +328,14 @@
           fork-entry (assoc (first entries) :id (str "fork-entry:" uuid))
           cleanup-ids (into ids (concat (map :id entries) (map :id claude-entries)
                                        [claude-sid claude-memory fork-sid fork-memory (:id fork-entry)
-                                        (str "urn:adam:session:" uuid ":claude-code:memoryless-copy") (str "copy-request:" uuid)]))
+                                        (str "urn:adam:session:" uuid ":claude-code:memoryless-copy") (str "copy-request:" uuid)
+                                        (str "urn:adam:user:" uuid "-other") (str "urn:adam:session:" uuid "-other:claude-code:foreign-copy") (str "foreign-copy-entry:" uuid)]))
           params #js {:ids (clj->js ids) :entries (clj->js entries) :cleanupIds (clj->js cleanup-ids)
                       :claudeSessionId claude-sid :claudeMemoryId claude-memory :claudeEntries (clj->js claude-entries)
                       :forkSessionId fork-sid :forkMemoryId fork-memory :forkEntry (clj->js fork-entry)
-                      :copySessionId (str "urn:adam:session:" uuid ":claude-code:memoryless-copy") :copyEntryId (str "copy-request:" uuid)}
+                      :copySessionId (str "urn:adam:session:" uuid ":claude-code:memoryless-copy") :copyEntryId (str "copy-request:" uuid)
+                      :otherOwnerId (str "urn:adam:user:" uuid "-other")
+                      :otherSessionId (str "urn:adam:session:" uuid "-other:claude-code:foreign-copy") :otherEntryId (str "foreign-copy-entry:" uuid)}
           recipe (get (config/parse-config "derivations:\n  preferences:\n    version: 1\n    guidance: Preserve scope.\n") "preferences")
           model {:provider "fake" :id "model" :context-window 20000 :max-output-tokens 8192}
           check! (fn [request]
@@ -406,6 +409,24 @@
           (.then (fn [snapshot]
                    (is (= [] (:source-occasions (first (filter #(= claude-memory (:id %)) (:memories snapshot)))))
                        "memoryless original/copy sessions participate in duplicate detection")))
+          (.then (fn [_]
+                   (.run session "MATCH (s:AdamSession {id: $copySessionId})-[:HAS_ENTRY]->(entry) DETACH DELETE entry, s" params)))
+          (.then (fn [_]
+                   (.run session "CREATE (owner:AdamUser {id: $otherOwnerId}),
+                                         (s:AdamSession {id: $otherSessionId, sourceKind: 'claude-code', sourceSessionId: 'foreign-copy'}),
+                                         (e:AdamEntry {id: $otherEntryId, entryId: 'claude-user', streamId: 'main', type: 'user'})
+                                  CREATE (owner)-[:OWNS]->(s), (s)-[:HAS_ENTRY]->(e)" params)))
+          (.then (fn [_] (store/load-input! db {:name "preferences"})))
+          (.then (fn [snapshot]
+                   (is (= 1 (count (:source-occasions (first (filter #(= claude-memory (:id %)) (:memories snapshot))))))
+                       "ungranted foreign copies cannot influence source independence")))
+          (.then (fn [_]
+                   (.run session "MATCH (owner:AdamUser {id: $otherOwnerId}), (reader:AdamUser {id: $ids[0]})
+                                  CREATE (owner)-[:GRANTS_MEMORY_ACCESS {permission: 'read'}]->(reader)" params)))
+          (.then (fn [_] (store/load-input! db {:name "preferences"})))
+          (.then (fn [snapshot]
+                   (is (= [] (:source-occasions (first (filter #(= claude-memory (:id %)) (:memories snapshot)))))
+                       "authorized cross-owner fork UUIDs do not multiply occasions")))
           (.catch (fn [error] (is false (.-stack error))))
           (.finally (fn []
                       (-> (.run session "MATCH (n) WHERE n.id IN $cleanupIds DETACH DELETE n" params)
