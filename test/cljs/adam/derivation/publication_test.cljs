@@ -11,10 +11,12 @@
             :model {:provider "fake" :id "model" :context-window 20000 :max-output-tokens 8192}
             :grants [] :memories [{:id "memory-a" :owner-id reader :session-id "session-a"
                                   :producer "synthetic" :kind :observation :content "Prefer simplicity"}]})
-(defn generated-run []
+(defn generated-run
+  ([] (generated-run input))
+  ([source]
   (-> (core/refresh! {:measure-input (constantly 100)
-                      :execute! (constantly {:finish-reason :stop :conclusions [] :links []})} input)
-      (.then (fn [result] (:run result)))))
+                      :execute! (constantly {:finish-reason :stop :conclusions [] :links []})} source)
+      (.then (fn [result] (:run result))))))
 
 (deftest publication-preflight-is-closed-before-io
   (async done
@@ -24,6 +26,10 @@
                        opens (atom 0) db (store/with-driver #js {:session #(swap! opens inc)} "neo4j" reader)
                        invalid [(assoc run :derivation-id "different") (assoc run :api-key "must-not-store")
                                 (assoc run :id "not-a-run")
+                                (assoc run :created-at "October 12, 2026")
+                                (assoc run :created-at "2026-02-30T00:00:00.000Z")
+                                (assoc run :created-at "2026-10-12T00:00:00Z")
+                                (assoc run :dependency-roles {"memory-a" #{:evidence :comparison-dependency}})
                                 (assoc run :input-memory-ids ["memory-a" "memory-a"])
                                 (assoc run :dependency-fingerprints {})
                                 (assoc run :configuration-snapshot-json "{\"password\":\"must-not-store\"}")]]
@@ -76,6 +82,15 @@
         (.then (fn [_] (done)))
         (.catch (fn [error] (is false (.-stack error)) (done))))))
 
+(deftest withheld-comparison-diagnostics-round-trip-through-read-and-repair
+  (async done
+    (-> (generated-run (assoc input :comparison {:id "unavailable" :input-memory-ids ["absent"] :conclusions []}))
+        (.then (fn [run]
+                 (is (= [:comparison-unavailable] (:diagnostics run)))
+                 (read-case! run :available)))
+        (.then (fn [_] (done)))
+        (.catch (fn [error] (is false (.-stack error)) (done))))))
+
 (deftest failed-or-fenced-publication-never-writes-run-content
   (async done
     (-> (generated-run)
@@ -98,7 +113,7 @@
                              (.catch #(hash-map :status (config/error-code %)))
                              (.then (fn [result]
                                       (is (= cause (:status result)))
-                                      (is (not-any? #(re-find #"CREATE \(r:AdamDerivationRun" (:query %)) @calls))
+                                      (is (not-any? #(contains? (:params %) :runJson) @calls))
                                       (is (= 1 @closes)))))))))))
         (.then (fn [_] (done)))
         (.catch (fn [error] (is false (.-stack error)) (done))))))

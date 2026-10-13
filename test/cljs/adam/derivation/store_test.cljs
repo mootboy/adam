@@ -6,7 +6,9 @@
 
 (def reader "urn:adam:user:test-reader")
 
-(defn recording-driver [reply]
+(defn recording-driver
+  ([reply] (recording-driver reply ["AdamDerivation" "AdamDerivationRun" "AdamDerivedObservation"]))
+  ([reply schema-labels]
   (let [calls (atom []) closes (atom 0) transactions (atom 0)
         run (fn [query params]
               (let [params (js->clj params :keywordize-keys true)]
@@ -14,13 +16,15 @@
                 (js/Promise.resolve
                   #js {:records (to-array
                                  (map (fn [row] #js {:get (fn [key] (get row key))})
-                                      (if (re-find #"RETURN u.id AS userId" query)
-                                        [{"userId" reader}] (reply query params))))})))
+                                      (cond
+                                        (re-find #"RETURN u.id AS userId" query) [{"userId" reader}]
+                                        (re-find #"SHOW CONSTRAINTS" query) [{"labels" schema-labels}]
+                                        :else (reply query params))))})))
         tx #js {:run run}
         session #js {:run run :executeWrite (fn [f] (swap! transactions inc) (f tx))
                      :executeRead (fn [f] (swap! transactions inc) (f tx))
                      :close (fn [] (swap! closes inc) (js/Promise.resolve nil))}]
-    {:driver #js {:session (fn [_] session)} :calls calls :closes closes :transactions transactions}))
+    {:driver #js {:session (fn [_] session)} :calls calls :closes closes :transactions transactions})))
 
 (deftest lease-interface-keeps-principal-and-bucket-fixed
   (async done
@@ -36,18 +40,17 @@
                    (let [params (:params (last @calls))]
                      (is (= reader (:readerId params)))
                      (is (= "python" (:filterValue params)))
-                     (is (= 360000 (:leaseMs params))))
+                     (let [^js duration (:leaseMs params)] (is (= 360000 (.toNumber duration)))))
                    (is (= 1 @transactions)) (is (= 1 @closes)) (done)))
           (.catch (fn [error] (is false (.-stack error)) (done)))))))
 
 (deftest lease-outcomes-are-closed-and-tokens-are-fenced
   (async done
-    (let [cases [{:reply [{"status" "busy"}] :status :busy}
-                 {:reply [] :status :unavailable}]
+    (let [cases [{:reply [{"status" "busy"}] :status :busy} {:reply [] :status :unavailable}]
           attempt (fn [{:keys [reply status]}]
                     (let [{:keys [driver]} (recording-driver (fn [_ _] reply))]
                       (-> (store/acquire-refresh! (store/with-driver driver "neo4j" reader) {:name "preferences"} 360000)
-                          (.then #(is (= status (:status %)))))))]
+                          (.then (fn [result] (is (= status (:status result))))))))]
       (-> (js/Promise.all (to-array (map attempt cases)))
           (.then (fn [_]
                    (let [{:keys [driver calls]} (recording-driver (fn [_ _] []))
@@ -55,12 +58,11 @@
                      (-> (store/renew-refresh! db {:name "preferences"} "old-token" 360000)
                          (.then (fn [result]
                                   (is (= :fenced (:status result)))
-                                  (is (re-find #"refreshToken = \$token" (:query (last @calls))))
-                                  (is (re-find #"refreshLeaseUntil > timestamp\(\)" (:query (last @calls))))
+                                  (is (= "old-token" (:token (:params (last @calls)))))
                                   (store/release-refresh! db {:name "preferences"} "old-token" :timeout)))
                          (.then (fn [result]
                                   (is (= :fenced (:status result)))
-                                  (is (re-find #"refreshToken = \$token" (:query (last @calls))))))))))
+                                  (is (= "old-token" (:token (:params (last @calls)))))))))))
           (.then (fn [_] (done)))
           (.catch (fn [error] (is false (.-stack error)) (done)))))))
 
@@ -80,10 +82,27 @@
 
 (deftest schema-is-limited-to-the-three-derived-labels
   (async done
-    (let [{:keys [driver calls closes]} (recording-driver (fn [_ _] []))]
+    (let [{:keys [driver calls closes transactions]} (recording-driver (fn [_ _] []))]
       (-> (store/ensure-schema! (store/with-driver driver "neo4j" reader))
           (.then (fn [_]
                    (is (= 3 (count @calls)))
-                   (is (every? #(re-find #"IS UNIQUE" (:query %)) @calls))
+                   (is (= 0 @transactions))
                    (is (= 1 @closes)) (done)))
+          (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
+(deftest missing-constraints-reject-concurrent-first-acquisitions-before-data-writes
+  (async done
+    (let [cases [[] ["AdamDerivation"] ["AdamDerivation" "AdamDerivationRun"]]
+          attempt (fn [labels]
+                    (let [{:keys [driver calls closes]} (recording-driver (fn [_ _] []) labels)
+                          db (store/with-driver driver "neo4j" reader)]
+                      (-> (js/Promise.all
+                            #js [(-> (store/acquire-refresh! db {:name "preferences"} 360000) (.catch config/error-code))
+                                 (-> (store/acquire-refresh! db {:name "preferences"} 360000) (.catch config/error-code))])
+                          (.then (fn [codes]
+                                   (is (= [:schema-unavailable :schema-unavailable] (vec (array-seq codes))))
+                                   (is (= 2 (count @calls)))
+                                   (is (= 2 @closes)))))))]
+      (-> (js/Promise.all (to-array (map attempt cases)))
+          (.then (fn [_] (done)))
           (.catch (fn [error] (is false (.-stack error)) (done)))))))
