@@ -1,6 +1,7 @@
 (ns adam.derivation.store
   (:require [adam.derivation.config :as config]
             [adam.derivation.core :as core]
+            [adam.replica.identity :as identity]
             [cljs.spec.alpha :as s]
             ["node:crypto" :refer [randomUUID]]
             ["neo4j-driver" :as neo4j]))
@@ -405,11 +406,12 @@
 
 ;; Capture immutable run metadata first. Authorization is always resolved from
 ;; current source ownership, never from a cached list of permitted users.
-(defn- run-records! [^js tx principal request]
+(defn- run-records! [^js tx principal request & [derivation-id]]
   (let [{:keys [name filter history? limit]} (core/normalize-read request)]
     (-> (.run tx
           "MATCH (:AdamUser {id: $readerId})-[:OWNS_DERIVATION]->(d:AdamDerivation)-[:HAS_RUN]->(r:AdamDerivationRun)
            WHERE ($name IS NULL OR d.name = $name)
+             AND ($derivationId IS NULL OR d.id = $derivationId)
              AND ($filterType IS NULL OR (d.filterType = $filterType AND d.filterValue = $filterValue))
              AND ($history OR EXISTS { MATCH (d)-[:LATEST_RUN]->(r) })
            WITH DISTINCT d, r ORDER BY r.createdAt DESC, r.id LIMIT $limit
@@ -428,7 +430,7 @@
                                         MATCH (c)-[:CONFLICTING_EVIDENCE]->(m) WHERE m.id = id
                                       })}) AS conclusions
            ORDER BY createdAt DESC, runId"
-          #js {:readerId principal :name name :filterType (when filter (clojure.core/name (:type filter)))
+          #js {:readerId principal :derivationId derivation-id :name name :filterType (when filter (clojure.core/name (:type filter)))
                :filterValue (:value filter) :history history? :limit ((.-int neo4j) (inc limit))})
         (.then (fn [result] {:records (vec (take limit (rows result))) :truncated? (> (count (rows result)) limit)})))))
 
@@ -466,6 +468,112 @@
                    (not (and (:linked? result) conclusions-linked? dependencies-linked?)) {:status :unresolved-evidence :run-id (:id run)}
                    :else (assoc (dissoc saved :conclusions-linked? :dependencies-linked?) :status :available)))))
     (js/Promise.resolve {:status :unresolved-evidence :run-id (field record "runId")})))
+
+;; All generation evidence is loaded before processing, including unlinked
+;; memories and dropped support records. No LIMIT, file join or recipe filtering
+;; may silently reduce this snapshot; core applies the one selected filter.
+(s/def ::input-owner-ids (s/coll-of ::principal :kind vector? :count 1))
+(s/def ::input-session-ids (s/coll-of ::core/session :kind vector? :count 1))
+(s/def ::source-kind #{"pi" "claude-code"})
+(s/def ::source-session-id (config/text-spec 2048))
+(s/def ::input-source
+  (s/and (s/keys :req-un [::input-owner-ids ::input-session-ids ::source-kind ::source-session-id])
+         #(= [(:source-kind %) (:source-session-id %)]
+             (vec (rest (re-matches #"urn:adam:session:[^:\s]+:([^:\s]+):([^\s]+)"
+                                   (first (:input-session-ids %))))))))
+
+(defn- input-memories! [^js tx principal]
+  (-> (.run tx
+        "MATCH (reader:AdamUser {id: $readerId})
+         MATCH (owner:AdamUser)-[:OWNS]->(:AdamSession)-[:HAS_MEMORY]->(m)
+         WHERE (m:AdamObservation OR m:AdamReflection)
+           AND (owner = reader OR EXISTS {
+             MATCH (owner)-[:GRANTS_MEMORY_ACCESS {permission: 'read'}]->(reader)
+           })
+         WITH DISTINCT m
+         MATCH (allOwner:AdamUser)-[:OWNS]->(s:AdamSession)-[:HAS_MEMORY]->(m)
+         WITH m, collect(DISTINCT allOwner.id) AS ownerIds, collect(DISTINCT s.id) AS sessionIds,
+              collect(DISTINCT s) AS sessions
+         WITH m, ownerIds, sessionIds, sessions[0] AS s
+         CALL { WITH m, s OPTIONAL MATCH (m)-[:SOURCED_FROM]->(entry:AdamEntry)<-[:HAS_ENTRY]-(s)
+                RETURN collect(DISTINCT entry {.entryId, streamId: coalesce(entry.streamId, 'main')}) AS sourceEntries }
+         CALL { WITH m OPTIONAL MATCH (m)-[:ABOUT]->(f:AdamCodeFile)
+                RETURN collect(DISTINCT f.relativePath) AS linkedPaths }
+         CALL { WITH s OPTIONAL MATCH (s)-[:WORKED_ON]->(repo:AdamRepository)
+                RETURN collect(DISTINCT repo.normalizedRemote) AS repositoryOrigins,
+                       collect(DISTINCT repo.id) AS repositoryIds }
+         RETURN ownerIds, sessionIds, s.sourceKind AS sourceKind,
+                coalesce(s.sourceSessionId, s.piSessionId) AS sourceSessionId,
+                CASE WHEN size(ownerIds) = 1 AND size(sessionIds) = 1
+                     THEN m {.id, .content, .producer, .dropped, .timestamp, .relevance,
+                             .recordingEntryId, .recordingEventId, .recordingMemoryRecordId,
+                             .supportingObservationIds} END AS inputMemory,
+                CASE WHEN m:AdamObservation AND NOT m:AdamReflection THEN 'observation'
+                     WHEN m:AdamReflection AND NOT m:AdamObservation THEN 'reflection' END AS kind,
+                sourceEntries, linkedPaths, repositoryOrigins, repositoryIds
+         ORDER BY m.id"
+        #js {:readerId principal})
+      (.then (fn [result]
+               (mapv
+                 (fn [row]
+                   (let [owners (vec (field row "ownerIds")) sessions (vec (field row "sessionIds"))
+                         value (field row "inputMemory") kind (keyword (field row "kind"))
+                         source-kind (field row "sourceKind") source-id (field row "sourceSessionId")]
+                     (when-not (and value (s/valid? ::core/kind kind)
+                                    (s/valid? ::input-source
+                                              {:input-owner-ids owners :input-session-ids sessions
+                                               :source-kind source-kind :source-session-id source-id}))
+                       (config/reject! :unresolved-evidence "source ownership and kind must be unambiguous"))
+                     (cond-> {:id (aget value "id") :owner-id (first owners) :session-id (first sessions)
+                              :kind kind :producer (aget value "producer") :content (aget value "content")
+                              :dropped? (= true (aget value "dropped"))
+                              :source-kind source-kind :source-session-id source-id
+                              :timestamp (aget value "timestamp") :relevance (aget value "relevance")
+                              :recording-entry-id (aget value "recordingEntryId")
+                              :recording-event-id (aget value "recordingEventId")
+                              :recording-record-id (aget value "recordingMemoryRecordId")
+                              :source-entries (mapv (fn [entry] {:stream-id (aget entry "streamId") :entry-id (aget entry "entryId")})
+                                                   (field row "sourceEntries"))
+                              ;; Never treat citation strings as verified occasions.
+                              :source-occasions []
+                              :linked-paths (vec (field row "linkedPaths"))
+                              :repository-origins (vec (field row "repositoryOrigins"))
+                              :repository-ids (vec (field row "repositoryIds"))}
+                       (= :reflection kind)
+                       (assoc :supporting-memory-ids
+                              (mapv #(identity/observation-urn (subs (first owners) 14) source-kind source-id
+                                                               (aget value "producer") %)
+                                    (or (aget value "supportingObservationIds") []))))))
+                 (rows result))))))
+
+(defn load-input! [db request]
+  (-> (js/Promise.resolve)
+      (.then (fn []
+               (let [params (bucket db request) principal (:principal db)]
+                 (with-session! db
+                   (fn [^js session]
+                     (.executeRead session
+                       (fn [^js tx]
+                         (-> (.run tx "MATCH (u:AdamUser {id: $readerId}) RETURN u.id AS userId" #js {:readerId principal})
+                             (.then (fn [result]
+                                      (when-not (= 1 (count (rows result)))
+                                        (config/reject! :unauthorized "source reader must resolve uniquely"))
+                                      (input-memories! tx principal)))
+                             (.then (fn [memories]
+                                      (let [snapshot {:reader-id principal :memories memories
+                                                      :grants (mapv (fn [owner] {:owner-id owner :reader-id principal :permission "read"})
+                                                                    (sort (disj (set (map :owner-id memories)) principal)))}]
+                                        (-> (run-records! tx principal (assoc request :limit 1) (:derivationId params))
+                                            (.then (fn [{:keys [records truncated?]}]
+                                                     (cond
+                                                       (empty? records) snapshot
+                                                       truncated? (assoc snapshot :comparison {:id "unavailable"})
+                                                       :else
+                                                       (-> (read-record! tx principal (first records))
+                                                           (.then (fn [prior]
+                                                                    (assoc snapshot :comparison
+                                                                           (if (= :available (:status prior))
+                                                                             (:run prior) {:id "unavailable"}))))))))))))))))))))))
 
 (defn read-runs! [db request]
   (-> (js/Promise.resolve)
