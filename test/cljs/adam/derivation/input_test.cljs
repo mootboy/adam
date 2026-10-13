@@ -8,7 +8,7 @@
 
 (defn- fixture
   ([memory-rows] (fixture memory-rows {}))
-  ([memory-rows {:keys [prior-rows dependency-rows]}]
+  ([memory-rows {:keys [prior-rows dependency-rows activity-rows]}]
   (let [calls (atom []) closes (atom 0)
         tx #js {:run (fn [query params]
                       (swap! calls conj {:query query :params params})
@@ -18,6 +18,7 @@
                              (cond
                                (re-find #"RETURN u.id AS userId" query) [{"userId" reader}]
                                (re-find #"AS inputMemory" query) memory-rows
+                               (re-find #"AS activitySession" query) activity-rows
                                (re-find #"AS parents" query) prior-rows
                                (re-find #"AS ownerIds" query) dependency-rows
                                :else [])))}))}]
@@ -133,3 +134,107 @@
                    (is (= [{:name "preferences" :status :failed :code :unresolved-evidence :invalid-source-count 3}] outcomes))))
           (.catch (fn [error] (is false (.-stack error))))
           (.finally done)))))
+
+(deftest native-source-occasion-anchors-share-the-original-user-activity
+  (async done
+    (let [sid "urn:adam:session:reader:pi:s"
+          entry (fn [id parent message] {:entryId id :streamId "main"
+                                        :rawJson (js/JSON.stringify (clj->js {:id id :type "message" :parentId parent :message message}))})
+          u (entry "user" nil {:role "user" :content "Use specs."})
+          a (entry "call" "user" {:role "assistant" :content [{:type "toolCall" :id "t" :name "read" :arguments {:path "a.cljs"}}]})
+          r (entry "result" "call" {:role "toolResult" :toolCallId "t" :content []})
+          summary {:entryId "summary" :streamId "main" :rawJson "{\"id\":\"summary\",\"type\":\"compaction\",\"parentId\":\"result\"}"}
+          origin (fn [id host entries parent-ids] {"activitySession" (clj->js {:id id :sourceKind "pi" :sourceSessionId host
+                                              :ownerIds [reader] :entries entries :parentIds parent-ids})})
+          row (fn [id cites] {"ownerIds" [reader] "sessionIds" [sid] "sourceKind" "pi" "sourceSessionId" "s" "kind" "observation"
+                             "sourceEntries" (clj->js (mapv #(hash-map :streamId "main" :entryId %) cites))
+                             "inputMemory" #js {:id id :producer "synthetic" :content "Prefer specs"}})
+          anchor {:session-id sid :stream-id "main" :entry-id "user"}
+          cases [{:label "call and result share one user request" :entries [u a r] :cites ["call" "result"] :expected [anchor]}
+                 {:label "citation strings alone are not verified" :entries [] :cites ["user"] :expected []}
+                 {:label "summaries are not confirmations" :entries [u a r summary] :cites ["summary"] :expected []}
+                 {:label "cycle cannot anchor" :entries [(entry "cycle" "cycle" {:role "assistant" :content []})] :cites ["cycle"] :expected []}
+                 {:label "new user activity is distinct" :entries [u (entry "second" "user" {:role "user" :content "Repeat correction."})]
+                  :cites ["user" "second"] :expected [(assoc anchor :entry-id "second") anchor]}]
+          attempt (fn [{:keys [label entries cites expected]}]
+                    (let [{:keys [driver]} (fixture [(row "memory-a" cites)]
+                                                    {:activity-rows [(origin sid "s" entries [])]})]
+                      (-> (store/load-input! (store/with-driver driver "neo4j" reader) {:name "preferences"})
+                          (.then (fn [snapshot] (is (= expected (get-in snapshot [:memories 0 :source-occasions])) label))))))]
+      (-> (js/Promise.all (to-array (map attempt cases)))
+          (.then (fn [_] (done)))
+          (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
+(deftest verified-fork-origins-do-not-manufacture-new-occasions
+  (async done
+    (let [sid "urn:adam:session:reader:pi:fork" parent "urn:adam:session:reader:pi:origin"
+          record {:entryId "user" :streamId "main" :rawJson "{\"id\":\"user\",\"type\":\"message\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"Use specs.\"}}"}
+          source (fn [id host parents entries extra] {"activitySession" (clj->js (merge {:id id :sourceKind "pi" :sourceSessionId host
+                                                                :ownerIds [reader] :parentIds parents :entries entries} extra))})
+          row {"ownerIds" [reader] "sessionIds" [sid] "sourceKind" "pi" "sourceSessionId" "fork" "kind" "observation"
+               "sourceEntries" #js [#js {:streamId "main" :entryId "user"}] "inputMemory" #js {:id "memory-a" :producer "synthetic" :content "Use specs"}}
+          cases [{:parents [(source parent "origin" [] [record] {})] :expected [{:session-id parent :stream-id "main" :entry-id "user"}]}
+                 {:parents [] :expected []}
+                 {:parents [(source parent "origin" [] [(assoc record :rawJson (str (:rawJson record) " "))] {})] :expected []}
+                 {:parents [(source parent "origin" [] [] {})] :expected [{:session-id sid :stream-id "main" :entry-id "user"}]}
+                 {:parents [(source parent "origin" [] [record] {:ownerIds ["urn:adam:user:other"]})] :expected []}
+                 {:parents [(source parent "origin" [sid] [record] {})] :expected []}]
+          attempt (fn [{:keys [parents expected]}]
+                    (let [{:keys [driver]} (fixture [row] {:activity-rows (into [(source sid "fork" [parent] [record] {})] parents)})]
+                      (-> (store/load-input! (store/with-driver driver "neo4j" reader) {:name "preferences"})
+                          (.then (fn [snapshot] (is (= expected (get-in snapshot [:memories 0 :source-occasions]))))))))]
+      (-> (js/Promise.all (to-array (map attempt cases)))
+          (.then (fn [_] (done))) (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
+(deftest claude-native-activity-anchors-parallel-tools-compaction-and-children
+  (async done
+    (let [sid "urn:adam:session:reader:claude-code:s"
+          entry (fn [id parent type content extra]
+                  {:entryId id :streamId (or (:stream extra) "main")
+                   :rawJson (js/JSON.stringify (clj->js (merge {:uuid id :parentUuid parent :type type :sessionId "s"
+                                                               :message {:role type :content content}}
+                                                              (dissoc extra :stream))))})
+          u (entry "user" nil "user" "Use specs." {})
+          call (entry "call" "user" "assistant" [{:type "tool_use" :id "t" :name "Read" :input {:file_path "a.cljs"}}] {:requestId "request"})
+          fragment (entry "fragment" nil "assistant" [{:type "text" :text "Response fragment"}] {:requestId "request"})
+          result (entry "result" "user" "user" [{:type "tool_result" :tool_use_id "t" :content "Read done"}] {:sourceToolAssistantUUID "call"})
+          agent (entry "agent-call" "user" "assistant" [{:type "tool_use" :id "agent-tool" :name "Agent" :input {}}] {})
+          handback (entry "handback" "agent-call" "user" [{:type "tool_result" :tool_use_id "agent-tool" :content "Assistant handback"}]
+                          {:sourceToolAssistantUUID "agent-call" :toolUseResult {:agentId "child"}})
+          child (entry "child-call" nil "assistant" [{:type "tool_use" :id "c" :name "Read" :input {:file_path "b.cljs"}}]
+                       {:stream "agent:child" :agentId "child"})
+          anchor {:session-id sid :stream-id "main" :entry-id "user"}
+          cases [{:records (into [u] (map (fn [i] (entry (str "long-" i) (if (zero? i) "user" (str "long-" (dec i)))
+                                                               "assistant" "Continuation" {})) (range 15000)))
+                  :cites [["main" "long-14999"]] :expected [anchor]}
+                 {:records [u call result fragment] :cites [["main" "call"] ["main" "result"] ["main" "fragment"]] :expected [anchor]}
+                 {:records [u call (entry "dup" "user" "assistant" [{:type "tool_use" :id "t" :name "Read"}] {}) result]
+                  :cites [["main" "result"]] :expected []}
+                 {:records [u call (entry "result" "user" "user" [{:type "tool_result" :tool_use_id "t"}] {:sourceToolAssistantUUID "wrong"})]
+                  :cites [["main" "result"]] :expected []}
+                 {:records [u (entry "summary" "user" "user" "Use specs many times." {:isCompactSummary true})]
+                  :cites [["main" "summary"]] :expected []}
+                 {:records [u call
+                            {:entryId "boundary" :streamId "main"
+                             :rawJson "{\"uuid\":\"boundary\",\"sessionId\":\"s\",\"type\":\"system\",\"subtype\":\"compact_boundary\",\"parentUuid\":null,\"logicalParentUuid\":\"call\"}"}
+                            (entry "summary" "boundary" "user" "Generated continuation context." {:isCompactSummary true})
+                            (entry "continued" "summary" "assistant" [{:type "text" :text "Continue task"}] {})]
+                  :cites [["main" "continued"]] :expected [anchor]}
+                 {:records [u agent handback child] :cites [["main" "handback"] ["agent:child" "child-call"]] :expected [anchor]}
+                 {:records [u child] :cites [["agent:child" "child-call"]] :expected []}
+                 {:records [u (entry "agent-call" "user" "assistant"
+                                      [{:type "tool_use" :id "agent-tool" :name "Read"}
+                                       {:type "tool_use" :id "different" :name "Agent"}] {}) handback child]
+                  :cites [["agent:child" "child-call"]] :expected []}
+                 {:records [u (entry "new" nil "user" "Correction after compaction." {})]
+                  :cites [["main" "new"]] :expected [(assoc anchor :entry-id "new")]}]
+          attempt (fn [{:keys [records cites expected]}]
+                    (let [row {"ownerIds" [reader] "sessionIds" [sid] "sourceKind" "claude-code" "sourceSessionId" "s" "kind" "observation"
+                               "sourceEntries" (clj->js (mapv (fn [[stream id]] {:streamId stream :entryId id}) cites))
+                               "inputMemory" #js {:id "memory-a" :producer "synthetic" :content "Scoped preference"}}
+                          {:keys [driver]} (fixture [row] {:activity-rows [{"activitySession" (clj->js {:id sid :sourceKind "claude-code" :sourceSessionId "s"
+                                                                                                    :ownerIds [reader] :entries records :parentIds []})}]})]
+                      (-> (store/load-input! (store/with-driver driver "neo4j" reader) {:name "preferences"})
+                          (.then (fn [snapshot] (is (= expected (get-in snapshot [:memories 0 :source-occasions]))))))))]
+      (-> (js/Promise.all (to-array (map attempt cases)))
+          (.then (fn [_] (done))) (.catch (fn [error] (is false (.-stack error)) (done)))))))

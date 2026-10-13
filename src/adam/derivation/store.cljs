@@ -589,6 +589,195 @@
                  (when (pos? invalid-count) (invalid-input-source! invalid-count))
                  decoded)))))
 
+;; Raw activity is read once per distinct owned source session, never once per
+;; memory. Only verified locator anchors escape this boundary, not transcript text.
+(s/def ::entryId ::core/id)
+(s/def ::streamId ::core/id)
+(s/def ::rawJson string?)
+(s/def ::activity-entry (s/keys :req-un [::entryId ::streamId ::rawJson]))
+
+(defn- parsed-activity [source entry]
+  (try
+    (when (s/valid? ::activity-entry entry)
+      (let [value (js->clj (js/JSON.parse (:rawJson entry)) :keywordize-keys true)
+            native-id (if (= "pi" (:sourceKind source)) (:id value) (:uuid value))]
+        (when (and (map? value) (= (:entryId entry) native-id)
+                   (or (= "pi" (:sourceKind source))
+                       (and (= (:sourceSessionId source) (:sessionId value))
+                            (or (= "main" (:streamId entry))
+                                (= (:streamId entry) (str "agent:" (:agentId value)))))))
+          (assoc entry :value value))))
+    (catch :default _ nil)))
+
+(defn- activity-source [source]
+  (when (s/valid? ::input-source {:input-owner-ids (:ownerIds source) :input-session-ids [(:id source)]
+                                :source-kind (:sourceKind source) :source-session-id (:sourceSessionId source)})
+    (let [entries (keep #(parsed-activity source %) (:entries source))
+          grouped (group-by (juxt :streamId :entryId) entries)]
+      (let [records (into {} (keep (fn [[key items]] (when (= 1 (count items)) [key (first items)]))) grouped)
+            call-type (if (= "pi" (:sourceKind source)) "toolCall" "tool_use")
+            calls (for [record (vals records)
+                        :let [content (get-in record [:value :message :content])]
+                        block (if (vector? content) content [])
+                        :when (and (= "assistant" (get-in record [:value :message :role]))
+                                   (= call-type (:type block)) (string? (:id block)))]
+                    [[(:streamId record) (:id block)] record])]
+        (assoc source :records records :calls (into {} (map (fn [[key items]] [key (mapv second items)])) (group-by first calls)))))))
+
+(defn- original-activity [sources source record]
+  (loop [source source seen #{}]
+    (let [key [(:streamId record) (:entryId record)]
+          current (get-in source [:records key])
+          parents (:parentIds source)]
+      (when (and current (= (:rawJson record) (:rawJson current)) (not (contains? seen (:id source))))
+        (cond
+          (> (count parents) 1) nil
+          (seq parents)
+          (when-let [parent (get sources (first parents))]
+            (when (and (= (:sourceKind source) (:sourceKind parent))
+                       (= (:ownerIds source) (:ownerIds parent)))
+              (if-let [copied (get-in parent [:records key])]
+                (when (= (:rawJson copied) (:rawJson record))
+                  (recur parent (conj seen (:id source))))
+                {:session-id (:id source) :stream-id (:streamId record) :entry-id (:entryId record)})))
+          (:parentDeclared source) nil
+          :else {:session-id (:id source) :stream-id (:streamId record) :entry-id (:entryId record)})))))
+
+(s/def ::request-content
+  (s/or :text (s/and string? #(not (string/blank? %)))
+        :blocks (s/coll-of map? :kind vector? :min-count 1)))
+
+(defn- pi-activity [sources source stream-id entry-id]
+  (loop [entry-id entry-id seen #{}]
+    (when-let [record (get-in source [:records [stream-id entry-id]])]
+      (let [{:keys [type message parentId] :as value} (:value record)]
+        (when (and (= "message" type) (not (contains? seen entry-id))
+                   (not (or (:isSynthetic value) (:isSynthetic message))))
+          (case (:role message)
+            "user" (when (s/valid? ::request-content (:content message)) (original-activity sources source record))
+            "assistant" (recur parentId (conj seen entry-id))
+            "toolResult"
+            (let [calls (get (:calls source) [stream-id (:toolCallId message)])]
+              (when (and (string? (:toolCallId message)) (= 1 (count calls)))
+                (recur (:entryId (first calls)) (conj seen entry-id))))
+            nil))))))
+
+(defn- claude-blocks [record]
+  (let [content (get-in record [:value :message :content])]
+    (if (vector? content) content [])))
+
+(defn- summary-activity? [value]
+  (or (:isCompactSummary value) (:isSessionTranscriptOnly value)
+      (:isMeta value) (:isSynthetic value)
+      (= "compact_boundary" (:subtype value))))
+
+(defn- claude-parent [source stream-id parent-id]
+  (loop [id parent-id seen #{}]
+    (when-let [record (get-in source [:records [stream-id id]])]
+      (let [value (:value record)]
+        (when-not (contains? seen id)
+          (if (or (:isCompactSummary value) (:isSessionTranscriptOnly value)
+                  (= "compact_boundary" (:subtype value)))
+            (recur (or (:logicalParentUuid value) (:parentUuid value)) (conj seen id))
+            (when (#{"user" "assistant"} (:type value)) id)))))))
+
+(defn- claude-result-call [source record]
+  (let [results (filter #(= "tool_result" (:type %)) (claude-blocks record))
+        assistant-id (get-in record [:value :sourceToolAssistantUUID])
+        matching
+        (keep (fn [block]
+                (let [calls (get (:calls source) [(:streamId record) (:tool_use_id block)])]
+                  (when (and (string? (:tool_use_id block)) (= 1 (count calls))
+                             (= assistant-id (:entryId (first calls))))
+                    (first calls))))
+              results)]
+    (when (and (seq results) (= (count matching) (count results)))
+      (vec (distinct matching)))))
+
+(defn- claude-activity
+  ([sources source stream-id entry-id] (claude-activity sources source stream-id entry-id #{} true))
+  ([sources source stream-id entry-id seen fragments?]
+   (loop [stream-id stream-id entry-id entry-id seen seen fragments? fragments?]
+     (let [key [stream-id entry-id] record (get-in source [:records key])
+           {:keys [type message parentUuid requestId] :as value} (:value record)
+           results (filter #(= "tool_result" (:type %)) (claude-blocks record))]
+       (when (and record (not (contains? seen key)) (not (summary-activity? value))
+                  (#{"user" "assistant"} type) (= type (:role message)))
+         (let [seen (conj seen key)]
+           (cond
+             (not= "main" stream-id)
+             ;; A child prompt/handback is not a new human confirmation. Join only
+             ;; through structured Agent-result identity, never returned prose.
+             (let [agent-id (subs stream-id 6)
+                   parents (filter #(and (= "main" (:streamId %))
+                                         (= agent-id (get-in % [:value :toolUseResult :agentId])))
+                                   (vals (:records source)))]
+               (when (= 1 (count parents))
+                 (let [result (first parents) calls (claude-result-call source result)]
+                   (when (and (seq calls)
+                              (every? (fn [block]
+                                        (some (fn [call]
+                                                (some #(and (= "tool_use" (:type %)) (= "Agent" (:name %))
+                                                            (= (:tool_use_id block) (:id %)))
+                                                      (claude-blocks call)))
+                                              calls))
+                                      (filter #(= "tool_result" (:type %)) (claude-blocks result))))
+                     (recur "main" (:entryId result) seen false)))))
+             (seq results)
+             (let [calls (claude-result-call source record)]
+               (if (= 1 (count calls))
+                 (recur stream-id (:entryId (first calls)) seen false)
+                 (let [anchors (when calls
+                                 (mapv #(claude-activity sources source stream-id (:entryId %) seen false) calls))]
+                   (when (and (seq anchors) (every? some? anchors) (= 1 (count (set anchors)))) (first anchors)))))
+             (= "user" type) (when (s/valid? ::request-content (:content message)) (original-activity sources source record))
+             (claude-parent source stream-id parentUuid)
+             (recur stream-id (claude-parent source stream-id parentUuid) seen fragments?)
+             (and fragments? (string? requestId))
+             (let [fragments (filter #(and (= stream-id (:streamId %)) (= requestId (get-in % [:value :requestId])))
+                                     (vals (:records source)))
+                   anchors (->> fragments
+                                (keep #(claude-activity sources source stream-id (:entryId %) seen false))
+                                distinct vec)]
+               (when (= 1 (count anchors)) (first anchors)))
+             :else nil)))))))
+
+(defn- verified-occasions [sources memory]
+  (let [source (get sources (:session-id memory))]
+    (->> (:source-entries memory)
+         (keep #(case (:source-kind memory)
+                  "pi" (pi-activity sources source (:stream-id %) (:entry-id %))
+                  "claude-code" (claude-activity sources source (:stream-id %) (:entry-id %))
+                  nil))
+         distinct (sort-by (juxt :session-id :stream-id :entry-id)) vec)))
+
+(defn- activity-input! [^js tx principal memories]
+  (if (empty? memories)
+    (js/Promise.resolve memories)
+    (-> (.run tx
+          "MATCH (reader:AdamUser {id: $readerId})
+           UNWIND $sourceSessions AS input
+           MATCH (owner:AdamUser {id: input.ownerId})-[:OWNS]->(s:AdamSession {id: input.sessionId})
+           WHERE owner = reader OR EXISTS { MATCH (owner)-[:GRANTS_MEMORY_ACCESS {permission: 'read'}]->(reader) }
+           MATCH (s)-[:FORKED_FROM*0..128]->(original:AdamSession)
+           WHERE original.sourceKind = s.sourceKind AND EXISTS { MATCH (owner)-[:OWNS]->(original) }
+           WITH DISTINCT original
+           CALL { WITH original OPTIONAL MATCH (allOwner:AdamUser)-[:OWNS]->(original)
+                  RETURN collect(DISTINCT allOwner.id) AS ownerIds }
+           CALL { WITH original OPTIONAL MATCH (original)-[:HAS_ENTRY]->(e:AdamEntry)
+                  RETURN collect(e {.entryId, streamId: coalesce(e.streamId, 'main'), .rawJson}) AS entries }
+           RETURN original {.id, .sourceKind, sourceSessionId: coalesce(original.sourceSessionId, original.piSessionId),
+                            parentDeclared: original.parentSession IS NOT NULL,
+                            parentIds: [(original)-[:FORKED_FROM]->(parent:AdamSession) | parent.id],
+                            ownerIds: ownerIds, entries: entries} AS activitySession"
+          (clj->js {:readerId principal
+                    :sourceSessions (->> memories (map #(hash-map :ownerId (:owner-id %) :sessionId (:session-id %))) distinct vec)}))
+        (.then (fn [result]
+                 (let [sources (->> (rows result)
+                                    (keep #(activity-source (js->clj (field % "activitySession") :keywordize-keys true)))
+                                    (map #(vector (:id %) %)) (into {}))]
+                   (mapv #(assoc % :source-occasions (verified-occasions sources %)) memories)))))))
+
 (defn load-input! [db request]
   (-> (js/Promise.resolve)
       (.then (fn []
@@ -602,6 +791,7 @@
                                       (when-not (= 1 (count (rows result)))
                                         (config/reject! :unauthorized "source reader must resolve uniquely"))
                                       (input-memories! tx principal)))
+                             (.then #(activity-input! tx principal %))
                              (.then (fn [memories]
                                       (let [snapshot {:reader-id principal :memories memories
                                                       ;; This DTO grant list reflects the Cypher authorization predicate,
