@@ -602,3 +602,23 @@
                      (is (not (.includes (:payload (first calls)) "PRIVATE_BOB"))))
                    (done)))
           (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
+(deftest configured-refresh-forwards-exact-raw-selectors-for-named-and-all-recipes
+  (async done
+    (let [origin "git@github.com:x/y.git"
+          cases [{:request {:name "preferences" :repository origin}
+                  :recipes {"preferences" recipe} :expected [{:name "preferences" :repository origin}]}
+                 {:request {:repository origin} :recipes {"first" recipe "second" recipe}
+                  :expected [{:name "first" :repository origin} {:name "second" :repository origin}]}]
+          attempt (fn [{:keys [request recipes expected]}]
+                    (let [captured (atom [])
+                          deps {:load-input! (fn [request] (swap! captured conj request) input)
+                                :measure-input (constantly 100)
+                                :execute! (constantly {:finish-reason :stop :conclusions [] :links []})}]
+                      (-> (core/refresh-configured! deps recipes request)
+                          (.then (fn [outcomes]
+                                   (is (every? #(= :generated (:status %)) outcomes))
+                                   (is (= expected @captured)))))))]
+      (-> (js/Promise.all (to-array (map attempt cases)))
+          (.then (fn [_] (done)))
+          (.catch (fn [error] (is false (.-stack error)) (done)))))))

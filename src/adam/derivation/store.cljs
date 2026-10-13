@@ -482,9 +482,11 @@
              (vec (rest (re-matches #"urn:adam:session:[^:\s]+:([^:\s]+):([^\s]+)"
                                    (first (:input-session-ids %))))))))
 
-(defn- invalid-input-source! []
-  (throw (ex-info "source ownership, identity or supports are inconsistent"
-                  {:type :derivation :code :unresolved-evidence :invalid-source-count 1})))
+(defn- invalid-input-source!
+  ([] (invalid-input-source! 1))
+  ([invalid-source-count]
+   (throw (ex-info "source ownership, identity or supports are inconsistent"
+                   {:type :derivation :code :unresolved-evidence :invalid-source-count invalid-source-count}))))
 
 (defn- input-producer [source-kind producer]
   (if (and (= "pi" source-kind) (string/blank? producer)) "pi-observational-memory" producer))
@@ -505,6 +507,34 @@
                   (s/valid? (s/coll-of record-spec :kind vector?) records))
       (invalid-input-source!))
     ids))
+
+(defn- input-memory [row]
+  (let [owners (vec (field row "ownerIds")) sessions (vec (field row "sessionIds"))
+        value (field row "inputMemory") kind (keyword (field row "kind"))
+        source-kind (field row "sourceKind") source-id (field row "sourceSessionId")]
+    (when-not (and value (s/valid? ::core/kind kind)
+                   (s/valid? ::input-source
+                             {:input-owner-ids owners :input-session-ids sessions
+                              :source-kind source-kind :source-session-id source-id}))
+      (invalid-input-source!))
+    (cond-> {:id (aget value "id") :owner-id (first owners) :session-id (first sessions)
+             :kind kind :producer (input-producer source-kind (aget value "producer")) :content (aget value "content")
+             :dropped? (and (= :observation kind) (= true (aget value "dropped")))
+             :source-kind source-kind :source-session-id source-id
+             :timestamp (aget value "timestamp") :relevance (aget value "relevance")
+             :recording-entry-id (aget value "recordingEntryId")
+             :recording-event-id (aget value "recordingEventId")
+             :recording-record-id (aget value "recordingMemoryRecordId")
+             :source-entries (mapv (fn [entry] {:stream-id (aget entry "streamId") :entry-id (aget entry "entryId")})
+                                  (field row "sourceEntries"))
+             ;; Never treat citation strings as verified occasions.
+             :source-occasions []
+             :linked-paths (vec (field row "linkedPaths"))
+             :repository-origins (vec (field row "repositoryOrigins"))
+             :repository-ids (vec (field row "repositoryIds"))}
+      (= :reflection kind)
+      (assoc :supporting-memory-ids
+             (input-supports value source-kind (first sessions) (vec (field row "supportRecords")))))))
 
 (defn- input-memories! [^js tx principal]
   (-> (.run tx
@@ -546,35 +576,18 @@
          ORDER BY m.id"
         #js {:readerId principal})
       (.then (fn [result]
-               (mapv
-                 (fn [row]
-                   (let [owners (vec (field row "ownerIds")) sessions (vec (field row "sessionIds"))
-                         value (field row "inputMemory") kind (keyword (field row "kind"))
-                         source-kind (field row "sourceKind") source-id (field row "sourceSessionId")]
-                     (when-not (and value (s/valid? ::core/kind kind)
-                                    (s/valid? ::input-source
-                                              {:input-owner-ids owners :input-session-ids sessions
-                                               :source-kind source-kind :source-session-id source-id}))
-                       (invalid-input-source!))
-                     (cond-> {:id (aget value "id") :owner-id (first owners) :session-id (first sessions)
-                              :kind kind :producer (input-producer source-kind (aget value "producer")) :content (aget value "content")
-                              :dropped? (and (= :observation kind) (= true (aget value "dropped")))
-                              :source-kind source-kind :source-session-id source-id
-                              :timestamp (aget value "timestamp") :relevance (aget value "relevance")
-                              :recording-entry-id (aget value "recordingEntryId")
-                              :recording-event-id (aget value "recordingEventId")
-                              :recording-record-id (aget value "recordingMemoryRecordId")
-                              :source-entries (mapv (fn [entry] {:stream-id (aget entry "streamId") :entry-id (aget entry "entryId")})
-                                                   (field row "sourceEntries"))
-                              ;; Never treat citation strings as verified occasions.
-                              :source-occasions []
-                              :linked-paths (vec (field row "linkedPaths"))
-                              :repository-origins (vec (field row "repositoryOrigins"))
-                              :repository-ids (vec (field row "repositoryIds"))}
-                       (= :reflection kind)
-                       (assoc :supporting-memory-ids
-                              (input-supports value source-kind (first sessions) (vec (field row "supportRecords")))))))
-                 (rows result))))))
+               (let [decoded
+                     (mapv (fn [row]
+                             (try (input-memory row)
+                                  (catch :default error
+                                    (if (and (= :unresolved-evidence (config/error-code error))
+                                             (= 1 (:invalid-source-count (ex-data error))))
+                                      nil
+                                      (throw error)))))
+                           (rows result))
+                     invalid-count (count (filter nil? decoded))]
+                 (when (pos? invalid-count) (invalid-input-source! invalid-count))
+                 decoded)))))
 
 (defn load-input! [db request]
   (-> (js/Promise.resolve)
