@@ -3,7 +3,7 @@
             [adam.derivation.core :as core]
             [clojure.string :as string]
             [cljs.spec.alpha :as s]
-            ["node:crypto" :refer [randomUUID]]
+            ["node:crypto" :refer [randomUUID createHash]]
             ["neo4j-driver" :as neo4j]))
 
 ;; One concrete graph boundary for future Pi generation and both hosts' reads.
@@ -62,13 +62,15 @@
 (defn ensure-schema! [db]
   (with-session! db
     (fn [^js session]
-      (reduce (fn [pending label]
+      (-> (reduce (fn [pending label]
                 (.then pending
                   (fn [_] (.run session
                             (str "CREATE CONSTRAINT " (.toLowerCase label) "_id IF NOT EXISTS "
                                  "FOR (n:" label ") REQUIRE n.id IS UNIQUE")))))
               (js/Promise.resolve nil)
-              derivation-labels))))
+              derivation-labels)
+      (.then (fn [_]
+               (.run session "CREATE INDEX adamentry_native_entry_id IF NOT EXISTS FOR (e:AdamEntry) ON (e.entryId)")))))))
 
 (defn- bucket [{:keys [principal]} request]
   (when-not (and (s/valid? ::core/refresh-request request) (s/valid? ::config/name (:name request)))
@@ -596,17 +598,49 @@
 (s/def ::rawJson string?)
 (s/def ::activity-entry (s/keys :req-un [::entryId ::streamId ::rawJson]))
 
+(defn- scalar-fields [object fields]
+  (into {} (keep (fn [field]
+                   (let [value (aget object field)]
+                     (when (and (some? value) (#{"string" "number" "boolean"} (goog/typeOf value)))
+                       [(keyword field) value])))) fields))
+
+(defn- compact-message [message]
+  (when (and message (= "object" (goog/typeOf message)))
+    (let [content (aget message "content")]
+      (assoc (scalar-fields message ["role" "toolCallId" "isSynthetic"])
+             :content (cond
+                        (string? content) (subs (string/triml content) 0 (min 512 (count (string/triml content))))
+                        (js/Array.isArray content)
+                        (mapv (fn [block]
+                                (let [fields (scalar-fields block ["type" "id" "name" "tool_use_id"])
+                                      text (aget block "text")]
+                                  (cond-> fields
+                                    (string? text) (assoc :text (let [text (string/triml text)] (subs text 0 (min 512 (count text))))))))
+                              (array-seq content))
+                        :else nil)))))
+
 (defn- parsed-activity [source entry]
   (try
     (when (s/valid? ::activity-entry entry)
-      (let [value (js->clj (js/JSON.parse (:rawJson entry)) :keywordize-keys true)
+      (let [raw (js/JSON.parse (:rawJson entry))
+            value (when (and raw (= "object" (goog/typeOf raw)) (not (js/Array.isArray raw)))
+                    (assoc (scalar-fields raw ["id" "uuid" "sessionId" "agentId" "type" "subtype" "parentId" "parentUuid"
+                                               "logicalParentUuid" "requestId" "sourceToolAssistantUUID"
+                                               "isMeta" "isSynthetic" "isCompactSummary" "isSessionTranscriptOnly"
+                                               "promptSource" "turnOrigin" "userType"])
+                           :message (compact-message (aget raw "message"))
+                           :origin-malformed? (some (fn [field] (and (js/Object.hasOwn raw field)
+                                                                     (not (string? (aget raw field)))))
+                                                    ["promptSource" "turnOrigin" "userType"])
+                           :toolUseResult (when-let [result (aget raw "toolUseResult")] (scalar-fields result ["agentId"]))))
             native-id (if (= "pi" (:sourceKind source)) (:id value) (:uuid value))]
         (when (and (map? value) (= (:entryId entry) native-id)
                    (or (= "pi" (:sourceKind source))
                        (and (= (:sourceSessionId source) (:sessionId value))
                             (or (= "main" (:streamId entry))
                                 (= (:streamId entry) (str "agent:" (:agentId value)))))))
-          (assoc entry :value value))))
+          {:entryId (:entryId entry) :streamId (:streamId entry)
+           :raw-hash (-> (createHash "sha256") (.update (:rawJson entry) "utf8") (.digest "hex")) :value value})))
     (catch :default _ nil)))
 
 (defn- activity-source [source]
@@ -622,7 +656,7 @@
                         :when (and (= "assistant" (get-in record [:value :message :role]))
                                    (= call-type (:type block)) (string? (:id block)))]
                     [[(:streamId record) (:id block)] record])]
-        (assoc source :records records :calls (into {} (map (fn [[key items]] [key (mapv second items)])) (group-by first calls))
+        (assoc (dissoc source :entries) :records records :calls (into {} (map (fn [[key items]] [key (mapv second items)])) (group-by first calls))
                :agent-results (group-by #(get-in % [:value :toolUseResult :agentId])
                                         (filter #(= "main" (:streamId %)) (vals records)))
                :fragments (group-by #(vector (:streamId %) (get-in % [:value :requestId])) (vals records)))))))
@@ -632,7 +666,7 @@
     (let [key [(:streamId record) (:entryId record)]
           current (get-in source [:records key])
           parents (:parentIds source)]
-      (when (and current (= (:rawJson record) (:rawJson current)) (not (contains? seen (:id source)))
+      (when (and current (= (:raw-hash record) (:raw-hash current)) (not (contains? seen (:id source)))
                  (not (contains? (:duplicate-requests source) key)))
         (cond
           (> (count parents) 1) nil
@@ -641,7 +675,7 @@
             (when (and (= (:sourceKind source) (:sourceKind parent))
                        (= (:ownerIds source) (:ownerIds parent)))
               (if-let [copied (get-in parent [:records key])]
-                (when (= (:rawJson copied) (:rawJson record))
+                (when (= (:raw-hash copied) (:raw-hash record))
                   (recur parent (conj seen (:id source))))
                 {:session-id (:id source) :stream-id (:streamId record) :entry-id (:entryId record)})))
           (:parentDeclared source) nil
@@ -654,17 +688,24 @@
                                       (and (= "text" (:type block)) (string? (:text block))
                                            (not (string/blank? (:text block)))))) %))))
 
+(s/def ::promptSource #{"sdk" "user" "cli" "interactive" "human" "prompt"})
+(s/def ::turnOrigin #{"sdk" "user" "cli" "interactive" "human" "prompt"})
+(s/def ::userType #{"external"})
+(s/def ::request-origin (s/keys :opt-un [::promptSource ::turnOrigin ::userType]))
+
 (defn- injected-request? [value]
   (let [message (:message value)
-        source (or (:source message) (:origin message) (:source value) (:origin value))
+        origin (select-keys value [:promptSource :turnOrigin :userType])
+        known-origin? (and (seq origin) (s/valid? ::request-origin origin))
         content (:content message)
         text (if (string? content) content
                  (string/join "\n" (keep #(when (= "text" (:type %)) (:text %)) (when (vector? content) content))))]
-    (or (#{"extension" "custom" "system"} source)
+    (or (:origin-malformed? value) (and (seq origin) (not known-origin?))
         (:isSynthetic value) (:isSynthetic message)
         (some #(string/starts-with? (string/triml text) %)
-              ["<task-notification>" "<teammate-message" "<command-name>" "<local-command-stdout>"
-               "<local-command-stderr>" "<system-reminder>" "[Request interrupted by user"]))))
+              (concat ["<task-notification>" "<teammate-message" "<local-command-stdout>"
+                       "<local-command-stderr>" "<system-reminder>" "[Request interrupted by user"]
+                      (when-not known-origin? ["<command-message>" "<command-name>"]))))))
 
 (defn- pi-activity [sources source stream-id entry-id]
   (loop [entry-id entry-id seen #{}]
@@ -775,29 +816,29 @@
                       (mapcat (fn [source]
                                 (for [record (vals (:records source))
                                       :when (and (= "main" (:streamId record))
-                                                 (= "user" (get-in record [:value :type])))]
+                                                 (= "user" (get-in record [:value :type]))
+                                                 (not-any? #(= "tool_result" (:type %)) (claude-blocks record))
+                                                 (not (summary-activity? (:value record)))
+                                                 (not (injected-request? (:value record)))
+                                                 (s/valid? ::request-content (get-in record [:value :message :content])))]
                                   {:ownerId (first (:ownerIds source)) :streamId "main" :entryId (:entryId record)})))
                       distinct vec)]
     (if (empty? requests)
       (js/Promise.resolve sources)
       (-> (.run tx
             "MATCH (reader:AdamUser {id: $readerId})
-             UNWIND $owners AS wanted
-             MATCH (owner:AdamUser {id: wanted.id})
-             WHERE owner = reader OR EXISTS { MATCH (owner)-[:GRANTS_MEMORY_ACCESS {permission: 'read'}]->(reader) }
-             MATCH (owner)-[:OWNS]->(s:AdamSession)-[:HAS_ENTRY]->(e:AdamEntry)
-             WHERE s.sourceKind = 'claude-code' AND e.entryId IN wanted.entryIds
-               AND coalesce(e.streamId, 'main') = 'main'
-             WITH owner.id AS ownerId, e.entryId AS entryId, count(DISTINCT s.id) AS copies WHERE copies > 1
-             RETURN {ownerId: ownerId, entryId: entryId, streamId: 'main'} AS duplicateClaudeRequest"
-            (clj->js {:readerId principal :owners (mapv (fn [[owner rows]] {:id owner :entryIds (mapv :entryId rows)})
-                                                      (group-by :ownerId requests))}))
+             MATCH (e:AdamEntry) WHERE e.entryId IN $entryIds AND coalesce(e.streamId, 'main') = 'main'
+             MATCH (owner:AdamUser)-[:OWNS]->(s:AdamSession)-[:HAS_ENTRY]->(e)
+             WHERE s.sourceKind = 'claude-code' AND
+               (owner = reader OR EXISTS { MATCH (owner)-[:GRANTS_MEMORY_ACCESS {permission: 'read'}]->(reader) })
+             WITH e.entryId AS entryId, count(DISTINCT coalesce(s.sourceSessionId, s.id)) AS copies WHERE copies > 1
+             RETURN {entryId: entryId, streamId: 'main'} AS duplicateClaudeRequest"
+            (clj->js {:readerId principal :entryIds (vec (distinct (map :entryId requests)))}))
           (.then (fn [result]
                    (let [duplicates (map #(js->clj (field % "duplicateClaudeRequest") :keywordize-keys true) (rows result))]
                      (into {} (map (fn [[id source]]
                                      [id (assoc source :duplicate-requests
-                                                (set (for [duplicate duplicates
-                                                           :when (= (:ownerId duplicate) (first (:ownerIds source)))]
+                                                (set (for [duplicate duplicates]
                                                        [(:streamId duplicate) (:entryId duplicate)])))])
                                    sources)))))))))
 
@@ -824,7 +865,15 @@
                     :sourceSessions (->> memories (map #(hash-map :ownerId (:owner-id %) :sessionId (:session-id %))) distinct vec)}))
         (.then (fn [result]
                  (let [sources (->> (rows result)
-                                    (keep #(activity-source (js->clj (field % "activitySession") :keywordize-keys true)))
+                                    (keep (fn [row]
+                                            (let [raw (field row "activitySession")]
+                                              (activity-source
+                                                {:id (aget raw "id") :sourceKind (aget raw "sourceKind") :sourceSessionId (aget raw "sourceSessionId")
+                                                 :ownerIds (vec (aget raw "ownerIds")) :parentIds (vec (aget raw "parentIds"))
+                                                 :parentDeclared (aget raw "parentDeclared")
+                                                 :entries (map (fn [entry] {:entryId (aget entry "entryId") :streamId (aget entry "streamId")
+                                                                           :rawJson (aget entry "rawJson")})
+                                                               (array-seq (aget raw "entries")))}))))
                                     (map #(vector (:id %) %)) (into {}))]
                    (-> (exclude-copied-claude-requests! tx principal sources)
                        (.then (fn [sources] (mapv #(assoc % :source-occasions (verified-occasions sources %)) memories))))))))))

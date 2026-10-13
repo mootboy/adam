@@ -156,8 +156,14 @@
           cases [{:label "call and result share one user request" :entries [u a r] :cites ["call" "result"] :expected [anchor]}
                  {:label "citation strings alone are not verified" :entries [] :cites ["user"] :expected []}
                  {:label "summaries are not confirmations" :entries [u a r summary] :cites ["summary"] :expected []}
-                 {:label "extension-origin user injection" :entries [(entry "user" nil {:role "user" :source "extension" :content "Injected"})]
-                  :cites ["user"] :expected []}
+                 {:label "unmarked Pi relay is indistinguishable from a native request"
+                  :entries [(entry "user" nil {:role "user" :content "Relayed message"})]
+                  :cites ["user"] :expected [anchor]}
+                 {:label "deep ignored payload does not destroy a verified request"
+                  :entries [{:entryId "user" :streamId "main"
+                             :rawJson (str "{\"id\":\"user\",\"type\":\"message\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"Request\"},\"ignored\":"
+                                           (apply str (repeat 20000 "[")) "0" (apply str (repeat 20000 "]")) "}")}]
+                  :cites ["user"] :expected [anchor]}
                  {:label "image-only native request" :entries [(entry "user" nil {:role "user" :content [{:type "image" :data "synthetic"}]})]
                   :cites ["user"] :expected [anchor]}
                  {:label "empty text blocks do not confirm" :entries [(entry "user" nil {:role "user" :content [{:type "text" :text ""}]})]
@@ -237,6 +243,17 @@
                  {:records [(entry "injected" nil "user" "[Request interrupted by user]" {})]
                   :cites [["main" "injected"]] :expected []}
                  {:records [(entry "injected" nil "user" "<command-name>/compact</command-name>" {})]
+                  :cites [["main" "injected"]] :expected []}
+                 {:records [(entry "command" nil "user" "<command-message>custom</command-message>\n<command-name>/custom</command-name>" {})]
+                  :cites [["main" "command"]] :expected []}
+                 {:records [(entry "command" nil "user" "<command-message>custom</command-message>\n<command-name>/custom</command-name>"
+                                    {:promptSource "sdk" :turnOrigin "sdk" :userType "external"})]
+                  :cites [["main" "command"]] :expected [(assoc anchor :entry-id "command")]}
+                 {:records [(entry "command" nil "user" "<command-name>/custom</command-name>"
+                                    {:promptSource "sdk" :turnOrigin "sdk" :userType "external"})]
+                  :cites [["main" "command"]] :expected [(assoc anchor :entry-id "command")]}
+                 {:records [(entry "injected" nil "user" "Done."
+                                    {:promptSource "task-notification" :turnOrigin "task" :userType "internal"})]
                   :cites [["main" "injected"]] :expected []}
                  {:records [u (entry "agent-call" "user" "assistant"
                                       [{:type "tool_use" :id "agent-tool" :name "Read"}

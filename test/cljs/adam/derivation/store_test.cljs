@@ -80,12 +80,13 @@
                    (is (zero? @calls)) (done)))
           (.catch (fn [error] (is false (.-stack error)) (done)))))))
 
-(deftest schema-is-limited-to-the-three-derived-labels
+(deftest schema-initializes-derived-identities-and-native-entry-lookup
   (async done
     (let [{:keys [driver calls closes transactions]} (recording-driver (fn [_ _] []))]
       (-> (store/ensure-schema! (store/with-driver driver "neo4j" reader))
           (.then (fn [_]
-                   (is (= 3 (count @calls)))
+                   (is (= 4 (count @calls)))
+                   (is (re-find #"adamentry_native_entry_id" (:query (last @calls))))
                    (is (= 0 @transactions))
                    (is (= 1 @closes)) (done)))
           (.catch (fn [error] (is false (.-stack error)) (done)))))))
