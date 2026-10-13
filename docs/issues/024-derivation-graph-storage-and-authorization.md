@@ -1,6 +1,6 @@
 # Persist derivations with fail-closed authorization and fenced refreshes
 
-- Status: in-progress
+- Status: done
 - Category: enhancement
 - Created: 2026-10-12
 - Target: 0.5.0 stage 2
@@ -16,11 +16,15 @@ A concrete Neo4j boundary shared by future Pi generation and Pi/MCP saved-result
 
 - [x] Unique derivation/run/conclusion constraints and deterministic user/name/filter identity.
 - [x] Atomic token/expiry acquisition, renewal, crash recovery and stale-publisher fencing independent of the notification-worker lease.
-- [ ] Authorized complete evidence snapshots, verified source provenance and directional/non-transitive grants.
+- [x] Authorized complete evidence snapshots, verified source provenance and directional/non-transitive grants.
 - [x] Atomic publication of successful runs, conclusions, dependencies and latest pointer; successful empty history and failure preservation.
 - [x] Saved latest/history reads reauthorize every recorded dependency, including comparison inheritance; missing ownership/dependencies fail closed.
 - [x] Source-memory rebuild repairs stable-ID relationships without reducing permissions; revocation blocks cached/history reads.
-- [ ] Synthetic interface tests and explicitly disposable live concurrency/rebuild/restart validation with isolated identities and exact cleanup.
+- [x] Synthetic interface tests and explicitly disposable live concurrency/rebuild/restart validation with isolated identities and exact cleanup.
+
+## Completion evidence
+
+Implementation is complete and reviewed through 4a16780, with clean normal CI (221 ClojureScript tests/1132 assertions, 26 Node tests/four opt-in skips), disposable port-7688 Neo4j (12 tests/198 assertions plus two packaged cases), runtime/package/diff checks, and direct compiled-target safety validation (missing acknowledgement exits 1 before any TCP connection). No provider/host entry point or release is enabled. The chronological progress below records earlier intermediate states, not outstanding stage-2 requirements. Unknown-origin drift diagnostics are a tracked host-wiring follow-up.
 
 ## Progress
 
