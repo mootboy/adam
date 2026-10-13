@@ -1,0 +1,3 @@
+{"uuid":"typed","sessionId":"s","type":"user","parentUuid":null,"promptSource":"typed","turnOrigin":"human","userType":"external","message":{"role":"user","content":"Prefer small pure functions."}}
+{"uuid":"suggested","sessionId":"s","type":"user","parentUuid":"typed","promptSource":"suggestion_accepted","turnOrigin":"human","userType":"external","message":{"role":"user","content":"Keep processing local."}}
+{"uuid":"notification","sessionId":"s","type":"user","parentUuid":"suggested","promptSource":"system","turnOrigin":"task_notification","userType":"external","message":{"role":"user","content":"Background task completed."}}
