@@ -606,16 +606,16 @@
 
 (defn- compact-message [message]
   (when (and message (= "object" (goog/typeOf message)))
-    (let [content (aget message "content")]
+    (let [content (aget message "content") user? (= "user" (aget message "role"))]
       (assoc (scalar-fields message ["role" "toolCallId" "isSynthetic"])
              :content (cond
-                        (string? content) (subs (string/triml content) 0 (min 512 (count (string/triml content))))
+                        (string? content) (when user? (let [text (string/triml content)] (subs text 0 (min 512 (count text)))))
                         (js/Array.isArray content)
                         (mapv (fn [block]
                                 (let [fields (scalar-fields block ["type" "id" "name" "tool_use_id"])
                                       text (aget block "text")]
                                   (cond-> fields
-                                    (string? text) (assoc :text (let [text (string/triml text)] (subs text 0 (min 512 (count text))))))))
+                                    (and user? (string? text)) (assoc :text (let [text (string/triml text)] (subs text 0 (min 512 (count text))))))))
                               (array-seq content))
                         :else nil)))))
 
@@ -688,24 +688,25 @@
                                       (and (= "text" (:type block)) (string? (:text block))
                                            (not (string/blank? (:text block)))))) %))))
 
-(s/def ::promptSource #{"sdk" "user" "cli" "interactive" "human" "prompt"})
-(s/def ::turnOrigin #{"sdk" "user" "cli" "interactive" "human" "prompt"})
+(s/def ::promptSource #{"typed" "suggestion_accepted" "sdk"})
+(s/def ::turnOrigin #{"human" "sdk"})
 (s/def ::userType #{"external"})
 (s/def ::request-origin (s/keys :opt-un [::promptSource ::turnOrigin ::userType]))
 
 (defn- injected-request? [value]
   (let [message (:message value)
         origin (select-keys value [:promptSource :turnOrigin :userType])
-        known-origin? (and (seq origin) (s/valid? ::request-origin origin))
+        known-origin? (and (or (contains? origin :turnOrigin) (contains? origin :promptSource))
+                           (s/valid? ::request-origin origin))
         content (:content message)
         text (if (string? content) content
                  (string/join "\n" (keep #(when (= "text" (:type %)) (:text %)) (when (vector? content) content))))]
-    (or (:origin-malformed? value) (and (seq origin) (not known-origin?))
+    (or (:origin-malformed? value) (not (s/valid? ::request-origin origin))
         (:isSynthetic value) (:isSynthetic message)
         (some #(string/starts-with? (string/triml text) %)
-              (concat ["<task-notification>" "<teammate-message" "<local-command-stdout>"
+              (concat ["<task-notification>" "<teammate-message" "<bash-stdout>" "<bash-stderr>" "<local-command-stdout>"
                        "<local-command-stderr>" "<system-reminder>" "[Request interrupted by user"]
-                      (when-not known-origin? ["<command-message>" "<command-name>"]))))))
+                      (when-not known-origin? ["<command-message>" "<command-name>" "<bash-input>"]))))))
 
 (defn- pi-activity [sources source stream-id entry-id]
   (loop [entry-id entry-id seen #{}]

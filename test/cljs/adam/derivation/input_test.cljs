@@ -219,7 +219,13 @@
           child (entry "child-call" nil "assistant" [{:type "tool_use" :id "c" :name "Read" :input {:file_path "b.cljs"}}]
                        {:stream "agent:child" :agentId "child"})
           anchor {:session-id sid :stream-id "main" :entry-id "user"}
-          cases [{:records (into [u] (map (fn [i] (entry (str "long-" i) (if (zero? i) "user" (str "long-" (dec i)))
+          cases (into (mapv (fn [line]
+                                   (let [record (js->clj (js/JSON.parse line) :keywordize-keys true)
+                                         id (:uuid record)]
+                                     {:records [{:entryId id :streamId "main" :rawJson line}]
+                                      :cites [["main" id]] :expected (if (= id "notification") [] [(assoc anchor :entry-id id)])}))
+                                 (string/split-lines (readFileSync "test/fixtures/derivation/claude-interactive-origins.jsonl" "utf8")))
+                       [{:records (into [u] (map (fn [i] (entry (str "long-" i) (if (zero? i) "user" (str "long-" (dec i)))
                                                                "assistant" "Continuation" {})) (range 15000)))
                   :cites [["main" "long-14999"]] :expected [anchor]}
                  {:records [u call result fragment] :cites [["main" "call"] ["main" "result"] ["main" "fragment"]] :expected [anchor]}
@@ -260,7 +266,24 @@
                                        {:type "tool_use" :id "different" :name "Agent"}] {}) handback child]
                   :cites [["agent:child" "child-call"]] :expected []}
                  {:records [u (entry "new" nil "user" "Correction after compaction." {})]
-                  :cites [["main" "new"]] :expected [(assoc anchor :entry-id "new")]}]
+                  :cites [["main" "new"]] :expected [(assoc anchor :entry-id "new")]}
+                 {:records [(entry "echo" nil "user" "<command-name>/mcp</command-name>" {:userType "external"})]
+                  :cites [["main" "echo"]] :expected []}
+                 {:records [(entry "echo" nil "user" "<command-message>/mcp</command-message>" {:userType "external"})]
+                  :cites [["main" "echo"]] :expected []}
+                 {:records [(entry "output" nil "user" "<bash-stdout>Result</bash-stdout>" {:turnOrigin "human" :userType "external"})]
+                  :cites [["main" "output"]] :expected []}
+                 {:records [(entry "output" nil "user" "<bash-stderr>Error</bash-stderr>" {:turnOrigin "human" :userType "external"})]
+                  :cites [["main" "output"]] :expected []}
+                 {:records [(entry "shell" nil "user" "<bash-input>pwd</bash-input>" {:turnOrigin "human" :userType "external"})]
+                  :cites [["main" "shell"]] :expected [(assoc anchor :entry-id "shell")]}
+                 {:records [(entry "unknown" nil "user" "Hello" {:turnOrigin "future-unknown" :userType "external"})]
+                  :cites [["main" "unknown"]] :expected []}
+                 {:records [(entry "unknown" nil "user" "Hello" {:turnOrigin "human" :promptSource "future-unknown" :userType "external"})]
+                  :cites [["main" "unknown"]] :expected []}
+                 {:records [(entry "command" nil "user" "<command-message>custom</command-message>\n<command-name>/custom</command-name>"
+                                    {:turnOrigin "human" :userType "external"})]
+                  :cites [["main" "command"]] :expected [(assoc anchor :entry-id "command")]}])
           attempt (fn [{:keys [records cites expected duplicates]}]
                     (let [row {"ownerIds" [reader] "sessionIds" [sid] "sourceKind" "claude-code" "sourceSessionId" "s" "kind" "observation"
                                "sourceEntries" (clj->js (mapv (fn [[stream id]] {:streamId stream :entryId id}) cites))

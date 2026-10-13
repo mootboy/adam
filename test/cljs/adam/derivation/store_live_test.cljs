@@ -313,7 +313,11 @@
           native (fn [id stream value] {:id (str "native:" uuid ":" id) :entryId id :streamId stream
                                         :rawJson (js/JSON.stringify (clj->js (assoc value :uuid id :sessionId "claude-input")))})
           claude-entries
-          [(native "claude-user" "main" {:type "user" :parentUuid nil :message {:role "user" :content "Use specs."}})
+          [(native "claude-user" "main" {:type "user" :parentUuid nil :promptSource "typed" :turnOrigin "human" :userType "external"
+                                         :message {:role "user" :content "Use specs."}})
+           (native "notification" "main" {:type "user" :parentUuid "claude-user" :promptSource "system"
+                                           :turnOrigin "task_notification" :userType "external"
+                                           :message {:role "user" :content "Background task completed."}})
            (native "claude-call" "main" {:type "assistant" :parentUuid "claude-user" :requestId "r"
                                         :message {:role "assistant" :content [{:type "tool_use" :id "ct" :name "Read"}]}})
            (native "claude-result" "main" {:type "user" :parentUuid "claude-user" :sourceToolAssistantUUID "claude-call"
@@ -393,7 +397,7 @@
                                          (fork)-[:HAS_MEMORY]->(fo), (fo)-[:SOURCED_FROM]->(copy)
                                   WITH c, o UNWIND $claudeEntries AS input CREATE (e:AdamEntry) SET e = input
                                   CREATE (c)-[:HAS_ENTRY]->(e)
-                                  FOREACH (_ IN CASE WHEN input.entryId IN ['claude-call','claude-result','child-call'] THEN [1] ELSE [] END |
+                                  FOREACH (_ IN CASE WHEN input.entryId IN ['claude-call','claude-result','child-call','notification'] THEN [1] ELSE [] END |
                                     CREATE (o)-[:SOURCED_FROM]->(e))" params)))
           (.then (fn [_] (store/load-input! db {:name "preferences"})))
           (.then (fn [snapshot]
