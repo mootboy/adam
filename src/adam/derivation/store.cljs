@@ -846,27 +846,35 @@
 (defn- stream-activity! [^js tx principal source]
   (js/Promise.
     (fn [resolve reject]
-      (let [entries #js []]
+      (let [entries #js [] failed? (volatile! false)
+            fail! (fn [error]
+                    (when-not @failed?
+                      (vreset! failed? true)
+                      (set! (.-length entries) 0)
+                      (reject error)))]
         ;; Subscribe directly: awaiting this Result would buffer every raw row.
         (.subscribe
           (.run tx
-            "MATCH (reader:AdamUser {id: $readerId}), (owner:AdamUser)-[:OWNS]->(s:AdamSession {id: $sessionId})
-             WHERE owner = reader OR EXISTS { MATCH (owner)-[:GRANTS_MEMORY_ACCESS {permission: 'read'}]->(reader) }
+            "MATCH (reader:AdamUser {id: $readerId}), (owner:AdamUser {id: $ownerId})-[:OWNS]->(s:AdamSession {id: $sessionId})
+             WHERE (owner = reader OR EXISTS { MATCH (owner)-[:GRANTS_MEMORY_ACCESS {permission: 'read'}]->(reader) })
+               AND NOT EXISTS { MATCH (other:AdamUser)-[:OWNS]->(s) WHERE other <> owner }
              WITH DISTINCT s MATCH (s)-[:HAS_ENTRY]->(e:AdamEntry)
              RETURN e {.entryId, streamId: coalesce(e.streamId, 'main'), .rawJson} AS activityEntry"
-            (clj->js {:readerId principal :sessionId (:id source)}))
+            (clj->js {:readerId principal :sessionId (:id source) :ownerId (first (:ownerIds source))}))
           #js {:onNext (fn [row]
-                         (try
+                         (when-not @failed?
+                           (try
                            (let [entry (field row "activityEntry")]
                              (when-let [compact (parsed-activity source
                                                {:entryId (aget entry "entryId") :streamId (aget entry "streamId")
                                                 :rawJson (aget entry "rawJson")})]
                                (.push entries compact)))
-                           (catch :default error (reject error))))
-               :onError reject
+                           (catch :default error (fail! error)))))
+               :onError fail!
                :onCompleted (fn [_]
-                              (try (resolve (activity-source (assoc source :entries (array-seq entries))))
-                                   (catch :default error (reject error))))})))))
+                              (when-not @failed?
+                                (try (resolve (activity-source (assoc source :entries (array-seq entries))))
+                                     (catch :default error (fail! error)))))})))))
 
 (defn- activity-input! [^js tx principal memories]
   (if (empty? memories)
@@ -903,7 +911,7 @@
   (-> (js/Promise.resolve)
       (.then (fn []
                (let [params (bucket db request) principal (:principal db)]
-                 (with-session! (assoc db :fetch-size 1)
+                 (with-session! (assoc db :fetch-size 100)
                    (fn [^js session]
                      (.executeRead session
                        (fn [^js tx]
