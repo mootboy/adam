@@ -5,7 +5,7 @@
             [clojure.string :as string]
             ["node:crypto" :refer [createHash randomUUID]]))
 
-(def policy-version 2)
+(def policy-version 3)
 
 (defn- canonical [value]
   (cond
@@ -383,6 +383,59 @@
      :inferred-min-distinct-occasions (:inferred-min-distinct-occasions recipe)
      :verified-occasion-keys (into (sorted-map) (map (fn [id] [id (vec (sort (support-occasions snapshot [id])))]) (:candidate-ids snapshot)))}))
 
+(defn- compact-request [payload snapshot]
+  ;; Only reference fields are rewritten. Evidence/guidance/content remain opaque;
+  ;; original dependency IDs and fingerprints stay outside the model wire format.
+  (let [memories (:memories payload) prior (get-in payload [:comparison :conclusions])
+        original-ids (set (remove nil? (concat
+                          (mapcat (fn [m] (concat [(:id m) (:owner-id m) (:session-id m)]
+                                                  (:repository-ids m) (:supporting-memory-ids m))) (:memories snapshot))
+                          [(get-in payload [:comparison :id])]
+                          (mapcat (fn [c] (concat [(:id c)] (:scope-subject-ids c)
+                                                  (:supporting-memory-ids c) (:conflicting-memory-ids c))) prior))))
+        aliases (zipmap (sort original-ids) (remove original-ids (map #(str "i" %) (range))))
+        alias #(get aliases % %)
+        refs #(mapv alias %)
+        occasions (get-in payload [:output-rules :verified-occasion-keys])
+        occasion-aliases (zipmap (sort-by snapshot-json (set (mapcat val occasions))) (map #(str "o" %) (range)))
+        conclusion (fn [c] (-> c (update :id alias) (update :scope-subject-ids refs)
+                                 (update :supporting-memory-ids refs) (update :conflicting-memory-ids refs)))
+        contexts (->> memories (map #(select-keys % [:repository-ids :repository-origins])) distinct
+                      (sort-by snapshot-json) (mapv #(update % :repository-ids refs)))
+        wire (-> payload
+                 (assoc :repositories contexts)
+                 (update :candidate-memory-ids refs)
+                 (update :memories
+                         #(mapv (fn [m] (cond-> (-> (select-keys m [:id :owner-id :session-id :kind :producer :source-kind
+                                                                   :content :dropped? :timestamp :repository-ids :supporting-memory-ids])
+                                                   (update :id alias) (update :owner-id alias) (update :session-id alias)
+                                                   (update :repository-ids refs))
+                                           (contains? m :supporting-memory-ids) (update :supporting-memory-ids refs))) %))
+                 (update :output-rules
+                         (fn [rules] (-> rules (update :supporting-memory-ids refs) (update :conflicting-memory-ids refs)
+                                           (update :subject-ids #(into {} (map (fn [[k ids]] [k (refs ids)]) %)))
+                                           (assoc :verified-occasion-keys
+                                                  (into (sorted-map) (map (fn [[id keys]] [(alias id) (mapv occasion-aliases keys)]) occasions))))))
+                 (update :comparison #(when % (-> % (update :id alias) (update :conclusions (fn [cs] (mapv conclusion cs)))))))]
+    {:payload wire :output-aliases (into {} (map (fn [[id short]] [short id]) aliases))
+     :prior-aliases (set (map (comp alias :id) prior))}))
+
+(defn- restore-output [prepared response]
+  (let [aliases (:output-aliases prepared) prior (:prior-aliases prepared)
+        ref #(get aliases % %) refs #(if (vector? %) (mapv ref %) %)
+        prior-ref #(if (contains? prior %) (ref %) %)]
+    (cond-> response
+      (vector? (:conclusions response))
+      (update :conclusions #(mapv (fn [c]
+                                   (if-not (map? c) c
+                                     (reduce (fn [m key] (if (contains? m key) (update m key refs) m))
+                                             ;; Reusing a prior wire ID becomes reusing the original
+                                             ;; prior ID, rejected by the existing ordered validator.
+                                             (update c :id prior-ref)
+                                             [:supporting-memory-ids :conflicting-memory-ids :scope-subject-ids]))) %))
+      (vector? (:links response))
+      (update :links #(mapv (fn [link] (if (map? link) (-> link (update :from prior-ref) (update :to prior-ref)) link)) %)))))
+
 (s/def ::context-window ::config/positive-integer)
 (s/def ::max-output-tokens ::config/positive-integer)
 (s/def ::model
@@ -447,7 +500,8 @@
                                     :conclusions (mapv #(select-keys % [:id :content :category :basis :scope-type
                                                                         :scope-subject-ids :supporting-memory-ids
                                                                         :conflicting-memory-ids]) (:conclusions prior))})}
-            text (snapshot-json payload)
+            compact (compact-request payload snapshot)
+            text (snapshot-json (:payload compact))
             tokens (measure-input text model-key)]
         (when-not (s/valid? ::token-count tokens)
           (config/reject! :invalid-budget "request measurement must be a nonnegative integer"))
@@ -456,6 +510,7 @@
                           {:type :derivation :code :input-too-large
                            :measured-input-tokens tokens :available-input-tokens (max 0 cap)})))
         {:status :prepared :snapshot snapshot
+         :output-aliases (:output-aliases compact) :prior-aliases (:prior-aliases compact)
          :request {:model model-key :payload text :max-output-tokens output
                    :timeout-ms (get-in recipe [:limits :timeout-ms])}
          :run {:depth depth :derivation-id (derivation-id reader-id name filter depth)
@@ -567,8 +622,9 @@
                   (when (.-aborted signal) (cancel!)))
                 (-> (js/Promise.race #js [work (.-promise timeout)])
                     (.then (fn [response]
-                             (validate-output (:recipe input) (:snapshot prepared) response)
-                             {:status :generated
-                              :run (complete-run prepared response token timestamp)}))
+                             (let [response (restore-output prepared response)]
+                               (validate-output (:recipe input) (:snapshot prepared) response)
+                               {:status :generated
+                                :run (complete-run prepared response token timestamp)})))
                     (.finally (fn [] (js/clearTimeout timer)
                                 (when signal (.removeEventListener signal "abort" cancel!))))))))))))

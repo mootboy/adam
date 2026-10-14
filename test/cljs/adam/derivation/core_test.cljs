@@ -24,9 +24,9 @@
 
 (deftest command-depth-changes-visible-evidence-not-authorization-dependencies
   (async done
-    (let [memories [(observation "a" own "u1")
-                    (assoc (observation "b" own "u2") :dropped? true)
-                    (assoc (observation "r" own "u3") :kind :reflection :supporting-memory-ids ["b"])]
+    (let [memories [(assoc (observation "a" own "u1") :content "a")
+                    (assoc (observation "b" own "u2") :content "b" :dropped? true)
+                    (assoc (observation "r" own "u3") :content "r" :kind :reflection :supporting-memory-ids ["b"])]
           cases [{:depth "full" :visible #{"a" "b" "r"} :dependencies #{"a" "b" "r"}}
                  {:depth "active" :visible #{"a" "r"} :dependencies #{"a" "b" "r"}}
                  {:depth "observations" :visible #{"a"} :dependencies #{"a"}}
@@ -40,7 +40,7 @@
                                                              {:finish-reason :stop :conclusions [] :links []})}
                                                 (assoc input :memories memories :depth depth))
                                   (.then (fn [{:keys [run]}]
-                                           (is (= visible (set (map :id (:memories @payload)))) depth)
+                                           (is (= visible (set (map :content (:memories @payload)))) depth)
                                            (is (= dependencies (set (:input-memory-ids run))) depth)
                                            (is (= (count visible) (:input-memory-count run)) depth)
                                            (is (= depth (:depth run)))
@@ -70,6 +70,66 @@
                                 (core/refresh! deps (assoc source :grants [] :cached-run run)))))))
           (.then (fn [_] (is false "hidden support revocation must fail")))
           (.catch (fn [error] (is (= :unauthorized (config/error-code error))) (is (= 2 @calls))))
+          (.finally done)))))
+
+(deftest compact-wire-preserves-content-and-restores-model-references-before-validation
+  (async done
+    (let [id (str "urn:adam:observation:owner:pi:session-a:test:" (apply str (repeat 80 "x")))
+          text "Prefer locality. This literal i0 must remain untouched.\nSource says: use small boundaries."
+          memory (assoc (observation id own "u1") :content text :recording-event-id "private-recording-metadata"
+                        :linked-paths ["private/source.cljs"])
+          payload (atom nil)]
+      (-> (core/refresh!
+           {:measure-input (constantly 1)
+            :execute! (fn [request]
+                        (let [wire (js->clj (js/JSON.parse (:payload request)) :keywordize-keys true)
+                              m (first (:memories wire))]
+                          (reset! payload wire)
+                          (is (= text (:content m)))
+                          (is (not= id (:id m)))
+                          (is (nil? (:recording-event-id m)))
+                          (is (nil? (:linked-paths m)))
+                          {:finish-reason :stop :links []
+                           :conclusions [(assoc conclusion :content "Literal i0 stays here too"
+                                               :supporting-memory-ids [(:id m)]
+                                               :scope-subject-ids [(:owner-id m)])]}))}
+           (assoc input :memories [memory]))
+          (.then (fn [{:keys [run]}]
+                   (is (= [id] (get-in run [:conclusions 0 :supporting-memory-ids])))
+                   (is (= [own] (get-in run [:conclusions 0 :scope-subject-ids])))
+                   (is (= "Literal i0 stays here too" (get-in run [:conclusions 0 :content])))
+                   (is (= [id] (:input-memory-ids run)))))
+          (.catch (fn [_] (is false "compact output must round trip")))
+          (.finally done)))))
+
+(deftest compact-prior-links-and-original-id-collisions-round-trip-safely
+  (async done
+    (let [memory (observation "i0" own "u1")
+          prior {:id "prior-run" :input-memory-ids ["i0"]
+                 :conclusions [(assoc conclusion :id "prior-conclusion" :supporting-memory-ids ["i0"])]}
+          source (assoc input :memories [memory] :comparison prior)]
+      (-> (core/refresh!
+           {:measure-input (constantly 1)
+            :execute! (fn [request]
+                        (let [wire (js->clj (js/JSON.parse (:payload request)) :keywordize-keys true)
+                              m (first (:memories wire)) old (get-in wire [:comparison :conclusions 0 :id])]
+                          (is (not= "i0" (:id m)) "short IDs must not collide with original IDs")
+                          {:finish-reason :stop
+                           :conclusions [(assoc conclusion :id "new" :scope-subject-ids [(:owner-id m)] :supporting-memory-ids [(:id m)])]
+                           :links [{:relation :supersedes :from "new" :to old}]}))} source)
+          (.then (fn [{:keys [run]}]
+                   (is (= "prior-conclusion" (get-in run [:links 0 :to])))
+                   (is (= ["i0"] (get-in run [:conclusions 0 :supporting-memory-ids])))
+                   (core/refresh!
+                     {:measure-input (constantly 1)
+                      :execute! (fn [request]
+                                  (let [wire (js->clj (js/JSON.parse (:payload request)) :keywordize-keys true)
+                                        m (first (:memories wire))]
+                                    {:finish-reason :stop :links []
+                                     :conclusions [(assoc conclusion :id (get-in wire [:comparison :conclusions 0 :id])
+                                                                     :scope-subject-ids [(:owner-id m)] :supporting-memory-ids [(:id m)])]}))} source)))
+          (.then (fn [_] (is false "prior wire ID reuse must fail")))
+          (.catch (fn [error] (is (= :conclusion-id-collision (:validation-reason (ex-data error))))))
           (.finally done)))))
 
 (deftest response-json-is-closed-and-finish-status-is-not-model-controlled
@@ -346,7 +406,9 @@
                        (is (= (when-not generated? :invalid-output) code))
                        (is (= 1 (count calls)))
                        (when candidates
-                         (is (= candidates (js->clj (aget (js/JSON.parse (:payload (first calls))) "candidate-memory-ids")))))))
+                         (let [wire (js->clj (js/JSON.parse (:payload (first calls))) :keywordize-keys true)]
+                           (is (= (count candidates) (count (:candidate-memory-ids wire))))
+                           (is (= (:candidate-memory-ids wire) (mapv :id (filter #(= "reflection" (:kind %)) (:memories wire)))))))))
                    (done)))
           (.catch (fn [error] (is false (.-stack error)) (done)))))))
 
@@ -691,13 +753,17 @@
                       (-> (core/refresh-configured!
                            {:load-input! (fn [_] request) :measure-input (constantly 200)
                             :execute! (fn [{:keys [payload]}]
-                                        (let [raw (js/JSON.parse payload) rules (aget raw "output-rules")]
+                                        (let [raw (js/JSON.parse payload) rules (aget raw "output-rules")
+                                              memories (js->clj (aget raw "memories") :keywordize-keys true)
+                                              historical (:id (first (filter :dropped? memories)))
+                                              a (:id (first (filter #(and (= "observation" (:kind %)) (not (:dropped? %))) memories)))
+                                              r (:id (first (filter #(= "reflection" (:kind %)) memories)))]
                                           (is (some? rules))
-                                          (is (= #{own other} (set (array-seq (aget (aget rules "subject-ids") "personal")))))
-                                          (is (not (some #{"h"} (array-seq (aget rules "supporting-memory-ids")))))
-                                          (is (some #{"h"} (array-seq (aget rules "conflicting-memory-ids"))))
-                                          (is (= (js/JSON.stringify (aget (aget rules "verified-occasion-keys") "a"))
-                                                 (js/JSON.stringify (aget (aget rules "verified-occasion-keys") "r"))))
+                                          (is (= (set (map :owner-id memories)) (set (array-seq (aget (aget rules "subject-ids") "personal")))))
+                                          (is (not (some #{historical} (array-seq (aget rules "supporting-memory-ids")))))
+                                          (is (some #{historical} (array-seq (aget rules "conflicting-memory-ids"))))
+                                          (is (= (js/JSON.stringify (aget (aget rules "verified-occasion-keys") a))
+                                                 (js/JSON.stringify (aget (aget rules "verified-occasion-keys") r))))
                                           (is (.includes (aget raw "instructions") "not a cross-subject link"))
                                           {:finish-reason :stop :conclusions conclusions :links (or links [])}))}
                            {"preferences" (:recipe request)} {:name "preferences"})

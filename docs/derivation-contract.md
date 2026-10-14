@@ -23,6 +23,12 @@ Each named refresh reads its source snapshot once through the boundary callback.
 
 A configuration is at most 256 KiB UTF-8. Unknown fields, duplicate keys, multiple YAML documents, aliases, unsupported tags and invalid types/limits are rejected with sanitized errors. There are no inline credential fields, executable YAML tags, repo-local overrides or silently ignored options. These are configuration/parser safety bounds, not a memory-corpus sampling limit.
 
+## Compact model wire format
+
+Model requests preserve every selected memory's complete content, kind, producer, source kind, timestamp, dropped status and support references. Short request-local IDs replace repeated memory/owner/session/repository/previous-conclusion IDs; original IDs, full recording/file provenance and dependency fingerprints remain in the processing snapshot and saved run, not the prompt. Repository origin context is deduplicated. Verified native occasion tuples become unique request-local occasion keys with exactly the same equality/union semantics.
+
+Only explicit reference fields are translated. Free-form memory content, guidance and conclusion content are never rewritten, even if they contain strings resembling a short ID. After generation, references are restored before the existing ordered output validation and atomic publication. Unknown IDs still fail eligibility; prior wire IDs cannot be reused as new conclusions; new/prior link endpoints retain scope validation. Alias allocation excludes original IDs to avoid collisions. Wire maps are transient and never authoritative graph state. Policy version 3 invalidates cache reuse after this prompt change without changing stable result identity or authorization.
+
 ## Evidence depth
 
 `/adam:derive [name] --depth full|active|observations|reflections` selects the model-visible evidence layer; `full` remains the default. Depth is independent of the single repository/session/language filter and is a command parameter, not a YAML field.
