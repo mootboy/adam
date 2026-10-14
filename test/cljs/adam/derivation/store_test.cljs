@@ -18,7 +18,7 @@
                                  (map (fn [row] #js {:get (fn [key] (get row key))})
                                       (cond
                                         (re-find #"RETURN u.id AS userId" query) [{"userId" reader}]
-                                        (re-find #"SHOW CONSTRAINTS" query) [{"labels" schema-labels}]
+                                        (re-find #"SHOW CONSTRAINTS" query) [{"labels" (if (fn? schema-labels) (schema-labels query) schema-labels)}]
                                         :else (reply query params))))})))
         tx #js {:run run}
         session #js {:run run :executeWrite (fn [f] (swap! transactions inc) (f tx))
@@ -114,6 +114,36 @@
                    (is (every? #{:invalid-selector :invalid-lease} (array-seq codes)))
                    (is (zero? @calls)) (done)))
           (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
+(deftest schema-readiness-and-write-fencing-recognize-node-uniqueness-types
+  (async done
+    (let [labels ["AdamDerivation" "AdamDerivationRun" "AdamDerivedObservation"]
+          cases [["UNIQUENESS" labels true]
+                 ["NODE_PROPERTY_UNIQUENESS" labels true]
+                 ["NODE_PROPERTY_UNIQUENESS" (pop labels) false]
+                 ["RELATIONSHIP_PROPERTY_UNIQUENESS" labels false]
+                 ["NODE_PROPERTY_EXISTENCE" labels false]]
+          attempt (fn [[constraint-type available ready?]]
+                    (let [{:keys [driver calls closes]}
+                          (recording-driver
+                            (fn [query params]
+                              (if (re-find #"SHOW INDEXES" query) [{"count" 1}]
+                                [{"status" "acquired" "token" (:token params) "leaseUntil" 1234567}]))
+                            (fn [query]
+                              ;; Simulate the server's type filtering over schema-only rows.
+                              (if (.includes query (str "'" constraint-type "'")) available [])))
+                          db (store/with-driver driver "neo4j" reader)
+                          capture (fn [work] (-> work (.then (fn [_] :ready)) (.catch config/error-code)))]
+                      (-> (capture (store/check-schema! db))
+                          (.then (fn [result]
+                                   (testing constraint-type (is (= (if ready? :ready :schema-unavailable) result)))
+                                   (capture (store/acquire-refresh! db {:name "preferences"} 60000))))
+                          (.then (fn [result]
+                                   (testing constraint-type (is (= (if ready? :ready :schema-unavailable) result)))
+                                   (is (= 2 @closes))
+                                   (when-not ready? (is (every? #(re-find #"SHOW CONSTRAINTS" (:query %)) @calls))))))))]
+      (-> (js/Promise.all (to-array (map attempt cases)))
+          (.catch (fn [error] (is false (.-stack error)))) (.finally done)))))
 
 (deftest schema-initializes-derived-identities-and-native-entry-lookup
   (async done

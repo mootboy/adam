@@ -40,7 +40,7 @@
 (defn- require-schema! [^js tx]
   (-> (.run tx
         "SHOW CONSTRAINTS YIELD type, labelsOrTypes, properties
-         WHERE type = 'UNIQUENESS' AND properties = ['id']
+         WHERE type IN ['UNIQUENESS', 'NODE_PROPERTY_UNIQUENESS'] AND properties = ['id']
          RETURN collect(labelsOrTypes[0]) AS labels")
       (.then (fn [result]
                (let [labels (when-let [row (first (rows result))] (vec (field row "labels")))]
