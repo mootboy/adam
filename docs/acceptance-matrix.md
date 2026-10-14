@@ -327,11 +327,11 @@ The revised [0.4 plan](plan-0.4.0.md) scopes 0.4.0 to implemented infrastructure
 
 | Approved behavior | Existing/added evidence | Remaining gate |
 | --- | --- | --- |
-| Closed YAML, selectors, model resolution and isolated request | config/core/provider/controller interfaces; packaged Pi fixture | Actual provider certification |
-| Complete-input sizing, timeout/truncation and one-call policy | core/controller failure matrix and fake-registry options | Actual SDK transforms/capacity and billed outcomes |
+| Closed YAML, selectors, model resolution and isolated request | config/core/provider/controller interfaces; packaged Pi fixture; three real default Codex calls | New policy-v2 prompt not yet model-probed |
+| Complete-input sizing, timeout/truncation and one-call policy | core/controller matrix; shared Pi-owned sizing; 1 MiB accepted-text cap; three small Codex calls with SDK usage | No universal output/cost cap; context-capacity extremes not certified |
 | Directional/non-transitive grants, all-input/comparison restrictions | core/store interfaces and disposable revocation/ownership tests | No production grants authorized |
-| Explicit/inferred scope, source occasions, duplicates and corrections | parameterized core and native-anchor tests | Real model interpretation of scoped human corrections versus assistant choices |
-| Conflicts and scoped supersession | Core validator; disposable within/across-run CONTRADICTS/SUPERSEDES and history rendering | Semantic judgment, not merely valid links |
+| Explicit/inferred scope, source occasions, duplicates and corrections | parameterized core/native-anchor tests; Codex accepted scoped correction and empty unendorsed-choice cases | Updated prompt has only synthetic validation |
+| Conflicts and scoped supersession | Core validator; disposable within/across-run links/history; model-visible exact constraints and content-free rejection reasons | Real disagreement call was rejected; cause unknown; follow-up needs approved re-probe |
 | Inspectable producer/source/support provenance and memory rebuild | Saved-read/live repair and branch-removal tests | Production operational acceptance |
 | Stable users/names/filters, successful/empty history and cache | Core/store identity, history, empty/reuse tests | — |
 | Fingerprints/current freshness and latest-but-outdated | Core mid-call change and saved-read change/history tests | — |

@@ -92,7 +92,7 @@ test("packaged Pi generation, restart reuse and Pi/MCP reads preserve saved hist
       const fs = await import('node:fs/promises');
       await fs.writeFile(${JSON.stringify(configPath)}, ${JSON.stringify('derivations:\n  preferences:\n    version: 2\n    guidance: Preserve scoped corrections.\n')});
       await commands.get('adam:derive').handler('preferences', ctx);
-      assert.equal(notices.at(-1), 'preferences: failed (invalid-output)'); assert.equal(count, 2);
+      assert.equal(notices.at(-1), 'preferences: failed (invalid-output); validation incomplete-output'); assert.equal(count, 2);
       await events.get('session_shutdown')({}, ctx);
       console.error('packaged derivation acceptance passed');
     `;

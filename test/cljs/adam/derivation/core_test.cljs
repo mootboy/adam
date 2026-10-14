@@ -603,6 +603,65 @@
                    (done)))
           (.catch (fn [error] (is false (.-stack error)) (done)))))))
 
+(deftest model-visible-rules-and-content-free-output-rejections
+  (async done
+    (let [a (observation "a" own "one") b (observation "b" other "two")
+          h (assoc (observation "h" own "one") :dropped? true)
+          r {:id "r" :owner-id own :session-id session :kind :reflection :producer "test"
+             :content "Repeated historical finding" :supporting-memory-ids ["h"]}
+          configured (assoc recipe :categories {"architecture" "Architecture"})
+          source (assoc input :recipe configured :memories [a b h r]
+                              :grants [{:owner-id other :reader-id own :permission "read"}])
+          bob (assoc conclusion :id "bob" :scope-subject-ids [other] :supporting-memory-ids ["b"] :conflicting-memory-ids ["a"])
+          alice (assoc conclusion :conflicting-memory-ids ["b"])
+          prior {:id "prior" :input-memory-ids ["a"] :conclusions [(assoc conclusion :id "old")]}
+          cases [{:label "attributed disagreement without cross-subject link" :conclusions [alice bob]}
+                 {:label "cross-subject link" :conclusions [alice bob]
+                  :links [{:relation :contradicts :from "c1" :to "bob"}] :reason :link-scope-mismatch}
+                 {:label "same-scope contradiction" :conclusions [conclusion (assoc conclusion :id "second")]
+                  :links [{:relation :contradicts :from "c1" :to "second"}]}
+                 {:label "new-run supersession is invalid" :conclusions [conclusion (assoc conclusion :id "second")]
+                  :links [{:relation :supersedes :from "c1" :to "second"}] :reason :supersedes-target-not-prior}
+                 {:label "authorized prior scoped supersession" :comparison prior :conclusions [conclusion]
+                  :links [{:relation :supersedes :from "c1" :to "old"}]}
+                 {:label "invented subject" :conclusions [(assoc conclusion :scope-subject-ids ["Alice"])] :reason :subject-not-in-evidence}
+                 {:label "historical support cannot support conclusion" :conclusions [(assoc conclusion :supporting-memory-ids ["h"])] :reason :support-not-eligible}
+                 {:label "invented conflicting evidence" :conclusions [(assoc conclusion :conflicting-memory-ids ["missing"])] :reason :conflict-not-eligible}
+                 {:label "one occasion cannot support inference" :conclusions [(assoc conclusion :basis :inferred)] :reason :inferred-below-threshold}
+                 {:label "summary copy does not add occasion" :conclusions [(assoc conclusion :basis :inferred :supporting-memory-ids ["a" "r"])] :reason :inferred-below-threshold}
+                 {:label "two distinct occasions support inference" :conclusions [(assoc conclusion :basis :inferred :supporting-memory-ids ["a" "b"])]}
+                 {:label "unconfigured category" :conclusions [(assoc conclusion :category "style")] :reason :category-not-configured}
+                 {:label "uppercase category is malformed" :conclusions [(assoc conclusion :category "Architecture")] :reason :response-shape}
+                 {:label "scope disabled by recipe" :recipe (assoc configured :scope-types #{"repository"}) :conclusions [conclusion] :reason :scope-not-configured}
+                 {:label "prior ID cannot be reused" :comparison prior :conclusions [(assoc conclusion :id "old")] :reason :conclusion-id-collision}
+                 {:label "invented endpoint" :conclusions [conclusion]
+                  :links [{:relation :contradicts :from "c1" :to "missing"}] :reason :link-endpoint}]
+          attempt (fn [{:keys [reason recipe comparison conclusions links label]}]
+                    (let [request (cond-> (assoc source :recipe (or recipe configured)) comparison (assoc :comparison comparison))]
+                      (-> (core/refresh-configured!
+                           {:load-input! (fn [_] request) :measure-input (constantly 200)
+                            :execute! (fn [{:keys [payload]}]
+                                        (let [raw (js/JSON.parse payload) rules (aget raw "output-rules")]
+                                          (is (some? rules))
+                                          (is (= #{own other} (set (array-seq (aget (aget rules "subject-ids") "personal")))))
+                                          (is (not (some #{"h"} (array-seq (aget rules "supporting-memory-ids")))))
+                                          (is (some #{"h"} (array-seq (aget rules "conflicting-memory-ids"))))
+                                          (is (= (js/JSON.stringify (aget (aget rules "verified-occasion-keys") "a"))
+                                                 (js/JSON.stringify (aget (aget rules "verified-occasion-keys") "r"))))
+                                          (is (.includes (aget raw "instructions") "not a cross-subject link"))
+                                          {:finish-reason :stop :conclusions conclusions :links (or links [])}))}
+                           {"preferences" (:recipe request)} {:name "preferences"})
+                          (.then (fn [[outcome]]
+                                   (testing label
+                                     (is (= reason (:validation-reason outcome)))
+                                     (is (= (if reason :failed :generated) (:status outcome)))
+                                     (when reason
+                                       (is (= :invalid-output (:code outcome)))
+                                       (is (not (.includes (js/JSON.stringify (clj->js outcome)) "Source-grounded preference"))))))))))]
+      (-> (js/Promise.all (to-array (map attempt cases)))
+          (.then (fn [_] (done)))
+          (.catch (fn [error] (is false (.-stack error)) (done)))))))
+
 (deftest configured-refresh-forwards-exact-raw-selectors-for-named-and-all-recipes
   (async done
     (let [origin "git@github.com:x/y.git"
