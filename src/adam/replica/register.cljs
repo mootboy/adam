@@ -1,6 +1,8 @@
 (ns adam.replica.register
   (:require [adam.derivation.config :as derivation-config]
             [adam.derivation.pi :as derivation-pi]
+            [adam.derivation.read :as derivation-read]
+            [adam.knowledge.runtime :as query-runtime]
             [adam.derivation.store :as derivation-store]
             [adam.knowledge.index :as knowledge-index]
             [adam.knowledge.memory-migration :as memory-migration]
@@ -555,6 +557,13 @@
          {:get-store! get-replica!
           :get-user! get-user!
           :resolve-repository! resolve-repository!}
+         ;; Separate lazy pool deliberately avoids initialize!/migration/DDL on reads.
+         saved-query-runtime
+         (query-runtime/create-query-runtime resolved-config {:create-replica create-replica :load-user get-user!})
+         saved-read-deps
+         (or (:derivation-read-dependencies options)
+             (derivation-read/from-query-runtime (:dependencies saved-query-runtime)))
+         saved-reads (derivation-read/register-pi! pi saved-read-deps (:enabled? resolved-config))
          derivations
          (derivation-pi/register-command!
            pi {:configured? (:enabled? resolved-config)
@@ -599,6 +608,8 @@
          shutdown!
          (fn []
            (-> ((:shutdown! derivations))
+               (.then (fn [_] ((:shutdown! saved-reads))))
+               (.then (fn [_] ((:close! saved-query-runtime))))
                (.then (fn [_] @queue))
                (.then
                 (fn [_]

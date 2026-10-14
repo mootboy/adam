@@ -98,7 +98,7 @@ Read-only surfaces:
 adam_derivations
 ```
 
-The tool is available in both Pi and Claude MCP. Listing/reading shows saved scope/filter, freshness, generating provider/model, conclusions and evidence. Default reads show the latest run per result identity; an explicit history option exposes older versions under the same authorization rules. The [stage-1 contract](derivation-contract.md) pins optional name/single-filter arguments, boolean history and bounded item limits. Rendering/paging and the host `--history` command boundary remain stage 4.
+The tool is available in both Pi and Claude MCP. Listing/reading shows saved scope/filter, freshness, generating provider/model, conclusions and evidence. Default reads show the latest run per result identity; an explicit history option exposes older versions under the same authorization rules. The [stage-1 contract](derivation-contract.md) pins optional name/single-filter arguments, boolean history and bounded item limits. Shared bounded rendering/paging and the host `--history` command boundary are implemented under issue 026.
 
 ## Model input, budgets and completion
 
@@ -277,7 +277,7 @@ Deliver this minor-release scope through reviewable implementation increments; e
 1. **Contracts and deterministic core:** implemented under [issue 023](issues/023-derivation-contracts-and-core.md). [Contract v1](derivation-contract.md) freezes YAML/read schemas, selector normalization, dependency roles, source-occasion accounting, request sizing and result fingerprints, with synthetic/fake-executor coverage. No host commands, graph storage or real-model adapter are enabled.
 2. **Graph storage and authorization:** implemented under [issue 024](issues/024-derivation-graph-storage-and-authorization.md): principal-bound persistence, fenced refresh leases, atomic successful history, fail-closed reads/repair, grant-authorized inputs and verified original source occasions with compact streaming. Disposable validation proves concurrency, expiry/restart, revocation, comparison inheritance, memory-rebuild repair, rollback and ownership drift. Host/provider/schema initialization remains stage 3; no production generation or saved-result tool is enabled.
 3. **Pi generation tracer:** implemented under [issue 025](issues/025-pi-derivation-generation.md): command-only named/all-config generation through Pi registry/authentication, isolated system/data prompts, conservative supported-API budgets, no SDK retries/cache, renewable fenced leases, shutdown/model-timeout cancellation, authorized reuse and failure preservation. Missing schema requires explicit interactive approval; initialization is lazy and checked once per process. Synthetic and disposable packaged-host validation do not authorize production first use or real-model probes.
-4. **Reads and interpretation:** implement Pi command/tool and Claude read-only MCP parity, bounded latest/history results, freshness, prominent conflict/correction reporting and provenance traversal.
+4. **Reads and interpretation:** implemented under [issue 026](issues/026-saved-derivation-read-surfaces.md): Pi command/tool and Claude read-only MCP parity, bounded latest/history results, truthful full-evidence freshness, prominent conflict/correction links and authorized source/producer provenance. Agent-readable calls are single-flight and abortable; complete native verification remains an explicitly documented expensive read, not a cheap dependency-only freshness claim.
 5. **Acceptance and release:** complete deterministic, packaged-host and disposable graph restart/concurrency acceptance, plus separately approved real-model quality/cost probes. Only the final release-preparation increment updates versions/changelog for 0.5.0.
 
 Keep existing session replication, producer projection and notification-worker behavior independently functional throughout. PRs remain user-merged with history preserved; merging this documentation does not initiate implementation, migrations or publication.
@@ -293,7 +293,7 @@ Keep existing session replication, producer projection and notification-worker b
 
 ## Validation
 
-Stage 1 implements the storage-neutral core with deterministic fake-executor tests; no production generation command, graph schema or MCP derivation tool is registered. The sizing query was read-only and made no model call or graph mutation. Later stages require disposable graph restart/concurrency/rebuild validation and both host read adapters. Real-model quality evaluation remains separate opt-in acceptance.
+Stages 1–4 implement deterministic core, graph persistence/authorization, explicit Pi generation and read-only Pi/MCP surfaces. Synthetic/fake-provider and disposable graph/compiled-host acceptance does not certify real-provider quality, production latency or first-use migrations. The sizing query was read-only and made no model call or graph mutation. Separately approved real-model quality/cost evaluation and final operational/release acceptance remain stage 5.
 
 ## Notes
 

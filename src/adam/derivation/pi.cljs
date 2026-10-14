@@ -5,9 +5,7 @@
             ["node:buffer" :refer [Buffer]]
             [adam.derivation.store :as store]
             [clojure.string :as string]
-            ["node:fs" :as fs]
-            ["node:os" :refer [homedir]]
-            ["node:path" :refer [join]]))
+            ))
 
 (def ^:private supported-apis
   #{"anthropic-messages" "openai-completions" "openai-responses" "azure-openai-responses"})
@@ -195,28 +193,7 @@
             (config/reject! :invalid-selector "invalid derivation command arguments"))
           (recur more (assoc request key value)))))))
 
-(defn read-configuration []
-  (let [root (or (aget js/process.env "XDG_CONFIG_HOME") (join (homedir) ".config"))
-        filename (config/config-path root)]
-    (when-not (number? (.-O_NOFOLLOW (.-constants fs)))
-      (config/reject! :invalid-config "safe no-follow configuration reads are unsupported on this platform"))
-    (try
-      (let [descriptor (.openSync fs filename (bit-or (.-O_RDONLY (.-constants fs)) (.-O_NOFOLLOW (.-constants fs)) (.-O_NONBLOCK (.-constants fs))))
-            buffer (.alloc Buffer 262145)]
-        (try
-          (when-not (.isFile (.fstatSync fs descriptor))
-            (config/reject! :invalid-config "configuration must be a regular file"))
-          (let [size (loop [offset 0]
-                       (if (= offset 262145) offset
-                         (let [count (.readSync fs descriptor buffer offset (- 262145 offset) offset)]
-                           (if (zero? count) offset (recur (+ offset count))))))]
-            (when (> size 262144) (config/reject! :invalid-config "configuration exceeds 256 KiB"))
-            (config/parse-config (.decode (js/TextDecoder. "utf-8" #js {:fatal true}) (.subarray buffer 0 size))))
-          (finally (.closeSync fs descriptor))))
-      (catch :default error
-        (if (config/error-code error) (throw error)
-            (config/reject! (if (= "ENOENT" (.-code error)) :not-configured :invalid-config)
-                            "derivation configuration is missing or unreadable"))))))
+(def read-configuration config/read-configuration)
 
 (defn register-command! [^js extension {:keys [get-db! load-config! configured? operations provider-fn]
                                       :or {load-config! read-configuration provider-fn provider}}]
