@@ -23,6 +23,14 @@ Each named refresh reads its source snapshot once through the boundary callback.
 
 A configuration is at most 256 KiB UTF-8. Unknown fields, duplicate keys, multiple YAML documents, aliases, unsupported tags and invalid types/limits are rejected with sanitized errors. There are no inline credential fields, executable YAML tags, repo-local overrides or silently ignored options. These are configuration/parser safety bounds, not a memory-corpus sampling limit.
 
+## Saved-result presentation and command progress
+
+Saved reads are summary-first Markdown shared by Pi and MCP. Each conclusion displays its theme/category, explicit/inferred basis, visibly blockquoted Markdown-escaped prose, exact subject scope, supporting count and conflicting-evidence count. Conflict/supersession links remain prominent and unauthorized endpoints stay withheld. Full recording locators are optional (`--evidence` or `evidence: true`) and follow all summaries; presentation flags are validated then removed before graph requests, not identity/fingerprint inputs. Existing item/line/byte bounds and explicit truncation still apply.
+
+Interactive Pi commands show a temporary scrollable Markdown view, not an assistant/custom message or durable entry. Closing discards the UI; reopening rechecks authorization/freshness. Already displayed text is a read result, not a continuously reauthorized live view. Noninteractive modes retain notifications; tools never open a modal. The viewer uses the injected host theme, so it does not depend on a separately imported SDK's global theme. TUI classes instantiate only during explicit display, with no factory-time processes/timers/watchers.
+
+Generation immediately acknowledges the request and uses its own footer key for progress, clearing it in finally on success/failure/cancellation. It does not commandeer Pi's main-agent working indicator or stream unvalidated JSON. Reads likewise show access/freshness-checking status until the saved result is ready. No model call is added to either display path.
+
 ## Compact model wire format
 
 Model requests preserve every selected memory's complete content, kind, producer, source kind, timestamp, dropped status and support references. Short request-local IDs replace repeated memory/owner/session/repository/previous-conclusion IDs; original IDs, full recording/file provenance and dependency fingerprints remain in the processing snapshot and saved run, not the prompt. Repository origin context is deduplicated. Verified native occasion tuples become unique request-local occasion keys with exactly the same equality/union semantics.

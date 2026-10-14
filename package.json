@@ -49,6 +49,7 @@
     ]
   },
   "dependencies": {
+    "@earendil-works/pi-tui": "0.87.1",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "js-tiktoken": "1.0.21",
     "neo4j-driver": "^6.2.0",

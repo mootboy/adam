@@ -151,7 +151,7 @@
 
 (deftest explicit-command-validation-and-shutdown-do-not-generate-automatically
   (async done
-    (let [commands (atom {}) calls (atom []) ui (atom [])
+    (let [commands (atom {}) calls (atom []) ui (atom []) statuses (atom [])
           extension #js {:registerCommand (fn [name command] (swap! commands assoc name command))}
           controller-fixture (fixture calls {})
           runtime (pi/register-command! extension
@@ -159,17 +159,26 @@
                      :load-config! (constantly recipes) :operations (:operations controller-fixture)
                      :provider-fn (fn [_ recipe] ((:provider! controller-fixture) recipe))})
           ctx #js {:waitForIdle (fn [] (swap! calls conj :idle) (js/Promise.resolve))
-                    :ui #js {:notify (fn [text _] (swap! ui conj text))}}
+                    :ui #js {:notify (fn [text _] (swap! ui conj text))
+                             :setStatus (fn [key text] (swap! statuses conj [key text]))}}
           invoke (fn [args] (.call (aget (get @commands "adam:derive") "handler") nil args ctx))]
       (is (empty? @calls) "registration is inert")
       (is (= {:name "a" :language "py"} (pi/parse-command "a --language py")))
       (-> (invoke "unknown")
-          (.then (fn [_] (is (empty? @calls)) (is (.includes (last @ui) "unknown-derivation")) (invoke "a")))
+          (.then (fn [_]
+                   (is (empty? @calls)) (is (.includes (last @ui) "unknown-derivation"))
+                   (is (undefined? (second (last @statuses))))
+                   (let [pending (invoke "a")]
+                     (is (= "Adam derivation requested." (last @ui)) "acknowledge synchronously before idle/evidence/model work")
+                     pending)))
           (.then (fn [result]
                    (is (undefined? result))
                    (is (= :idle (first @calls)))
                    (is (some #{:execute} @calls))
                    (is (= "a: generated" (last @ui)))
+                   (is (some #{"Adam derivation requested."} @ui))
+                   (is (some #(= "Generating derivation…" (second %)) @statuses))
+                   (is (undefined? (second (last @statuses))))
                    ((:shutdown! runtime))))
           (.then (fn [_] (reset! calls []) (invoke "a")))
           (.then (fn [_] (is (empty? @calls)) (is (.includes (last @ui) "cancelled"))))
