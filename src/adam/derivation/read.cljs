@@ -69,7 +69,8 @@
      (concat
       [(str (quoted name) " | " (clojure.core/name (:type filter))
             (when (:value filter) (str " " (quoted (:value filter)))) " | depth " (get run :depth "full") " | " (clojure.core/name freshness))
-       (str "  Run " (quoted (:id run)) " @ " (quoted (:created-at run)) " | model " (quoted (:provider run)) "/" (quoted (:model-id run)))]
+       (str "  Run " (quoted (:id run)) " @ " (quoted (:created-at run)) " | model " (quoted (:provider run)) "/" (quoted (:model-id run)))
+       (str "  Input measurement: " (quoted (or (:measured-input-tokens run) "unknown")) " | " (quoted (get run :measurement-method "unspecified")))]
       (when (empty? (:conclusions run)) ["  Successful empty result: no supported conclusions."])
       (mapcat (fn [item]
                 (concat [(str "  [" (clojure.core/name (:basis item)) "/" (:category item) "] " (quoted (:content item)))

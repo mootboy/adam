@@ -226,7 +226,7 @@
                           ::dependency-fingerprints ::dependency-roles ::comparison-run-id ::diagnostics ::core/links])
          (config/only-keys #{:id :derivation-id :depth :created-at :configuration-version :configuration-fingerprint
                             :configuration-snapshot-json :input-fingerprint :model :provider :model-id
-                            :input-memory-count :measured-input-tokens :input-memory-ids :dependency-fingerprints
+                            :input-memory-count :measured-input-tokens :measurement-method :input-memory-ids :dependency-fingerprints
                             :dependency-roles :comparison-run-id :diagnostics :conclusions :links})
          #(re-matches #"urn:adam:derivation-run:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}" (:id %))
          #(every? (fn [c] (re-matches #"urn:adam:derived-observation:[0-9a-f]{64}" (:id c))) (:conclusions %))

@@ -15,6 +15,43 @@
     (try (pi/parse-command arguments) (is false "invalid depth must be rejected")
          (catch :default error (is (= :invalid-selector (config/error-code error)))))))
 
+(deftest stock-codex-sizing-is-a-labelled-local-estimate-with-no-provider-call
+  (let [calls (atom 0)
+        ctx #js {:model #js {:provider "openai-codex" :id "gpt-6.1-sol" :api "openai-codex-responses" :contextWindow 500000 :maxTokens 128000}
+                 :modelRegistry #js {:hasConfiguredAuth (constantly true) :streamSimple (fn [& _] (swap! calls inc))}}
+        adapter (pi/provider ctx {:limits {:max-output-tokens 4096}})
+        payload (js/JSON.stringify #js {:instructions "Follow the evidence." :output-schema #js {} :configuration #js {}
+                                       :memories #js [#js {:content (apply str (repeat 1000 "prefer simple boundaries <|endoftext|> "))}]})
+        measured ((:measure-input adapter) payload (:model adapter))]
+    (is (= "local-o200k-estimate" (:measurement-method (meta (:measure-input adapter)))))
+    (is (pos? measured))
+    (is (< measured (.byteLength Buffer payload "utf8")))
+    (is (zero? @calls))))
+
+(deftest tokenizer-families-and-unknown-providers-are-explicit-and-metadata-persists
+  (async done
+    (let [recipes (config/parse-config "derivations:\n  preferences:\n    version: 1\n    guidance: Preserve scope.\n")
+          recipe (get recipes "preferences")
+          cases [{:provider "openai" :id "gpt-4" :method "local-cl100k-estimate"}
+                 {:provider "openai" :id "gpt-4o" :method "local-o200k-estimate"}
+                 {:provider "custom" :id "anything" :method "utf8-byte-upper-bound"}]
+          adapters (mapv (fn [{:keys [provider id method]}]
+                           (let [adapter (pi/provider #js {:model #js {:provider provider :id id :contextWindow 30000 :maxTokens 8192}
+                                                          :modelRegistry #js {:hasConfiguredAuth (constantly true) :streamSimple (fn [& _] (is false "no provider dispatch"))}} recipe)]
+                             (is (= method (:measurement-method (meta (:measure-input adapter))))) adapter)) cases)]
+      (-> (js/Promise.all
+            (to-array (map (fn [adapter]
+                             (core/refresh! {:measure-input (:measure-input adapter)
+                                             :execute! (fn [_] {:finish-reason :stop :conclusions [] :links []})}
+                                            {:reader-id "urn:adam:user:test" :name "preferences" :filter {:type :none}
+                                             :recipe recipe :model (:model adapter) :memories [] :grants []})) adapters)))
+          (.then (fn [results]
+                   (doseq [[result expected] (map vector (array-seq results) cases)]
+                     (is (= (:method expected) (get-in result [:run :measurement-method])))
+                     (is (= (:method expected) (aget (js/JSON.parse (core/snapshot-json (:run result))) "measurement-method"))))))
+          (.catch (fn [_] (is false "local sizing must complete")))
+          (.finally done)))))
+
 (def payload
   (core/snapshot-json {:instructions "FIXED_POLICY" :output-schema {:type "object"}
                        :configuration {:guidance "TRUSTED_GUIDANCE"}

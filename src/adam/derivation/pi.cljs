@@ -3,6 +3,9 @@
             [adam.derivation.core :as core]
             [cljs.spec.alpha :as s]
             ["node:buffer" :refer [Buffer]]
+            ["js-tiktoken/lite" :refer [Tiktoken getEncodingNameForModel]]
+            ["js-tiktoken/ranks/o200k_base" :as o200k]
+            ["js-tiktoken/ranks/cl100k_base" :as cl100k]
             [adam.derivation.store :as store]
             [clojure.string :as string]
             ))
@@ -21,6 +24,17 @@
            :messages #js [#js {:role "user" :content (js/JSON.stringify data) :timestamp (.now js/Date)}]
            :tools #js []})))
 
+(defonce ^:private o200k-encoder (delay (Tiktoken. (or (aget o200k "default") o200k))))
+(defonce ^:private cl100k-encoder (delay (Tiktoken. (or (aget cl100k "default") cl100k))))
+
+(defn- model-encoding [model]
+  (when (contains? #{"openai" "openai-codex" "azure-openai"} (aget model "provider"))
+    (let [known (try (getEncodingNameForModel (aget model "id")) (catch :default _ nil))]
+      (or (when (contains? #{"o200k_base" "cl100k_base"} known) known)
+          ;; Codex's newer model aliases aren't covered by this tokenizer catalog.
+          ;; This is an explicit family estimate, not model-tokenizer certification.
+          (when (= "openai-codex" (aget model "provider")) "o200k_base")))))
+
 ;; Pi's registry owns provider composition and request-time authentication. Keep
 ;; its native model private; only credential-free capabilities enter the core.
 (defn provider [ctx recipe]
@@ -30,6 +44,8 @@
                 (when (and registry (= "function" (goog/typeOf (aget registry "find"))))
                   (.find registry (:provider override) (:id override)))
                 (aget ctx "model"))
+        encoding (when model (model-encoding model))
+        measurement-method (case encoding "o200k_base" "local-o200k-estimate" "cl100k_base" "local-cl100k-estimate" "utf8-byte-upper-bound")
         budgeted-model? (and model (true? (aget model "reasoning")) (= "anthropic-messages" (aget model "api"))
                              (not (true? (some-> model (aget "compat") (aget "forceAdaptiveThinking")))))
         capabilities (when model {:provider (aget model "provider") :id (aget model "id")
@@ -45,15 +61,21 @@
       (config/reject! :invalid-budget "budgeted Anthropic output must reserve at least 2048 tokens"))
     {:model capabilities
      :measure-input
-     (fn [payload measured-model]
-       (when-not (= capabilities measured-model)
-         (config/reject! :invalid-budget "measurement must match the resolved Pi model"))
-       (let [context (request-context payload)]
-         ;; Shared conservative text measurement, not an API-name gate. Pi owns
-         ;; provider framing/dispatch; custom transforms aren't certified here.
-         ;; Core separately reserves 1024 tokens for SDK/provider framing.
-         (+ (.byteLength Buffer (aget context "systemPrompt") "utf8")
-            (.byteLength Buffer (aget (aget (aget context "messages") 0) "content") "utf8"))))
+     (with-meta
+       (fn [payload measured-model]
+         (when-not (= capabilities measured-model)
+           (config/reject! :invalid-budget "measurement must match the resolved Pi model"))
+         (let [context (request-context payload)
+               texts [(aget context "systemPrompt") (aget (aget (aget context "messages") 0) "content")]]
+           (if encoding
+             (let [encoder (if (= encoding "o200k_base") @o200k-encoder @cl100k-encoder)
+                   ;; Token-shaped evidence is ordinary text, never a special token.
+                   count (reduce + (map #(alength (.encode encoder % #js [] #js [])) texts))]
+               ;; A policy margin, not a guarantee of the server's tokenizer/framing.
+               ;; Core additionally reserves 1024 framing and requested output tokens.
+               (+ 32 (js/Math.ceil (* 1.2 count))))
+             (reduce + (map #(.byteLength Buffer % "utf8") texts)))))
+       {:measurement-method measurement-method})
      :execute!
      (fn [{:keys [payload signal max-output-tokens] :as request}]
        (-> (js/Promise.resolve)
@@ -149,6 +171,7 @@
                                 (config/reject! :cancelled "refresh publisher fenced"))
                               {:status (:status result) :run-id (get-in result [:run :id])
                                :input-memory-count (get-in result [:run :input-memory-count])
+                               :measurement-method (get-in result [:run :measurement-method])
                                :measured-input-tokens (get-in result [:run :measured-input-tokens])})))))
         (.catch (fn [error]
                   (-> (stop!)
@@ -229,14 +252,14 @@
                                                   :provider! #(provider-fn ctx %)} recipes request)))))))
                        (.then (fn [outcomes]
                                 (.notify (.-ui ctx)
-                                  (string/join "\n" (map (fn [{:keys [name status code validation-reason measured-input-tokens available-input-tokens depth]}]
+                                  (string/join "\n" (map (fn [{:keys [name status code validation-reason measured-input-tokens available-input-tokens depth measurement-method]}]
                                                            (str name ": " (clojure.core/name status)
                                                                 (when code (str " (" (clojure.core/name code) ")"))
                                                                 (when depth (str "; depth " depth))
                                                                 (when validation-reason (str "; validation " (clojure.core/name validation-reason)))
                                                                 (when available-input-tokens
-                                                                  (str "; conservative input " measured-input-tokens " / " available-input-tokens
-                                                                       " tokens; narrow scope or select a larger supported model")))) outcomes)) "info")))
+                                                                  (str "; input " measured-input-tokens " / " available-input-tokens
+                                                                       " tokens (" (or measurement-method "unspecified") "); narrow scope, choose depth, or select a larger model")))) outcomes)) "info")))
                        (.catch (fn [error]
                                  (.notify (.-ui ctx) (str "adam derivation: " (name (or (config/error-code error) :executor-failed))) "warning")))
                        (.then (fn [_] js/undefined)))]
