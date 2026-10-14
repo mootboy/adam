@@ -233,6 +233,15 @@
              (let [controller (js/AbortController.)
                    ;; ctx.signal belongs to an agent turn, not this command.
                    signal (.-signal controller)
+                   status! (fn [message]
+                             (when (= "function" (goog/typeOf (aget (.-ui ctx) "setStatus")))
+                               (.setStatus (.-ui ctx) "adam-derive" message)))
+                   ops (merge graph-operations operations)
+                   ui-ops (reduce (fn [result [key message]]
+                                    (assoc result key (fn [& args] (status! message) (apply (get ops key) args))))
+                                  ops [[:load! "Loading authorized evidence…"] [:publish! "Saving validated derivation…"] [:reuse! "Checking saved-result reuse…"]])
+                   _ (.notify (.-ui ctx) "Adam derivation requested." "info")
+                   _ (status! "Preparing derivation…")
                    work
                    (-> (js/Promise.resolve)
                        (.then (fn []
@@ -245,11 +254,15 @@
                                   (when (and (:name request) (not (contains? recipes (:name request))))
                                     (config/reject! :unknown-derivation "named derivation is not configured"))
                                   (-> (js/Promise.resolve)
-                                      (.then (fn [] (.waitForIdle ctx)))
+                                      (.then (fn [] (status! "Waiting for Pi to become idle…") (.waitForIdle ctx)))
                                       (.then (fn [_]
                                                (refresh-configured!
-                                                 {:get-db! #(get-db! ctx) :operations operations :signal signal
-                                                  :provider! #(provider-fn ctx %)} recipes request)))))))
+                                                 {:get-db! #(get-db! ctx) :operations ui-ops :signal signal
+                                                  :provider! (fn [recipe]
+                                                               (status! "Resolving model/authentication…")
+                                                               (update (provider-fn ctx recipe) :execute!
+                                                                 (fn [execute!]
+                                                                   (fn [request] (status! "Generating derivation…") (execute! request)))))} recipes request)))))))
                        (.then (fn [outcomes]
                                 (.notify (.-ui ctx)
                                   (string/join "\n" (map (fn [{:keys [name status code validation-reason measured-input-tokens available-input-tokens depth measurement-method]}]
@@ -262,7 +275,8 @@
                                                                        " tokens (" (or measurement-method "unspecified") "); narrow scope, choose depth, or select a larger model")))) outcomes)) "info")))
                        (.catch (fn [error]
                                  (.notify (.-ui ctx) (str "adam derivation: " (name (or (config/error-code error) :executor-failed))) "warning")))
-                       (.then (fn [_] js/undefined)))]
+                       (.then (fn [_] js/undefined))
+                       (.finally #(status! js/undefined)))]
                (swap! active conj {:controller controller :work work})
                (.finally work #(swap! active (fn [pending] (set (remove (fn [item] (identical? work (:work item))) pending)))))))})
     {:shutdown! (fn []

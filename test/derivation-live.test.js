@@ -88,6 +88,17 @@ test("packaged Pi generation, restart reuse and Pi/MCP reads preserve saved hist
       assert.equal(toolRead.content[0].text, commandRead);
       assert.match(commandRead, /current/); assert.match(commandRead, /Prefer small functions in this context/);
       assert.ok(!commandRead.includes('Please use small functions.')); assert.equal(count, 1);
+      let displayed = '';
+      ctx.ui.custom = factory => new Promise(resolve => {
+        const viewer = factory({ terminal: { rows: 40 }, requestRender() {} }, { fg: (_token, text) => text }, null, resolve);
+        displayed = viewer.render(100).join('\\n');
+        viewer.handleInput('\\x1b');
+      });
+      await commands.get('adam:derivations').handler('preferences', ctx);
+      assert.match(displayed, /Prefer small functions in this context/);
+      assert.ok(!displayed.includes('"Prefer small functions in this context."'));
+      assert.equal(count, 1, 'viewer does not make model calls');
+      delete ctx.ui.custom;
       truncated = true; await appendFile(${JSON.stringify(configPath)}, ${JSON.stringify('# configuration comment alone does not change fingerprints\n')});
       await commands.get('adam:derive').handler('preferences', ctx); assert.equal(count, 1);
       const fs = await import('node:fs/promises');
@@ -129,6 +140,10 @@ test("packaged Pi generation, restart reuse and Pi/MCP reads preserve saved hist
         assert.ok(!read.isError); assert.match(read.content[0].text, /Prefer small functions in this context/);
         assert.match(read.content[0].text, /outdated/);
         assert.equal(read.structuredContent['result-count'], 1);
+        assert.ok(!read.content[0].text.includes('## Detailed evidence'));
+        const detailed = await client.callTool({ name: 'adam_derivations', arguments: { name: 'preferences', evidence: true } });
+        assert.ok(!detailed.isError);
+        assert.match(detailed.content[0].text, /## Detailed evidence/);
         const invalid = await client.callTool({ name: 'adam_derivations', arguments: { name: 'preferences', readerId: 'other' } });
         assert.ok(invalid.isError);
       } finally { await client.close(); }
