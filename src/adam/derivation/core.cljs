@@ -170,7 +170,8 @@
                        (= "read" (:permission %))) grants))))
 
 (s/def ::derivation-id ::id)
-(s/def ::saved-run (s/and (s/keys :req-un [::derivation-id] :opt-un [::depth]) ::comparison))
+(s/def ::measurement-method #{"injected-count" "local-o200k-estimate" "local-cl100k-estimate" "utf8-byte-upper-bound"})
+(s/def ::saved-run (s/and (s/keys :req-un [::derivation-id] :opt-un [::depth ::measurement-method]) ::comparison))
 
 (defn- authorized-dependencies-spec [reader-id grants by-id]
   (s/and (s/keys :req-un [::input-memory-ids])
@@ -444,7 +445,7 @@
 (s/def ::token-count (s/and number? js/Number.isSafeInteger #(not (neg? %))))
 (s/def ::measured-input-tokens ::token-count)
 (s/def ::available-input-tokens ::token-count)
-(s/def ::budget-diagnostics (s/keys :req-un [::measured-input-tokens ::available-input-tokens]))
+(s/def ::budget-diagnostics (s/keys :req-un [::measured-input-tokens ::available-input-tokens] :opt-un [::measurement-method]))
 
 (defn prepare-refresh [{:keys [reader-id name filter recipe model memories grants comparison cached-run depth]
                         :or {depth "full"}}
@@ -502,13 +503,14 @@
                                                                         :conflicting-memory-ids]) (:conclusions prior))})}
             compact (compact-request payload snapshot)
             text (snapshot-json (:payload compact))
-            tokens (measure-input text model-key)]
-        (when-not (s/valid? ::token-count tokens)
+            tokens (measure-input text model-key)
+            method (get (meta measure-input) :measurement-method "injected-count")]
+        (when-not (and (s/valid? ::token-count tokens) (s/valid? ::measurement-method method))
           (config/reject! :invalid-budget "request measurement must be a nonnegative integer"))
         (when (or (not (pos? cap)) (> tokens cap))
           (throw (ex-info "complete input exceeds context or configured budget; narrow scope or raise the input cap"
                           {:type :derivation :code :input-too-large
-                           :measured-input-tokens tokens :available-input-tokens (max 0 cap)})))
+                           :measured-input-tokens tokens :available-input-tokens (max 0 cap) :measurement-method method})))
         {:status :prepared :snapshot snapshot
          :output-aliases (:output-aliases compact) :prior-aliases (:prior-aliases compact)
          :request {:model model-key :payload text :max-output-tokens output
@@ -521,7 +523,7 @@
                                {:max-input-tokens cap :max-output-tokens output
                                 :timeout-ms (get-in recipe [:limits :timeout-ms])
                                 :provider-headroom-tokens 1024}})
-               :measured-input-tokens tokens :diagnostics (:diagnostics snapshot)
+               :measured-input-tokens tokens :measurement-method method :diagnostics (:diagnostics snapshot)
                :input-fingerprint input-fingerprint :model model-key
                :provider (:provider model) :model-id (:id model)
                :input-memory-count (count selected)
@@ -577,7 +579,7 @@
                                           (cond-> {:name name :status :failed :code code}
                                             (:depth request) (assoc :depth (:depth request))
                                             (and (= :input-too-large code) (s/valid? ::budget-diagnostics data))
-                                            (merge (select-keys data [:measured-input-tokens :available-input-tokens]))
+                                            (merge (select-keys data [:measured-input-tokens :available-input-tokens :measurement-method]))
                                             (and (= :invalid-output code) (s/valid? ::validation-reason (:validation-reason data)))
                                             (assoc :validation-reason (:validation-reason data))
                                             (and (= :unresolved-evidence code) (s/valid? ::config/positive-integer (:invalid-source-count data)))

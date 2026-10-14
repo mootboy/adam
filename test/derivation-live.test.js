@@ -64,7 +64,8 @@ test("packaged Pi generation, restart reuse and Pi/MCP reads preserve saved hist
         messages: ['PRIVATE_CONVERSATION'], tools: ['write'],
         sessionManager: { getSessionFile: () => ${JSON.stringify(transcript)}, getLeafId: () => 'memory' },
         ui: { notify(message) { notices.push(message); }, confirm: async () => true },
-        model: { provider: 'synthetic', id: 'fake', api: 'openai-responses', contextWindow: 200000, maxTokens: 8192 },
+        // Stock metadata exercises the packaged ESM tokenizer; registry execution below remains synthetic.
+        model: { provider: 'openai-codex', id: 'gpt-6.1-sol', api: 'openai-codex-responses', contextWindow: 200000, maxTokens: 8192 },
         modelRegistry: { hasConfiguredAuth() { return true; }, streamSimple(model, context, options) {
           count++; assert.equal(options.maxRetries, 0); assert.equal(options.cacheRetention, 'none');
           assert.equal(context.messages.length, 1); assert.deepEqual(context.tools, []);
@@ -137,12 +138,13 @@ test("packaged Pi generation, restart reuse and Pi/MCP reads preserve saved hist
     assert.match(mcpResult.stderr, /saved Pi\/MCP parity acceptance passed/);
     const saved = await session.run(`MATCH (d:AdamDerivation {id: $id})-[:LATEST_RUN]->(r)
       OPTIONAL MATCH (d)-[:HAS_RUN]->(history)
-      RETURN d.refreshToken AS token, d.lastRefreshOutcome AS outcome, count(history) AS runs, r.inputMemoryCount AS inputs`, { id: derivationId });
+      RETURN d.refreshToken AS token, d.lastRefreshOutcome AS outcome, count(history) AS runs, r.inputMemoryCount AS inputs, r.runJson AS runJson`, { id: derivationId });
     assert.equal(saved.records.length, 1);
     assert.equal(saved.records[0].get("token"), null);
     assert.equal(saved.records[0].get("outcome"), "reused");
     assert.equal(Number(saved.records[0].get("runs")), 1);
     assert.equal(Number(saved.records[0].get("inputs")), 1);
+    assert.equal(JSON.parse(saved.records[0].get("runJson"))["measurement-method"], "local-o200k-estimate");
     const removedEvidenceProgram = program.slice(0, program.indexOf("      await commands.get('adam:derive').handler('preferences', ctx);"))
       .replace("getLeafId: () => 'memory'", "getLeafId: () => 'request'") + `
       await commands.get('adam:derivations').handler('preferences', ctx);

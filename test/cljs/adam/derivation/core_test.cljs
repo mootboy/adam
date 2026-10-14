@@ -132,6 +132,18 @@
           (.catch (fn [error] (is (= :conclusion-id-collision (:validation-reason (ex-data error))))))
           (.finally done)))))
 
+(deftest measurement-provenance-is-closed-before-execution
+  (async done
+    (let [calls (atom 0)]
+      (-> (core/refresh! {:measure-input (with-meta (constantly 1) {:measurement-method "PRIVATE_UNTRUSTED_METHOD"})
+                          :execute! (fn [_] (swap! calls inc))} input)
+          (.then (fn [_] (is false "unknown measurement metadata must fail")))
+          (.catch (fn [error]
+                    (is (= :invalid-budget (config/error-code error)))
+                    (is (not (.includes (str (ex-data error)) "PRIVATE_UNTRUSTED_METHOD")))
+                    (is (zero? @calls))))
+          (.finally done)))))
+
 (deftest response-json-is-closed-and-finish-status-is-not-model-controlled
   (let [json (js/JSON.stringify (clj->js {:conclusions [conclusion] :links []}))]
     (is (= :explicit (:basis (first (:conclusions (core/decode-response json :stop)))))))
