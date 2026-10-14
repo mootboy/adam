@@ -42,6 +42,12 @@ Shadow 3.5.5's node-test autorun waits for Node and stores its exit code in buil
 
 The configured test-only runner captures discovery after selected namespaces compile and fails when no tests are registered/selected. It rejects natural process exit without completion and bounds active-handle hangs. The whole-run budget is 180 seconds normally, 600 seconds for live, overridable through strict ADAM_TEST_RUN_TIMEOUT_MS (10..3,600,000). Timeouts report elapsed/budget values, not test contents. Fixtures prove pass/assertion/captured-error/uncaught-rejection/incomplete/active-hang/empty-selection outcomes; a separately compiled zero-registered fixture exits 1. Negative probes use no Adam runtime or database.
 
+## Approved default-provider probe: blocked at preflight
+
+User approved the executing session default for up to three synthetic calls with a 2,048-token output allowance and 60-second timeout. Pi 1.1.0 resolves that default to `openai-codex/gpt-6.1-sol`, API `openai-codex-responses`, with configured authentication. An isolated temporary ESM build of the actual derivation adapter plus the real ModelRegistry reproduces `invalid-budget` during sizing, with **zero model dispatches** and no graph access: this API is absent from the conservative sizing allowlist.
+
+Inspected Pi 1.1.0 Codex request construction also does not forward `maxTokens` into a server output-token cap. Merely allowlisting the API would not certify the approved output bound. No alternative model was substituted, no paid probe was made, and no production graph/installation was changed. Codex compatibility/resource-control policy or a different approved model remains a gate before semantic/provider certification. Temporary probe code is not a runtime or packaged change.
+
 ## Restart defect and correction
 
 Disposable packaged Pi acceptance reproduced unchanged refresh returning generated after restart. Session-wide reprojection previously deleted/recreated all memory nodes, removing saved derivation dependencies. Projection now preserves stable retained nodes/incoming dependency edges, replaces only producer-owned outgoing provenance, and prunes genuinely absent IDs. Changed contents remain subject to fingerprints/current grants; removed evidence still denies reads. This is a complete session snapshot boundary, not an incremental producer update API. Acceptance proves restart reuse without a model call or new run and selected-branch removal withholding saved content.
