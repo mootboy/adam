@@ -144,7 +144,9 @@
                                                   (.then #(assoc % :model {:provider "fake" :id "model" :context-window 20000 :max-output-tokens 8192}))))
                                 :measure-input (constantly 100)
                                 :execute! (fn [request]
-                                            (is (= ["memory-a"] (vec (aget (js/JSON.parse (:payload request)) "candidate-memory-ids"))))
+                                            (let [wire (js/JSON.parse (:payload request))]
+                                             (is (= [(aget (aget (aget wire "memories") 0) "id")]
+                                                    (vec (aget wire "candidate-memory-ids")))))
                                             {:finish-reason :stop :conclusions [] :links []})}]
                       (-> (core/refresh-configured! deps recipes request)
                           (.then (fn [outcomes] (is (= :generated (:status (first outcomes)))))))))]
