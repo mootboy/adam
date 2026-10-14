@@ -59,6 +59,20 @@
               (.then (fn [result]
                        (if (seq (rows result)) (work tx) {:status :unavailable})))))))))
 
+(defn check-schema! [db]
+  (with-session! db
+    (fn [^js session]
+      (.executeRead session
+        (fn [^js tx]
+          (-> (require-schema! tx)
+              (.then (fn [_]
+                       (.run tx "SHOW INDEXES YIELD labelsOrTypes, properties, state
+                                 WHERE labelsOrTypes = ['AdamEntry'] AND properties = ['entryId'] AND state = 'ONLINE'
+                                 RETURN count(*) AS count")))
+              (.then (fn [result]
+                       (when-not (some-> (first (rows result)) (field "count") integer pos?)
+                         (config/reject! :schema-unavailable "online native-entry index is required"))))))))))
+
 (defn ensure-schema! [db]
   (with-session! db
     (fn [^js session]
@@ -71,6 +85,9 @@
               derivation-labels)
       (.then (fn [_]
                (.run session "CREATE INDEX adamentry_native_entry_id IF NOT EXISTS FOR (e:AdamEntry) ON (e.entryId)")))))))
+
+(defn await-schema! [db]
+  (with-session! db (fn [^js session] (.run session "CALL db.awaitIndexes(60)"))))
 
 (defn- bucket [{:keys [principal]} request]
   (when-not (and (s/valid? ::core/refresh-request request) (s/valid? ::config/name (:name request)))
@@ -955,6 +972,43 @@
                                                                        (.then (fn [item] (conj items item)))))))
                                                 (js/Promise.resolve []) records)
                                         (.then (fn [items] {:items items :truncated? truncated?}))))))))))))))
+
+(defn complete-reuse! [db request token run]
+  (-> (js/Promise.resolve)
+      (.then (fn []
+               (when-not (s/valid? ::token token)
+                 (config/reject! :invalid-lease "valid reuse token is required"))
+               (let [params (assoc (candidate! db request run) :token token :runId (:id run)
+                                   :runJson (core/snapshot-json run))]
+                 (write! db
+                   (fn [^js tx]
+                     (-> (.run tx
+                           "MATCH (:AdamUser {id: $readerId})-[:OWNS_DERIVATION]->(d:AdamDerivation {id: $derivationId})
+                            SET d.refreshLockVersion = coalesce(d.refreshLockVersion, 0) + 1
+                            WITH d WHERE d.refreshToken = $token AND d.refreshLeaseUntil > timestamp()
+                            MATCH (d)-[:HAS_RUN]->(r:AdamDerivationRun {id: $runId})
+                            WHERE EXISTS { MATCH (d)-[:LATEST_RUN]->(r) } AND r.runJson = $runJson
+                            RETURN true AS leaseValid"
+                           (clj->js params))
+                         (.then (fn [result]
+                                  (if-not (= 1 (count (rows result))) {:status :fenced}
+                                    (-> (run-records! tx (:principal db) (assoc request :limit 1) (:derivationId params))
+                                        (.then (fn [{:keys [records truncated?]}]
+                                                 (when-not (and (= 1 (count records)) (not truncated?)
+                                                                (= (:runId params) (field (first records) "runId"))
+                                                                (= (:runJson params) (field (first records) "runJson")))
+                                                   (config/reject! :unresolved-evidence "cached history changed"))
+                                                 (read-record! tx (:principal db) (first records))))
+                                        (.then (fn [available]
+                                                 (when-not (= :available (:status available))
+                                                   (config/reject! (:status available) "cached dependencies are unavailable"))
+                                                 (.run tx
+                                                   "MATCH (d:AdamDerivation {id: $derivationId})
+                                                    WHERE d.refreshToken = $token AND d.refreshLeaseUntil > timestamp()
+                                                    SET d.refreshToken = null, d.refreshLeaseUntil = null,
+                                                        d.lastRefreshOutcome = 'reused', d.lastRefreshError = null
+                                                    RETURN d.id AS id" (clj->js params))))
+                                        (.then (fn [written] {:status (if (seq (rows written)) :reused :fenced)}))))))))))))))
 
 (defn- repair-snapshot! [tx principal record]
   (if-let [{:keys [run]} (stored-run principal record)]

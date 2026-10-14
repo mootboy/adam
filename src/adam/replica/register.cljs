@@ -1,5 +1,8 @@
 (ns adam.replica.register
-  (:require [adam.knowledge.index :as knowledge-index]
+  (:require [adam.derivation.config :as derivation-config]
+            [adam.derivation.pi :as derivation-pi]
+            [adam.derivation.store :as derivation-store]
+            [adam.knowledge.index :as knowledge-index]
             [adam.knowledge.memory-migration :as memory-migration]
             [adam.knowledge.migration :as knowledge-migration]
             [adam.knowledge.repository :as knowledge-repository]
@@ -57,7 +60,7 @@
                 memory-identity-version memory-identity-migration-status
                 memory-identity-migration-error
                 code-memory-version code-memory-rebuild-status
-                code-memory-rebuild-error last-timing memory-notifications memory-notifications-error]} runtime-state]
+                code-memory-rebuild-error last-timing memory-notifications memory-notifications-error derivation-schema-status]} runtime-state]
     (string/join
      "\n"
      (remove nil?
@@ -86,6 +89,7 @@
                      (:unresolved-citations memory-notifications) " unresolved citations; "
                      (format-ms (:duration-ms memory-notifications))))
               (when memory-notifications-error (str "Memory reconciliation: " memory-notifications-error))
+              (when derivation-schema-status (str "Derivation schema: " derivation-schema-status))
               (when last-timing
                 (str "Last timing: " (name (:event last-timing))
                      " completed " (:completed-at last-timing)
@@ -142,6 +146,7 @@
          queue (atom (js/Promise.resolve nil))
          initialized-identities (atom #{})
          file-evidence-schema-promise (atom nil)
+         derivation-schema-promise (atom nil)
          warned-unavailable? (atom false)
          create-replica (or (:create-replica options)
                             #(neo4j/create-replica resolved-config))
@@ -550,9 +555,51 @@
          {:get-store! get-replica!
           :get-user! get-user!
           :resolve-repository! resolve-repository!}
+         derivations
+         (derivation-pi/register-command!
+           pi {:configured? (:enabled? resolved-config)
+               :load-config! (or (:load-derivation-config! options) derivation-pi/read-configuration)
+               :operations (:derivation-operations options)
+               :provider-fn (or (:derivation-provider options) derivation-pi/provider)
+               :get-db! (or (:get-derivation-db! options)
+                            (fn [ctx]
+                              (-> (js/Promise.all #js [(get-replica!) (get-user!)])
+                                  (.then (fn [resolved]
+                                           (let [replica (aget resolved 0) user (aget resolved 1)]
+                                             (let [db (derivation-store/with-driver (:driver replica) (:database replica)
+                                                        (identity/user-urn (:user-uuid user)))
+                                                   ready (or @derivation-schema-promise
+                                                             (let [pending
+                                                                   (-> (derivation-store/check-schema! db)
+                                                                       (.catch (fn [error]
+                                                                                 (if (= :schema-unavailable (derivation-config/error-code error))
+                                                                                   (do
+                                                                                     (swap! runtime-state assoc :derivation-schema-status "awaiting explicit schema approval")
+                                                                                     (when-not (and (true? (aget ctx "hasUI"))
+                                                                                                    (aget (aget ctx "ui") "confirm"))
+                                                                                       (derivation-config/reject! :schema-unavailable "interactive approval is required for schema initialization"))
+                                                                                     (-> (invoke (aget ctx "ui") "confirm" "Initialize derivation schema?"
+                                                                                           "Create/check three derivation uniqueness constraints and the native-entry index. This changes graph schema and may build an index over all entries; source content is unchanged.")
+                                                                                         (.then (fn [approved?]
+                                                                                                  (when-not approved?
+                                                                                                    (derivation-config/reject! :schema-unavailable "schema initialization declined"))
+                                                                                                  (swap! runtime-state assoc :derivation-schema-status "initializing (requires schema privileges)")
+                                                                                                  (derivation-store/ensure-schema! db)))
+                                                                                         (.then (fn [_] (derivation-store/await-schema! db)))
+                                                                                         (.then (fn [_] (derivation-store/check-schema! db)))))
+                                                                                   (throw error))))
+                                                                       (.then (fn [_] (swap! runtime-state assoc :derivation-schema-status "ready")))
+                                                                       (.catch (fn [_]
+                                                                                 (reset! derivation-schema-promise nil)
+                                                                                 (swap! runtime-state assoc :derivation-schema-status "unavailable; explicit refresh may retry")
+                                                                                 (derivation-config/reject! :schema-unavailable "derivation schema unavailable"))))]
+                                                               (reset! derivation-schema-promise pending)
+                                                               pending))]
+                                               (.then ready (fn [_] db)))))))))})
          shutdown!
          (fn []
-           (-> @queue
+           (-> ((:shutdown! derivations))
+               (.then (fn [_] @queue))
                (.then
                 (fn [_]
                   (if-let [promise @replica-promise]

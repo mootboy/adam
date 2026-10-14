@@ -18,7 +18,7 @@ Adam provides a full [Pi](https://pi.dev) extension and a [Claude Code](https://
 - [`docs/plan-0.3.3.md`](docs/plan-0.3.3.md) — active file-memory retrieval.
 - [`docs/plan-0.4.0.md`](docs/plan-0.4.0.md) — 0.4.0 infrastructure release scope and separate standalone-producer/native-reader follow-up.
 - [`docs/plan-0.5.0.md`](docs/plan-0.5.0.md) — planned configurable memory derivations, explicit Pi generation, multi-user grants and provenance-bearing result history.
-- [`docs/derivation-contract.md`](docs/derivation-contract.md) — implemented storage-neutral derivation contracts/core; graph and host integration remain planned.
+- [`docs/derivation-contract.md`](docs/derivation-contract.md) — implemented derivation contracts/core, graph authorization/history and explicit Pi generation; saved-result read surfaces remain planned.
 - [`docs/acceptance-matrix.md`](docs/acceptance-matrix.md) — deterministic and live acceptance cases for incremental delivery.
 - [`docs/issues/`](docs/issues/) — repository-local issue tracker and issue template.
 
@@ -126,6 +126,29 @@ Adam stores the permanent user UUID under `${XDG_CONFIG_HOME:-~/.config}/adam/co
 Import requires interactive confirmation. Resume lists the exact-cwd union of local and remote sessions, always prefers existing local JSONL, and only materializes complete, validated remote-only sessions without overwriting files.
 
 With valid configuration, adam lazily initializes the graph and reconciles persistent sessions at startup and persisted lifecycle boundaries. Before normal synchronization, graph-native transactional migrations source-scope existing Pi session identities and producer-scope observation/reflection identities without requiring local JSONL; each validated version marker advances only with its complete successful transaction. A separate versioned, restart-safe code-memory rebuild reindexes local authoritative session logs when the derived schema changes and advances its marker only after successful completion. Derived memory projection aggregates embedded Pi records with every retained mirrored producer stream in one source-session transaction, preserving producer isolation and stream-qualified provenance. `/adam:status` reports migration/rebuild state and the latest lifecycle event's queue, initialization, replica synchronization, repository discovery, evidence extraction, Neo4j projection, and total durations. These diagnostics are in-memory, retain only the latest run, and contain no session content. Missing configuration disables replication without preventing Pi from loading. Pi executes the committed JavaScript in `dist/`; Java is only required when rebuilding the ClojureScript source.
+
+## Unreleased 0.5 Pi generation tracer
+
+Create user-wide `$XDG_CONFIG_HOME/adam/derivations.yaml` (default `~/.config/adam/derivations.yaml`):
+
+```yaml
+derivations:
+  preferences:
+    version: 1
+    guidance: Identify attributed architectural and style preferences; preserve scope, uncertainty and disagreements.
+```
+
+`/adam:derive preferences` refreshes one recipe. `/adam:derive` processes configured recipes sequentially, continuing after failures. Either form accepts at most one `--repository <git-origin>`, `--session <source-scoped-session-urn>` or `--language <language>` filter. Configuration and explicit refresh authorize the model call; no lifecycle event generates automatically. These commands are not in the published 0.4.1 artifact.
+
+The first use checks graph schema. If constraints or the online native-entry index are missing, **interactive approval is required** before creating/checking three derivation uniqueness constraints and the native-entry index. This can build an index over all mirrored entries; source content is unchanged. Back up production and explicitly approve its first use—stage-3 tests do not authorize it. Existing ready schema needs no DDL. Initialization is cached only after success; `/adam:status` shows its outcome.
+
+The separate request uses Pi registry/authentication, defaults to the session model, declares no tools, disables SDK retries and prompt caching, and excludes the current conversation. Optional YAML `model: {provider: ..., id: ...}` uses Pi's registry. Current conservative sizing supports stock Anthropic Messages and OpenAI/Azure Completions/Responses APIs. Complete system/data UTF-8 byte count is an intentionally loose input-token bound (often 3–4× English token counts), plus 1024 framing tokens and the output reservation. Oversized inputs fail before model work without sampling; narrow scope or select a larger supported model. This is not real-provider capacity certification.
+
+Output defaults to 8192 tokens and model-call timeout to five minutes; YAML `limits` may change them. Reasoning-capable models request minimal effort; budgeted Anthropic models require at least 2048 output tokens and reserve their 1024 thinking budget inside that allowance. Responses must be raw JSON; fences, tool calls, truncation or failures preserve prior results. Reasoning may still consume the allowance and cause a billed-but-rejected truncated response.
+
+Pi awaits the command handler, so the invoking window may be occupied for input loading and generation. Cancellation is **shutdown-only**, plus the configured model-call timeout; Esc/turn-abort signals do not control this separate command. Abort requests do not promise instant billing cessation. Graph cleanup/shutdown may wait for driver timeouts; failed release falls back to lease expiry. Same-bucket refreshes report busy; different buckets are independent. Renewal failure cancels conservatively rather than retrying model work. `reused` describes the processed snapshot, not current freshness.
+
+Saved-result Pi/Claude browsing remains stage 4. Validation here uses fake providers and disposable Neo4j only; real-provider quality/cost probes require separate approval.
 
 ## Releases
 

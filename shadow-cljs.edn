@@ -1,8 +1,11 @@
 {:source-paths ["src" "test/cljs"]
  :dependencies [[org.clojure/test.check "1.1.1"]]
+ ;; Parallel macro compilation can change gensyms/capture order in committed artifacts.
+ ;; Serialize ESM compilation; test targets need no reproducible packaged output.
  :builds
  {:extension
-  {:target :esm
+  {:compiler-options {:parallel-build false}
+   :target :esm
    :output-dir "dist"
    :js-options {:js-provider :import}
    :modules
@@ -11,7 +14,8 @@
      :exports {start adam.extension/start}}}}
 
   :mcp
-  {:target :esm
+  {:compiler-options {:parallel-build false}
+   :target :esm
    :output-dir "dist"
    :js-options {:js-provider :import}
    :modules
@@ -20,7 +24,8 @@
      :exports {start adam.mcp/start}}}}
 
   :hook
-  {:target :esm
+  {:compiler-options {:parallel-build false}
+   :target :esm
    :output-dir "dist"
    :js-options {:js-provider :import}
    :modules
@@ -29,7 +34,8 @@
      :exports {start adam.sources.claude-code.hook/start}}}}
 
   :worker
-  {:target :esm
+  {:compiler-options {:parallel-build false}
+   :target :esm
    :output-dir "dist"
    :js-options {:js-provider :import}
    :modules

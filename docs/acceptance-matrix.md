@@ -284,6 +284,27 @@ The revised [0.4 plan](plan-0.4.0.md) scopes 0.4.0 to implemented infrastructure
 | MCP standard input closes or the host terminates it | Neo4j resources close and the MCP process exits cleanly |
 | MCP query fails | The invocation returns a bounded tool error without terminating Claude Code |
 
+## Explicit Pi derivation generation (0.5 stage 3)
+
+| Scenario | Expected result |
+| --- | --- |
+| Extension loads or a lifecycle event runs with recipes present | No model call, generation timer or derivation DDL starts automatically |
+| Unknown name, invalid selector, unreadable/invalid YAML | Fail before graph/model work; diagnostics contain no source content or secrets |
+| Config reads return short chunks | Accumulate through EOF; later recipes are not silently dropped |
+| Default model/override lacks configured auth | Reject before graph work |
+| Schema constraints exist but native-entry index is absent/offline | Readiness fails; no entry-label scan is silently accepted |
+| Missing readiness on first command | Explicit interactive approval precedes DDL; declined setup writes nothing and remains retryable |
+| Ready schema is reused | No repeated DDL; writes still check constraints |
+| Complete input exceeds conservative supported-model bound | No model call; bounded measured/available counts explain scope reduction |
+| Separate provider request | Fixed policy/schema/recipe in system prompt, source/comparison data in user message; no session conversation/tools/affinity, retries or prompt caching |
+| Budgeted Anthropic output below 2048 | Reject before graph work; thinking otherwise stays within the total output reservation |
+| Same identity is refreshing | Busy with no input load or model call; independent identities remain separate |
+| Lease renewal is fenced, shutdown or timeout occurs | Abort request, no publication, token cleanup/expiry and prior latest retained |
+| Complete unchanged empty/nonempty result | Authorized transactional reuse clears lease without creating a run (**live**) |
+| Truncation/model/publication failure | Preserves prior latest and releases token; normal mirroring remains functional (**live**) |
+| Real packaged Pi command with synthetic provider | Explicit generation/reuse, unlinked input inclusion, comment-only cache reuse, truncation preservation and scoped cleanup (**live**) |
+| Saved result browsing/real-provider capacity or quality | Deferred to later stages and separately approved probes; no certification inferred from fake providers |
+
 ## Side-by-side proof
 
 | Case | Expected result |
