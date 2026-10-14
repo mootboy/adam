@@ -58,6 +58,8 @@ For incremental development:
 npm run watch
 ```
 
+Normal/live gates compile then execute the ClojureScript Node runner explicitly; compiler autorun alone does not propagate test failures. Watch retains development autorun through the **build-local** `{:autorun true}` override (ignored by the ESM build), not a nested `:builds` map. The test-only runner rejects zero tests/incomplete completion and has a whole-run watchdog: 180 seconds normally, 600 seconds live, configurable with `ADAM_TEST_RUN_TIMEOUT_MS` (10–3,600,000 ms). Intentional failure probes are isolated from the normal/live suites. To invoke Node boundary tests directly, first run `npm run test:cljs` to compile their runner fixtures.
+
 ## Install in Pi
 
 Install a stable GitHub release tag:

@@ -21,7 +21,7 @@ function probe(program, env) {
   });
 }
 
-test("packaged Pi derives explicitly, reuses authorized results and preserves latest on truncation", async t => {
+test("packaged Pi generation, restart reuse and Pi/MCP reads preserve saved history", async t => {
   if (!process.env.ADAM_TEST_NEO4J_URI) return t.skip("opt-in disposable Neo4j only");
   requireDisposableNeo4j();
   const root = await mkdtemp(path.join(tmpdir(), "adam-derive-live-"));
@@ -99,6 +99,19 @@ test("packaged Pi derives explicitly, reuses authorized results and preserves la
     const result = await probe(program, env);
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stderr, /packaged derivation acceptance passed/);
+    await writeFile(configPath, "derivations:\n  preferences:\n    version: 1\n    guidance: Preserve scope and uncertainty.\n", { mode: 0o600 });
+    const restartProgram = program.slice(0, program.indexOf("      await commands.get('adam:derive').handler('preferences', ctx);")) + `
+      await commands.get('adam:derive').handler('preferences', ctx);
+      assert.equal(notices.at(-1), 'preferences: reused', 'normal restart must preserve unchanged derivation dependencies');
+      assert.equal(count, 0, 'restart must not regenerate unchanged saved understanding');
+      await commands.get('adam:derivations').handler('preferences', ctx);
+      assert.match(notices.at(-1), /current/);
+      assert.match(notices.at(-1), /Prefer small functions in this context/);
+      await events.get('session_shutdown')({}, ctx);
+    `;
+    const restartResult = await probe(restartProgram, env);
+    assert.equal(restartResult.code, 0, restartResult.stderr);
+    await writeFile(configPath, 'derivations:\n  preferences:\n    version: 2\n    guidance: Preserve scoped corrections.\n', { mode: 0o600 });
     const mcpResult = await probe(`
       import assert from 'node:assert/strict';
       import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -127,9 +140,19 @@ test("packaged Pi derives explicitly, reuses authorized results and preserves la
       RETURN d.refreshToken AS token, d.lastRefreshOutcome AS outcome, count(history) AS runs, r.inputMemoryCount AS inputs`, { id: derivationId });
     assert.equal(saved.records.length, 1);
     assert.equal(saved.records[0].get("token"), null);
-    assert.equal(saved.records[0].get("outcome"), "failed");
+    assert.equal(saved.records[0].get("outcome"), "reused");
     assert.equal(Number(saved.records[0].get("runs")), 1);
     assert.equal(Number(saved.records[0].get("inputs")), 1);
+    const removedEvidenceProgram = program.slice(0, program.indexOf("      await commands.get('adam:derive').handler('preferences', ctx);"))
+      .replace("getLeafId: () => 'memory'", "getLeafId: () => 'request'") + `
+      await commands.get('adam:derivations').handler('preferences', ctx);
+      assert.match(notices.at(-1), /unavailable/);
+      assert.ok(!notices.at(-1).includes('Prefer small functions in this context'));
+      assert.equal(count, 0);
+      await events.get('session_shutdown')({}, ctx);
+    `;
+    const removedResult = await probe(removedEvidenceProgram, env);
+    assert.equal(removedResult.code, 0, removedResult.stderr);
   } finally {
     try {
       await assertTestIdentity(env, uuid);

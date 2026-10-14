@@ -282,14 +282,15 @@ Deliver this minor-release scope through reviewable implementation increments; e
 
 Keep existing session replication, producer projection and notification-worker behavior independently functional throughout. PRs remain user-merged with history preserved; merging this documentation does not initiate implementation, migrations or publication.
 
-## Remaining implementation-contract details
+## Remaining acceptance/release gates
 
-1. Wire the frozen YAML/selector contracts and optional model override resolution through the Pi SDK; obtain verified graph provenance/occasion anchors for normalized rows.
-2. Input serialization/token sizing/headroom for supported models, exact occasion deduplication and support expansion rules. Provider cost guards cannot promise a strict spend ceiling.
-3. Read/tool arguments and history selection, bounded pagination/truncation, and precise user/group/scope subject validation.
-4. Canonical URN/hash encoding, configuration/input snapshots and comparison dependency roles, freshness checks, rebuild-safe relationship repair and indexes.
-5. Atomic lease acquisition/renewal/fencing and cancellation behavior across processes; publication-time authorization/freshness validation and sanitized status handling.
-6. Implementation breakdown and release readiness. This document authorizes no runtime/schema migration, production grant, version bump, tag, merge or publication by itself.
+Stages 1–4 implement the interface, graph, provider and read contracts. [Issue 027](issues/027-derivation-acceptance-and-release-gates.md) audits acceptance and closes isolated integration/test-gate defects. The [acceptance matrix](acceptance-matrix.md) distinguishes structural proof from semantic/provider certification.
+
+1. Separately approved bounded real-provider probe using synthetic evidence: actual SDK/API capacity, structured completion, scoped correction/disagreement interpretation, duplicate-occasion handling and legitimate empty outcomes. Fake outputs cannot certify those judgments or billing/cancellation behavior.
+2. Production first use/operational acceptance only with explicit approval and backup as appropriate: schema/index initialization, owned evidence, saved reads/restart, latency, outage behavior and lease cleanup. Disposable validation is not authorization.
+3. Final version/changelog/plugin/tarball transition and release PR after readiness is explicitly decided. Only the final increment bumps 0.5.0; merging a version bump can trigger publication. User controls history-preserving merges.
+
+This document alone authorizes no production grant/access, real model call, runtime migration, version bump, tag, merge or publication.
 
 ## Validation
 

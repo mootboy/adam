@@ -470,8 +470,9 @@
            (fn [_]
              (let [queries (mapv :query @calls)
                    evidence-call (first (filter #(re-find #"UNWIND \$evidence" (:query %)) @calls))
-                   observation-call (first (filter #(re-find #"SOURCED_FROM" (:query %)) @calls))
-                   reflection-call (first (filter #(re-find #"SUPPORTED_BY" (:query %)) @calls))
+                   observation-call (first (filter #(and (re-find #"UNWIND \$observations" (:query %))
+                                                         (re-find #"SOURCED_FROM" (:query %))) @calls))
+                   reflection-call (first (filter #(re-find #"UNWIND \$reflections" (:query %)) @calls))
                    ^js evidence (first (array-seq (aget (:params evidence-call) "evidence")))
                    ^js observation (first (array-seq (aget (:params observation-call) "observations")))
                    ^js reflection (first (array-seq (aget (:params reflection-call) "reflections")))]
@@ -482,6 +483,8 @@
                (is (not-any? #(re-find #"\(u\)-\[:OWNS\]->\(repository\)" %) queries))
                (is (some #(re-find #"AdamCodeFile" %) queries))
                (is (some #(re-find #"DETACH DELETE memory" %) queries))
+               (is (= #{"observation-id" "reflection-id"}
+                      (set (array-seq (aget (:params (first (filter #(re-find #"DETACH DELETE memory" (:query %)) @calls))) "retainedIds")))))
                (is (= "feature-head" (.-commit evidence)))
                (is (= "feature/a" (.-branch evidence)))
                (is (= true (.-dirty evidence)))
