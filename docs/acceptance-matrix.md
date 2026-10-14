@@ -323,6 +323,26 @@ The revised [0.4 plan](plan-0.4.0.md) scopes 0.4.0 to implemented infrastructure
 | Entirely denied/empty page | Skip full source stream and its index prerequisite |
 | Worker bundle | No derivation-read dependency; ordinary replication/worker behavior remains independent |
 
+## Derivation acceptance audit (0.5 stage 5)
+
+| Approved behavior | Existing/added evidence | Remaining gate |
+| --- | --- | --- |
+| Closed YAML, selectors, model resolution and isolated request | config/core/provider/controller interfaces; packaged Pi fixture | Actual provider certification |
+| Complete-input sizing, timeout/truncation and one-call policy | core/controller failure matrix and fake-registry options | Actual SDK transforms/capacity and billed outcomes |
+| Directional/non-transitive grants, all-input/comparison restrictions | core/store interfaces and disposable revocation/ownership tests | No production grants authorized |
+| Explicit/inferred scope, source occasions, duplicates and corrections | parameterized core and native-anchor tests | Real model interpretation of scoped human corrections versus assistant choices |
+| Conflicts and scoped supersession | Core validator; disposable within/across-run CONTRADICTS/SUPERSEDES and history rendering | Semantic judgment, not merely valid links |
+| Inspectable producer/source/support provenance and memory rebuild | Saved-read/live repair and branch-removal tests | Production operational acceptance |
+| Stable users/names/filters, successful/empty history and cache | Core/store identity, history, empty/reuse tests | — |
+| Fingerprints/current freshness and latest-but-outdated | Core mid-call change and saved-read change/history tests | — |
+| Refresh concurrency, renewable fenced publication and failure preservation | Disposable single-winner/expiry/rollback plus controller matrix | Production completion/latency unmeasured |
+| Equivalent bounded Pi/MCP reads and independent replication | Compiled Pi/MCP parity, read adversarial/property tests and existing replica/worker suites | Production read cost remains unmeasured |
+| Restart with ordinary session reprojection | Packaged Pi restart reuses without new model work/history; removed evidence denies reads | — |
+| CI actually gates ClojureScript failures | Explicit compiled-runner execution; assertion/error/uncaught/incomplete/hang/empty probes | Prior main logs checked as passing, but old CI did not enforce exit status |
+| Release | No version/tag/installation change in acceptance increment | Explicit readiness decision, final release PR |
+
+Synthetic/disposable proof does not complete semantic/provider or production gates. No authoritative logs, producer content or grants are changed by this audit.
+
 ## Side-by-side proof
 
 | Case | Expected result |

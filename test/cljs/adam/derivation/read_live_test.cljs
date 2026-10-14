@@ -49,7 +49,11 @@
                                  {:finish-reason :stop :conclusions
                                   [{:id "c" :content "Small scoped interfaces" :category "architecture" :basis :explicit
                                     :scope-type :personal :scope-subject-ids [reader]
-                                    :supporting-memory-ids [(first mids)] :conflicting-memory-ids []}] :links []})}
+                                    :supporting-memory-ids [(first mids)] :conflicting-memory-ids []}
+                                   {:id "alternative" :content "Competing scoped position" :category "architecture" :basis :explicit
+                                    :scope-type :personal :scope-subject-ids [reader]
+                                    :supporting-memory-ids [(first mids)] :conflicting-memory-ids []}]
+                                  :links [{:relation :contradicts :from "c" :to "alternative"}]})}
                     (merge snapshot {:name name :filter filter :recipe (get recipes name)
                                      :model {:provider "fake" :id "fixture" :context-window 30000 :max-output-tokens 8192}}))))
           (.then (fn [{:keys [run]}]
@@ -57,7 +61,38 @@
                    (swap! registered into (cons (:id run) (map :id (:conclusions run))))
                    (-> (store/acquire-refresh! db request 60000)
                        (.then #(store/publish-refresh! db request (:token %) run)))))
-          (.then (fn [_] (read/execute! deps request)))
+          ;; Validate cross-run contradiction and scoped supersession through
+          ;; publication + saved history, not only the pure output validator.
+          (.then (fn [_]
+                   (reduce
+                    (fn [pending relation]
+                      (.then pending
+                        (fn [_]
+                          (-> (store/load-input! db request)
+                              (.then (fn [snapshot]
+                                       (core/refresh!
+                                        {:measure-input (constantly 200)
+                                         :execute! (fn [_]
+                                                     (swap! model-calls inc)
+                                                     {:finish-reason :stop
+                                                      :conclusions [{:id "c" :content (str "Small scoped interfaces - " (clojure.core/name relation)) :category "architecture" :basis :explicit
+                                                                     :scope-type :personal :scope-subject-ids [reader]
+                                                                     :supporting-memory-ids [(first mids)] :conflicting-memory-ids []}]
+                                                      :links [{:relation relation :from "c" :to (get-in snapshot [:comparison :conclusions 0 :id])}]})}
+                                        (merge snapshot {:name name :filter filter :recipe (get recipes name)
+                                                         :model {:provider "fake" :id "fixture" :context-window 30000 :max-output-tokens 8192}}))))
+                              (.then (fn [{:keys [run]}]
+                                       (reset! saved run)
+                                       (swap! registered into (cons (:id run) (map :id (:conclusions run))))
+                                       (-> (store/acquire-refresh! db request 60000)
+                                           (.then #(store/publish-refresh! db request (:token %) run)))))))))
+                    (js/Promise.resolve) [:contradicts :supersedes])))
+          (.then (fn [_] (read/execute! deps (assoc request :history true))))
+          (.then (fn [result]
+                   (is (= 3 (get-in result [:details :result-count])))
+                   (is (.includes (:content result) "CONTRADICTS"))
+                   (is (.includes (:content result) "SUPERSEDES"))
+                   (read/execute! deps request)))
           (.then (fn [result]
                    (is (.includes (:content result) "current"))
                    (is (.includes (:content result) "Small scoped interfaces"))
@@ -108,13 +143,15 @@
           (.then (fn [_] (read/execute! deps (assoc request :history true))))
           (.then (fn [result]
                    (is (.includes (:content result) "unavailable"))
-                   (is (not (.includes (:content result) "Small scoped interfaces")))
+                   (is (not (.includes (:content result) "Small scoped interfaces - supersedes")))
+                   (is (.includes (:content result) "Small scoped interfaces - contradicts")
+                       "independently authorized older history remains visible")
                    (store/repair-dependencies! db request)))
           (.then (fn [_] (read/execute! deps request)))
           (.then (fn [result]
                    (is (.includes (:content result) "outdated"))
                    (is (.includes (:content result) "Small scoped interfaces"))
-                   (is (= 1 @model-calls) "saved reads never run a provider")))
+                   (is (= 3 @model-calls) "only the three explicit fake generations call the executor")))
           (.catch (fn [error] (is false (.-stack error))))
           (.finally (fn []
                       (-> (.run session "MATCH (n) WHERE n.id IN $ids DETACH DELETE n" #js {:ids (clj->js @registered)})

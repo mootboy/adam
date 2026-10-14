@@ -46,11 +46,21 @@
   :test
   {:target :node-test
    :output-to "target/tests.cjs"
+   :main adam.test-runner/main
    :ns-regexp "(?<!live)-test$"
-   :autorun true}
+   :autorun false}
+
+  :test-exit-probe
+  {:target :node-test
+   :output-to "target/test-exit-probe.cjs"
+   :main adam.test-runner/main
+   :ns-regexp "^adam\\.test-exit-probe$"
+   :autorun false}
 
   :neo4j-test
-  {:target :node-test
+  {:compiler-options {:closure-defines {adam.test-runner/DEFAULT_TIMEOUT_MS 600000}}
+   :target :node-test
    :output-to "target/neo4j-tests.cjs"
+   :main adam.test-runner/main
    :ns-regexp "-live-test$"
-   :autorun true}}}
+   :autorun false}}}

@@ -766,13 +766,29 @@
        :supportingObservationIds
        (clj->js (:supporting-observation-ids reflection))})
 
-(defn- replace-memory-projection! [^js tx projection]
+(defn- replace-memory-projection!
+  "Projection MUST contain the complete retained session memory snapshot, not
+   an incremental producer delta. Omitted IDs are intentionally removed. Both
+   callers build aggregate snapshots; no partial-projection API is supported."
+  [^js tx projection]
   (-> (.run
        tx
        "MATCH (s:AdamSession {id: $sessionId})
         OPTIONAL MATCH (s)-[:HAS_MEMORY]->(memory)
+        WHERE NOT memory.id IN $retainedIds
         DETACH DELETE memory"
-       #js {:sessionId (:session-id projection)})
+       #js {:sessionId (:session-id projection)
+            :retainedIds (clj->js (mapv :id (concat (:observations projection) (:reflections projection))))})
+      ;; Stable memory nodes retain incoming derivation dependencies. Only the
+      ;; producer projection's outgoing provenance is replaced; truly removed
+      ;; memory above still detaches, making dependent reads fail closed.
+      (.then
+       (fn [_]
+         (.run tx
+           "MATCH (:AdamSession {id: $sessionId})-[:HAS_MEMORY]->(memory)-[old]->()
+            WHERE type(old) IN ['ABOUT', 'SOURCED_FROM', 'SUPPORTED_BY']
+            DELETE old"
+           #js {:sessionId (:session-id projection)})))
       (.then
        (fn [_]
          (.run
