@@ -48,6 +48,26 @@ User approved the executing session default for up to three synthetic calls with
 
 Inspected Pi 1.1.0 Codex request construction also does not forward `maxTokens` into a server output-token cap. Merely allowlisting the API would not certify the approved output bound. No alternative model was substituted, no paid probe was made, and no production graph/installation was changed. Codex compatibility/resource-control policy or a different approved model remains a gate before semantic/provider certification. Temporary probe code is not a runtime or packaged change.
 
+## Pi-owned compatibility and approved three-call probe
+
+The user subsequently approved removing Adam's API-name gate and treating provider resource controls as non-universal. Pi still resolves/authenticates/dispatches; Adam keeps resolved-model checks, complete-input measurement/reservations, stop/block/output validation, authorization and publication fencing. Accepted generated text is capped at 1 MiB UTF-8 before parsing; thinking is discarded. This is not a stream-heap or cost cap.
+
+Exactly three real `openai-codex/gpt-6.1-sol` calls ran through Pi 1.1.0 ModelRegistry and the compiled Adam adapter/core on **synthetic inputs only**, without graph access. Each had a 60-second timeout; the 2,048-token SDK argument was **not transmitted as a Codex server output cap**, including reasoning. Authentication was subscription OAuth; usage consumes plan limits, not an asserted per-token charge. No alternate model, installed-runtime change or production mutation.
+
+| Case | SDK input/output tokens | Result |
+| --- | --- | --- |
+| Scoped Alice correction plus unendorsed assistant choice/repeated summary | 926 / 120 | Valid explicit repository-Alpha conclusion, supporting the correction only, explicitly not universal |
+| Alice/Bob disagreement | 805 / 257 | Normal provider stop; rejected by Adam as invalid-output |
+| Assistant choice without endorsement plus duplicate summary | 775 / 12 | Valid empty conclusions/links |
+
+Total elapsed: 18,090 ms; all three provider stop reasons were stop. Generated text sizes were 553 / 1,159 / 29 bytes. First/third conservative input measurements were 4,068 / 3,469 against SDK input usage 926 / 775. This is a bounded compatibility/quality sample, not general capacity certification.
+
+The failed case's raw synthetic reply was not retained; **its exact validation failure cannot be inferred**. No fourth call was made. Review found model-visible rules omitted existing validator constraints. Follow-up exposes exact eligible IDs/scopes, verified occurrence keys, category/inference and compatible-link/prior-supersession rules without relaxing them. Fixed content-free validation-reason codes now accompany invalid-output outcomes, including parse/wire/non-text/oversize/incomplete failures. Source-derived rule identifiers remain in the user/data message, never elevated into system instructions. Internal policy version 2 makes older results outdated. Cross-user disagreement must use separately attributed scopes/conflicting-memory-ids, not a cross-subject CONTRADICTS link. Parameterized synthetic interface coverage verifies accepted and rejected shapes; real-model confirmation of this follow-up requires renewed approval.
+
+### Follow-up validation
+
+After Pi-owned compatibility and output-contract follow-ups: clean gated CI passes 250 ClojureScript tests/1,515 assertions and 39 Node tests (34 pass, five opt-in skips), with generated-runtime/exact-tarball checks. Disposable port-7688 validation passes 14 tests/232 assertions plus three packaged cases. The packaged truncation expectation now explicitly verifies the content-free incomplete-output reason. Final read-only reviews find no blockers. No additional model calls or production graph access occurred.
+
 ## Restart defect and correction
 
 Disposable packaged Pi acceptance reproduced unchanged refresh returning generated after restart. Session-wide reprojection previously deleted/recreated all memory nodes, removing saved derivation dependencies. Projection now preserves stable retained nodes/incoming dependency edges, replaces only producer-owned outgoing provenance, and prunes genuinely absent IDs. Changed contents remain subject to fingerprints/current grants; removed evidence still denies reads. This is a complete session snapshot boundary, not an incremental producer update API. Acceptance proves restart reuse without a model call or new run and selected-branch removal withholding saved content.

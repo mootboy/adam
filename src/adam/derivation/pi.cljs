@@ -7,9 +7,6 @@
             [clojure.string :as string]
             ))
 
-(def ^:private supported-apis
-  #{"anthropic-messages" "openai-completions" "openai-responses" "azure-openai-responses"})
-
 (defn- request-context [payload]
   (let [raw (try (js/JSON.parse payload) (catch :default _ nil))]
     (when-not (and raw (string? (aget raw "instructions"))
@@ -49,10 +46,11 @@
     {:model capabilities
      :measure-input
      (fn [payload measured-model]
-       (when-not (and (= capabilities measured-model) (contains? supported-apis (aget model "api")))
-         (config/reject! :invalid-budget "no conservative sizing policy for this model API"))
+       (when-not (= capabilities measured-model)
+         (config/reject! :invalid-budget "measurement must match the resolved Pi model"))
        (let [context (request-context payload)]
-         ;; Deliberately conservative byte bound, not Pi's chars/4 heuristic.
+         ;; Shared conservative text measurement, not an API-name gate. Pi owns
+         ;; provider framing/dispatch; custom transforms aren't certified here.
          ;; Core separately reserves 1024 tokens for SDK/provider framing.
          (+ (.byteLength Buffer (aget context "systemPrompt") "utf8")
             (.byteLength Buffer (aget (aget (aget context "messages") 0) "content") "utf8"))))
@@ -78,13 +76,20 @@
                         (.result stream)))))
            (.then (fn [message]
                     (when-not (= "stop" (aget message "stopReason"))
-                      (config/reject! (case (aget message "stopReason")
-                                        "error" :executor-failed "aborted" :cancelled :invalid-output)
-                                      "provider did not complete a derivation response"))
+                      (case (aget message "stopReason")
+                        "error" (config/reject! :executor-failed "provider request failed")
+                        "aborted" (config/reject! :cancelled "provider request cancelled")
+                        (core/reject-output! :incomplete-output)))
                     (let [blocks (array-seq (aget message "content"))]
                       (when-not (every? #(or (= "thinking" (aget % "type"))
                                             (and (= "text" (aget % "type")) (string? (aget % "text")))) blocks)
-                        (config/reject! :invalid-output "derivation response must be text, never tool calls"))
+                        (core/reject-output! :non-text-output))
+                      ;; Bound accepted JSON independently of best-effort SDK
+                      ;; token allowances. This is not a billing/stream-heap cap.
+                      (when (> (reduce + 0 (map #(if (= "text" (aget % "type"))
+                                                  (.byteLength Buffer (aget % "text") "utf8") 0) blocks))
+                               1048576)
+                        (core/reject-output! :output-too-large))
                       (core/decode-response (apply str (keep #(when (= "text" (aget % "type")) (aget % "text")) blocks)) :stop))))
            (.catch (fn [error]
                      (if (config/error-code error) (throw error)
@@ -224,9 +229,10 @@
                                                   :provider! #(provider-fn ctx %)} recipes request)))))))
                        (.then (fn [outcomes]
                                 (.notify (.-ui ctx)
-                                  (string/join "\n" (map (fn [{:keys [name status code measured-input-tokens available-input-tokens]}]
+                                  (string/join "\n" (map (fn [{:keys [name status code validation-reason measured-input-tokens available-input-tokens]}]
                                                            (str name ": " (clojure.core/name status)
                                                                 (when code (str " (" (clojure.core/name code) ")"))
+                                                                (when validation-reason (str "; validation " (clojure.core/name validation-reason)))
                                                                 (when available-input-tokens
                                                                   (str "; conservative input " measured-input-tokens " / " available-input-tokens
                                                                        " tokens; narrow scope or select a larger supported model")))) outcomes)) "info")))

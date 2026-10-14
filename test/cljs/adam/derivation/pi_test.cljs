@@ -10,6 +10,7 @@
 (def payload
   (core/snapshot-json {:instructions "FIXED_POLICY" :output-schema {:type "object"}
                        :configuration {:guidance "TRUSTED_GUIDANCE"}
+                       :output-rules {:subject-ids {:personal ["UNTRUSTED_IDENTIFIER"]}}
                        :memories [{:content "ISOLATED_PAYLOAD"}]}))
 
 (deftest registry-adapter-resolves-and-executes-an-isolated-request
@@ -35,6 +36,8 @@
                                      (is (= 1 (alength (.-messages context))))
                                      (is (.includes (.-content (aget (.-messages context) 0)) "ISOLATED_PAYLOAD"))
                                      (is (not (.includes (.-systemPrompt context) "ISOLATED_PAYLOAD")))
+                                     (is (not (.includes (.-systemPrompt context) "UNTRUSTED_IDENTIFIER")))
+                                     (is (.includes (.-content (aget (.-messages context) 0)) "UNTRUSTED_IDENTIFIER"))
                                      (is (.includes (.-systemPrompt context) "TRUSTED_GUIDANCE"))
                                      (is (.includes (.-systemPrompt context) "raw JSON only"))
                                      (is (= 0 (.-maxRetries options)))
@@ -118,13 +121,73 @@
       (try (pi/provider ctx {:limits {:max-output-tokens size}}) (is false "invalid thinking budget")
            (catch :default error (is (= :invalid-budget (config/error-code error))))))))
 
-(deftest missing-auth-or-unsupported-sizing-fails-before-dispatch
+(deftest missing-auth-fails-before-dispatch
   (let [model #js {:provider "fake" :id "session" :contextWindow 200000 :maxTokens 8192}
         registry #js {:hasConfiguredAuth (constantly false) :streamSimple (fn [& _] (is false "must not dispatch"))}
         ctx #js {:model model :modelRegistry registry}]
     (try (pi/provider ctx nil) (is false "auth required")
          (catch :default error (is (= :invalid-model (config/error-code error)))))
-    (aset registry "hasConfiguredAuth" (constantly true))
-    (let [adapter (pi/provider ctx nil)]
-      (try ((:measure-input adapter) payload (:model adapter)) (is false "API-specific bound required")
-           (catch :default error (is (= :invalid-budget (config/error-code error))))))))
+    (is (false? (.hasConfiguredAuth registry model)))))
+
+(deftest pi-owned-api-selection-does-not-block-shared-sizing-or-dispatch
+  (async done
+    (let [attempt (fn [api]
+                    (let [calls (atom 0)
+                          model #js {:provider "fake" :id "session" :api api :contextWindow 200000 :maxTokens 8192}
+                          registry #js {:hasConfiguredAuth (constantly true)
+                                        :streamSimple (fn [_ _ ^js options]
+                                                        (swap! calls inc)
+                                                        (is (= 2048 (.-maxTokens options)) "allowance is requested through Pi")
+                                                        #js {:result (fn [] (js/Promise.resolve #js {:stopReason "stop" :content #js [#js {:type "text" :text "{\"conclusions\":[],\"links\":[]}"}]}))})}
+                          adapter (pi/provider #js {:model model :modelRegistry registry} nil)]
+                      (is (pos? ((:measure-input adapter) payload (:model adapter))))
+                      (try ((:measure-input adapter) payload (assoc (:model adapter) :id "wrong"))
+                           (is false "measurement must match resolved model")
+                           (catch :default error (is (= :invalid-budget (config/error-code error)))))
+                      (-> ((:execute! adapter) {:model (:model adapter) :payload payload :max-output-tokens 2048})
+                          (.then (fn [result] (is (= [] (:conclusions result))) (is (= 1 @calls)))))))]
+      (-> (js/Promise.resolve)
+          (.then (fn [] (js/Promise.all (to-array (map attempt ["openai-codex-responses" "pi-custom-api"])))) )
+          (.catch (fn [error] (is false (.-stack error)))) (.finally done)))))
+
+(deftest pre-validation-rejections-have-content-free-reasons
+  (async done
+    (let [model #js {:provider "fake" :id "session" :api "pi-owned-api" :contextWindow 200000 :maxTokens 8192}
+          recipe (get (config/parse-config "derivations:\n  preferences:\n    version: 1\n    guidance: Preserve scope.\n") "preferences")
+          cases [["length" #js [#js {:type "text" :text "PRIVATE_REPLY"}] :incomplete-output]
+                 ["stop" #js [#js {:type "toolCall" :name "PRIVATE_TOOL"}] :non-text-output]
+                 ["stop" #js [#js {:type "text" :text "```json PRIVATE_REPLY```"}] :response-json]
+                 ["stop" #js [#js {:type "text" :text "{\"secret\":\"PRIVATE_REPLY\"}"}] :response-wire-shape]]
+          attempt (fn [[stop blocks reason]]
+                    (let [registry #js {:hasConfiguredAuth (constantly true)
+                                        :streamSimple (fn [_ _ _]
+                                                        #js {:result (fn [] (js/Promise.resolve #js {:stopReason stop :content blocks}))})}
+                          adapter (pi/provider #js {:model model :modelRegistry registry} recipe)]
+                      (-> (core/refresh-configured!
+                           {:load-input! (fn [_] {:reader-id "urn:adam:user:synthetic" :memories [] :grants [] :model (:model adapter)})
+                            :measure-input (:measure-input adapter) :execute! (:execute! adapter)}
+                           {"preferences" recipe} {:name "preferences"})
+                          (.then (fn [[outcome]]
+                                   (is (= :invalid-output (:code outcome)))
+                                   (is (= reason (:validation-reason outcome)))
+                                   (is (not (.includes (js/JSON.stringify (clj->js outcome)) "PRIVATE"))))))))]
+      (-> (js/Promise.all (to-array (map attempt cases)))
+          (.catch (fn [error] (is false (.-stack error)))) (.finally done)))))
+
+(deftest accepted-model-json-is-byte-bounded-even-when-sdk-ignores-token-allowance
+  (async done
+    (let [attempt (fn [padding]
+                    (let [model #js {:provider "fake" :id "session" :api "pi-custom-api" :contextWindow 200000 :maxTokens 8192}
+                          registry #js {:hasConfiguredAuth (constantly true)
+                                        :streamSimple (fn [_ _ _]
+                                                        #js {:result (fn [] (js/Promise.resolve
+                                                                             #js {:stopReason "stop" :content #js [#js {:type "text" :text padding}]}))})}
+                          adapter (pi/provider #js {:model model :modelRegistry registry} nil)]
+                      (-> ((:execute! adapter) {:model (:model adapter) :payload payload :max-output-tokens 2048})
+                          (.then (fn [_] (is false "oversized accepted JSON must be rejected"))
+                                 (fn [error]
+                                   (is (= :invalid-output (config/error-code error)))
+                                   (is (= :output-too-large (:validation-reason (ex-data error)))))))))]
+      (-> (js/Promise.all (to-array (map attempt [(str (.repeat " " 1048576) "{\"conclusions\":[],\"links\":[]}")
+                                                 (.repeat "界" 350000)])))
+          (.catch (fn [error] (is false (.-stack error)))) (.finally done)))))
