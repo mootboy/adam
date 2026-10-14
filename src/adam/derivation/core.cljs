@@ -466,7 +466,8 @@
                   (fn [results]
                     (-> (js/Promise.resolve)
                         (.then (fn [] (load-input! (assoc request :name name))))
-                        (.then (fn [input] (refresh! deps (assoc input :name name :filter filter :recipe (get recipes name)))))
+                        (.then (fn [input] ((or (:refresh-one! deps) #(refresh! deps %))
+                                           (assoc input :name name :filter filter :recipe (get recipes name)))))
                         (.then (fn [result] (conj results (assoc result :name name))))
                         (.catch (fn [error]
                                   (let [code (or (config/error-code error) :executor-failed)
@@ -488,7 +489,7 @@
            :conclusions (mapv #(assoc % :id (get ids (:id %))) (:conclusions response))
            :links (mapv #(-> % (update :from ids) (update :to (fn [id] (get ids id id)))) (:links response)))))
 
-(defn refresh! [{:keys [execute! measure-input new-run-id now]
+(defn refresh! [{:keys [execute! measure-input new-run-id now signal]
                  :or {new-run-id randomUUID now #(-> (js/Date.) .toISOString)}} input]
   (-> (js/Promise.resolve)
       (.then
@@ -505,11 +506,20 @@
                             (fn [] (.abort controller)
                               ((.-reject timeout) (ex-info "derivation timed out" {:type :derivation :code :timeout})))
                             (get-in prepared [:request :timeout-ms]))
+                    cancel! (fn [] (.abort controller)
+                              ((.-reject timeout) (ex-info "derivation cancelled" {:type :derivation :code :cancelled})))
                     work (-> (js/Promise.resolve)
-                             (.then (fn [] (execute! (assoc (:request prepared) :signal (.-signal controller))))))]
+                             (.then (fn []
+                                      (when (.-aborted (.-signal controller))
+                                        (config/reject! :cancelled "derivation cancelled"))
+                                      (execute! (assoc (:request prepared) :signal (.-signal controller))))))]
+                (when signal
+                  (.addEventListener signal "abort" cancel! #js {:once true})
+                  (when (.-aborted signal) (cancel!)))
                 (-> (js/Promise.race #js [work (.-promise timeout)])
                     (.then (fn [response]
                              (validate-output (:recipe input) (:snapshot prepared) response)
                              {:status :generated
                               :run (complete-run prepared response token timestamp)}))
-                    (.finally #(js/clearTimeout timer))))))))))
+                    (.finally (fn [] (js/clearTimeout timer)
+                                (when signal (.removeEventListener signal "abort" cancel!))))))))))))

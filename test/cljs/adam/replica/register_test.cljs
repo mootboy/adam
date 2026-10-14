@@ -1,5 +1,6 @@
 (ns adam.replica.register-test
-  (:require [adam.knowledge.store :as knowledge-store]
+  (:require [adam.derivation.config :as derivation-config]
+            [adam.knowledge.store :as knowledge-store]
             [adam.replica.register :as register]
             [adam.memory.inbox :as memory-inbox]
             [adam.replica.store :as store]
@@ -109,6 +110,45 @@
     (is (= "info" (second (first @notifications))))
     (is (re-find #"disabled" (first (first @notifications))))
     (is (re-find #"configuration missing" (first (first @notifications))))))
+
+(deftest explicit-schema-approval-is-required-and-ready-state-is-cached
+  (async done
+    (let [directory (mkdtempSync (join (tmpdir) "adam-derive-schema-"))
+          index? (atom false) approve? (atom false) confirmations (atom 0) ddl (atom [])
+          tx #js {:run (fn [query & _]
+                         (when (.includes query "CREATE") (swap! ddl conj query))
+                         (when (.includes query "CREATE INDEX") (reset! index? true))
+                         (js/Promise.resolve #js {:records #js [#js {:get (fn [key]
+                                                                           (case key "labels" #js ["AdamDerivation" "AdamDerivationRun" "AdamDerivedObservation"]
+                                                                             "count" (if @index? 1 0) nil))}]}))}
+          driver #js {:session (fn [_] #js {:executeRead (fn [work] (work tx)) :run (aget tx "run")
+                                            :close (fn [] (js/Promise.resolve))})}
+          replica (assoc (->LifecycleReplica (atom nil) (atom []) (atom []) (atom []) (atom 0)
+                                             (atom 2) (atom []) (atom 0) (atom []) (atom 3) (atom []) (atom 1) (atom []))
+                         :driver driver :database "neo4j")
+          {:keys [pi commands]} (fake-pi)
+          runtime (register/register! pi
+                    {:config {:enabled? true} :create-replica #(js/Promise.resolve replica)
+                     :load-user (fn [] {:user-uuid "schema-test"})
+                     :load-derivation-config! #(derivation-config/parse-config "derivations:\n  a:\n    version: 1\n    guidance: Keep scope.\n")
+                     :derivation-provider (fn [& _] {:model {:provider "fake" :id "model" :context-window 20000 :max-output-tokens 8192}})
+                     :derivation-operations {:acquire! (fn [& _] (js/Promise.resolve {:status :busy}))}
+                     :worker-inbox-options {:config-home directory}
+                     :memory-inbox-options {:state-home directory :data-home directory}})
+          ctx #js {:hasUI true :waitForIdle (fn [] (js/Promise.resolve))
+                    :ui #js {:notify (fn [& _]) :confirm (fn [& _] (swap! confirmations inc) (js/Promise.resolve @approve?))}}
+          invoke (fn [] (.call (aget (get @commands "adam:derive") "handler") nil "a" ctx))]
+      (is (empty? @ddl) "factory initialization is inert")
+      (-> (invoke)
+          (.then (fn [_] (is (empty? @ddl)) (is (= 1 @confirmations)) (reset! approve? true) (invoke)))
+          (.then (fn [_]
+                   (is (= 4 (count @ddl)))
+                   (is (= 2 @confirmations))
+                   (is (= "ready" (:derivation-schema-status ((:status runtime)))))
+                   (invoke)))
+          (.then (fn [_] (is (= 4 (count @ddl))) (is (= 2 @confirmations)) ((:shutdown! runtime))))
+          (.catch (fn [error] (is false (.-stack error))))
+          (.finally #(rmSync directory #js {:recursive true :force true})) (.finally done)))))
 
 (deftest retries-after-an-isolated-backend-outage
   (async done

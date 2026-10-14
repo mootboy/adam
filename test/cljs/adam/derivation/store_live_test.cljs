@@ -1,6 +1,7 @@
 (ns adam.derivation.store-live-test
   (:require [adam.derivation.config :as config]
             [adam.derivation.core :as core]
+            [adam.derivation.pi :as pi]
             [adam.derivation.store :as store]
             [cljs.test :refer [async deftest is]]
             ["neo4j-driver" :as neo4j]
@@ -292,6 +293,61 @@
                               (.finally #(.close session))
                               (.finally #(.close driver)))))
               (.finally done)))))))
+
+(deftest live-explicit-generation-reuse-and-failure-preservation
+  (async done
+    (let [env js/process.env uuid (randomUUID)
+          reader (str "urn:adam:user:" uuid) name "stage-three"
+          id (core/derivation-id reader name {:type :none})
+          ^js driver ((.-driver neo4j) (aget env "ADAM_TEST_NEO4J_URI")
+                       (.basic (.-auth neo4j) (aget env "ADAM_TEST_NEO4J_USERNAME") (aget env "ADAM_TEST_NEO4J_PASSWORD")))
+          database (or (aget env "ADAM_TEST_NEO4J_DATABASE") "neo4j")
+          ^js session (.session driver #js {:database database})
+          db (store/with-driver driver database reader)
+          recipes (config/parse-config "derivations:\n  stage-three:\n    version: 1\n    guidance: Preserve scope.\n")
+          model {:provider "fake" :id "model" :context-window 20000 :max-output-tokens 8192}
+          calls (atom 0) fail? (atom false) first-run (atom nil)
+          deps {:get-db! #(js/Promise.resolve db)
+                :provider! (fn [_] {:model model :measure-input (constantly 100)
+                                    :execute! (fn [_] (swap! calls inc)
+                                                (if @fail? (js/Promise.reject (js/Error. "PRIVATE"))
+                                                    (js/Promise.resolve {:finish-reason :stop :conclusions [] :links []})))})}
+          request {:name name}]
+      (-> (store/ensure-schema! db)
+          (.then (fn [_] (.run session "CREATE (:AdamUser {id: $id})" #js {:id reader})))
+          (.then (fn [_] (pi/refresh-configured! deps recipes request)))
+          (.then (fn [outcomes]
+                   (is (= :generated (:status (first outcomes))))
+                   (reset! first-run (:run-id (first outcomes)))
+                   (pi/refresh-configured! deps recipes request)))
+          (.then (fn [outcomes]
+                   (is (= :reused (:status (first outcomes))))
+                   (is (= @first-run (:run-id (first outcomes))))
+                   (is (= 1 @calls))
+                   (.run session "MATCH (d:AdamDerivation {id: $id}) RETURN d.refreshToken AS token, d.lastRefreshOutcome AS outcome" #js {:id id})))
+          (.then (fn [^js result]
+                   (let [^js row (first (array-seq (.-records result)))]
+                     (is (nil? (.get row "token"))) (is (= "reused" (.get row "outcome"))))
+                   (reset! fail? true)
+                   (pi/refresh-configured! deps (update-in recipes [name :guidance] str " Changed.") request)))
+          (.then (fn [outcomes]
+                   (is (= :executor-failed (:code (first outcomes))))
+                   (store/read-runs! db {:name name :history true})))
+          (.then (fn [saved]
+                   (is (= 1 (count (:items saved))))
+                   (is (= @first-run (get-in saved [:items 0 :run :id])))
+                   (.run session "MATCH (d:AdamDerivation {id: $id}) RETURN d.refreshToken AS token, d.lastRefreshOutcome AS outcome" #js {:id id})))
+          (.then (fn [^js result]
+                   (let [^js row (first (array-seq (.-records result)))]
+                     (is (nil? (.get row "token"))) (is (= "failed" (.get row "outcome"))))))
+          (.catch (fn [error] (is false (.-stack error))))
+          (.finally (fn []
+                      (-> (.run session "MATCH (d:AdamDerivation {id: $id}) OPTIONAL MATCH (d)-[:HAS_RUN]->(r)
+                                         OPTIONAL MATCH (r)-[:HAS_CONCLUSION]->(c) DETACH DELETE c, r, d" #js {:id id})
+                          (.then (fn [_] (.run session "MATCH (u:AdamUser {id: $id}) DETACH DELETE u" #js {:id reader})))
+                          (.catch (fn [error] (is false (str "exact cleanup failed: " (.-message error)))))
+                          (.finally #(.close session)) (.finally #(.close driver)))))
+          (.finally done)))))
 
 (deftest live-input-repository-and-reflection-language-selection
   (async done
