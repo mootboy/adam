@@ -84,12 +84,12 @@
           deps {:load-configuration! (fn [] (swap! calls conj :configuration) {})
                 :load-snapshot! (fn [request _signal] (swap! calls conj request) (js/Promise.resolve {:reader-id reader :items [] :memories [] :grants []}))}
           ctx #js {:ui #js {:notify (fn [text _] (swap! notices conj text))}}
-          args "preferences --history --language py --limit 2"
-          expected {:name "preferences" :history true :language "py" :limit 2}]
+          args "preferences --history --language py --limit 2 --depth reflections"
+          expected {:name "preferences" :history true :language "py" :limit 2 :depth "reflections"}]
       (read/register-pi! pi deps true)
       (is (empty? @calls))
       (is (= expected (read/parse-command args)))
-      (doseq [bad ["--history --history" "--limit 2.5" "--language py --session urn:adam:session:x:pi:s" "--origin host/path" "--limit 0"]]
+      (doseq [bad ["--history --history" "--limit 2.5" "--language py --session urn:adam:session:x:pi:s" "--origin host/path" "--limit 0" "--depth shallow" "--depth full --depth active"]]
         (try (read/parse-command bad) (is false "reject malformed read CLI")
              (catch :default error (is (= :invalid-selector (config/error-code error))))))
       (-> (.call (aget (get @commands "adam:derivations") "handler") nil args ctx)

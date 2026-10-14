@@ -7,6 +7,14 @@
             ["node:buffer" :refer [Buffer]]
             [cljs.test :refer-macros [deftest is async]]))
 
+(deftest depth-is-a-command-parameter-and-invalid-values-fail-before-io
+  (doseq [depth ["full" "active" "observations" "reflections"]]
+    (is (= {:name "preferences" :depth depth :language "cljs"}
+           (pi/parse-command (str "preferences --depth " depth " --language cljs")))))
+  (doseq [arguments ["--depth" "--depth shallow" "--depth full --depth active"]]
+    (try (pi/parse-command arguments) (is false "invalid depth must be rejected")
+         (catch :default error (is (= :invalid-selector (config/error-code error)))))))
+
 (def payload
   (core/snapshot-json {:instructions "FIXED_POLICY" :output-schema {:type "object"}
                        :configuration {:guidance "TRUSTED_GUIDANCE"}

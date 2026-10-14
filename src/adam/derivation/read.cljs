@@ -7,7 +7,7 @@
             [clojure.string :as string]))
 
 (def description
-  "List/read saved memory derivations with scope, freshness and authorized provenance. Full freshness currently verifies the entire authorized source corpus: potentially hundreds of MB and a long transaction. Do not call repeatedly/parallel; one read per process, others report busy. Read-only: no model call, refresh, repair or instruction injection. Optional name, one repository/session/language selector, history and bounded limit.")
+  "List/read saved memory derivations with scope, freshness and authorized provenance. Full freshness currently verifies the entire authorized source corpus: potentially hundreds of MB and a long transaction. Do not call repeatedly/parallel; one read per process, others report busy. Read-only: no model call, refresh, repair or instruction injection. Optional name, depth (full/active/observations/reflections), one repository/session/language selector, history and bounded limit. Omitted depth lists all depth buckets.")
 
 (defn dependencies [get-db!]
   {:load-configuration! config/read-configuration
@@ -31,6 +31,7 @@
                         :repository #js {:type "string"}
                         :session #js {:type "string"}
                         :language #js {:type "string"}
+                        :depth #js {:type "string" :enum #js ["full" "active" "observations" "reflections"]}
                         :history #js {:type "boolean"}
                         :limit #js {:type "integer" :minimum 1 :maximum 20}}})
 
@@ -41,7 +42,7 @@
       (if (empty? remaining)
         (do (core/normalize-read request) request)
         (let [[flag value & more] remaining
-              key (get {"--repository" :repository "--session" :session "--language" :language "--limit" :limit} flag)]
+              key (get {"--repository" :repository "--session" :session "--language" :language "--limit" :limit "--depth" :depth} flag)]
           (if (= flag "--history")
             (do (when (contains? request :history) (config/reject! :invalid-selector "duplicate history flag"))
                 (recur (rest remaining) (assoc request :history true)))
@@ -67,7 +68,7 @@
      "\n"
      (concat
       [(str (quoted name) " | " (clojure.core/name (:type filter))
-            (when (:value filter) (str " " (quoted (:value filter)))) " | " (clojure.core/name freshness))
+            (when (:value filter) (str " " (quoted (:value filter)))) " | depth " (get run :depth "full") " | " (clojure.core/name freshness))
        (str "  Run " (quoted (:id run)) " @ " (quoted (:created-at run)) " | model " (quoted (:provider run)) "/" (quoted (:model-id run)))]
       (when (empty? (:conclusions run)) ["  Successful empty result: no supported conclusions."])
       (mapcat (fn [item]
@@ -164,7 +165,7 @@
                  (swap! active assoc controller work)
                  work))]
     (.registerCommand extension "adam:derivations"
-      #js {:description "Read saved derivations: [name] [--history] [--limit 1..20] [one repository/session/language selector]"
+      #js {:description "Read saved derivations: [name] [--history] [--limit 1..20] [--depth full|active|observations|reflections] [one repository/session/language selector]"
            :handler (fn [arguments ^js ctx]
                       (-> (run! #(parse-command arguments) nil)
                           (.then (fn [result] (.notify (.-ui ctx) (:content result) "info") js/undefined))

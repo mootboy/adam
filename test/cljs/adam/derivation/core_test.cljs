@@ -22,6 +22,56 @@
                  :basis :explicit :scope-type :personal :scope-subject-ids [own]
                  :supporting-memory-ids ["a"] :conflicting-memory-ids []})
 
+(deftest command-depth-changes-visible-evidence-not-authorization-dependencies
+  (async done
+    (let [memories [(observation "a" own "u1")
+                    (assoc (observation "b" own "u2") :dropped? true)
+                    (assoc (observation "r" own "u3") :kind :reflection :supporting-memory-ids ["b"])]
+          cases [{:depth "full" :visible #{"a" "b" "r"} :dependencies #{"a" "b" "r"}}
+                 {:depth "active" :visible #{"a" "r"} :dependencies #{"a" "b" "r"}}
+                 {:depth "observations" :visible #{"a"} :dependencies #{"a"}}
+                 {:depth "reflections" :visible #{"r"} :dependencies #{"b" "r"}}]]
+      (-> (js/Promise.all
+           (to-array (map (fn [{:keys [depth visible dependencies]}]
+                            (let [payload (atom nil)]
+                              (-> (core/refresh! {:measure-input (constantly 1)
+                                                 :execute! (fn [request]
+                                                             (reset! payload (js->clj (js/JSON.parse (:payload request)) :keywordize-keys true))
+                                                             {:finish-reason :stop :conclusions [] :links []})}
+                                                (assoc input :memories memories :depth depth))
+                                  (.then (fn [{:keys [run]}]
+                                           (is (= visible (set (map :id (:memories @payload)))) depth)
+                                           (is (= dependencies (set (:input-memory-ids run))) depth)
+                                           (is (= (count visible) (:input-memory-count run)) depth)
+                                           (is (= depth (:depth run)))
+                                           (is (= depth (:depth @payload)))
+                                           (is (= :current (core/freshness (assoc input :memories memories :depth depth) run)))
+                                           (:derivation-id run)))))) cases)))
+          (.then (fn [ids] (is (= 4 (count (set (array-seq ids)))))))
+          (.catch (fn [_] (is false "depth refresh must complete")))
+          (.finally done)))))
+
+(deftest shallow-depth-does-not-reuse-other-depth-or-relax-hidden-support-authorization
+  (async done
+    (let [calls (atom 0)
+          memories [(observation "a" own "u1") (assoc (observation "b" other "u2") :dropped? true)
+                    (assoc (observation "r" own "u3") :kind :reflection :supporting-memory-ids ["b"])]
+          grant {:owner-id other :reader-id own :permission "read"}
+          source (assoc input :memories memories :grants [grant] :depth "reflections")
+          deps {:measure-input (constantly 1) :execute! (fn [_] (swap! calls inc) {:finish-reason :stop :conclusions [] :links []})}]
+      (-> (core/refresh! deps source)
+          (.then (fn [{:keys [run]}]
+                   (is (= :unavailable (core/freshness (assoc source :grants []) run)))
+                   (is (= :unavailable (core/freshness (assoc source :memories (vec (remove #(= "b" (:id %)) memories))) run)))
+                   (-> (core/refresh! deps (assoc source :depth "observations" :cached-run run :comparison run))
+                       (.then (fn [result]
+                                (is (= :generated (:status result)))
+                                (is (= [:comparison-unavailable] (get-in result [:run :diagnostics])))
+                                (core/refresh! deps (assoc source :grants [] :cached-run run)))))))
+          (.then (fn [_] (is false "hidden support revocation must fail")))
+          (.catch (fn [error] (is (= :unauthorized (config/error-code error))) (is (= 2 @calls))))
+          (.finally done)))))
+
 (deftest response-json-is-closed-and-finish-status-is-not-model-controlled
   (let [json (js/JSON.stringify (clj->js {:conclusions [conclusion] :links []}))]
     (is (= :explicit (:basis (first (:conclusions (core/decode-response json :stop)))))))

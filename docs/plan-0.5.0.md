@@ -88,7 +88,7 @@ Pi refresh commands:
 /adam:derive preferences --language <language>
 ```
 
-`preferences` selects the named YAML configuration. Without a name, run all configured derivations sequentially. An optional single filter applies to each selected derivation. Each derivation makes at most one model call; an unchanged authorized cache needs none. Failure or an oversized input in one derivation does not prevent attempting the others; report outcomes individually.
+`preferences` selects the named YAML configuration. Without a name, run all configured derivations sequentially. An optional single filter and independent `--depth full|active|observations|reflections` apply to each selected derivation. Full is the default; shallow modes omit supporting content without dropping its authorization/provenance dependencies. Each derivation makes at most one model call; an unchanged authorized cache needs none. Failure or an oversized input in one derivation does not prevent attempting the others; report outcomes individually.
 
 Read-only surfaces:
 
@@ -98,7 +98,7 @@ Read-only surfaces:
 adam_derivations
 ```
 
-The tool is available in both Pi and Claude MCP. Listing/reading shows saved scope/filter, freshness, generating provider/model, conclusions and evidence. Default reads show the latest run per result identity; an explicit history option exposes older versions under the same authorization rules. The [stage-1 contract](derivation-contract.md) pins optional name/single-filter arguments, boolean history and bounded item limits. Shared bounded rendering/paging and the host `--history` command boundary are implemented under issue 026.
+The tool is available in both Pi and Claude MCP. Listing/reading shows saved scope/filter, freshness, generating provider/model, conclusions and evidence. Default reads show the latest run per result identity across all depth buckets, clearly labeled; optional depth restricts those buckets; an explicit history option exposes older versions under the same authorization rules. The [stage-1 contract](derivation-contract.md) pins optional name/single-filter arguments, boolean history and bounded item limits. Shared bounded rendering/paging and the host `--history` command boundary are implemented under issue 026.
 
 ## Model input, budgets and completion
 
@@ -107,7 +107,7 @@ The tool is available in both Pi and Claude MCP. Listing/reading shows saved sco
 - Default output allowance is 8,192 tokens, respecting the model's advertised maximum and configurable within it. Pi owns provider transport; token allowances and timeout cancellation are not universal server-side or spending caps. Codex does not transmit the output-token cap. Adam separately rejects accepted generated text over 1 MiB UTF-8 and preserves prior results on invalid/incomplete output.
 - Default model-call timeout is five minutes, configurable. Cancellation is requested on timeout but cannot guarantee immediate cessation of provider billing.
 - Include guidance, schema, memory content, citation/provenance metadata and comparison context in input sizing. Stored producer `tokenCount` values alone are not exact counts for the resolved model or serialized request.
-- If the complete selected input exceeds the configured budget or available context, **stop before calling the model** and ask the user to narrow scope or raise the cap. Do not sample, silently omit evidence, or make extra calls. Language-filter exclusion is an explicit scope choice, not sampling.
+- If the complete selected input exceeds the configured budget or available context, **stop before calling the model** and ask the user to narrow scope or raise the cap. Do not sample, silently omit evidence, or make extra calls. Language-filter exclusion and explicit evidence depth are scope choices, not sampling. Within the selected layer, complete input remains required.
 - Invalid or truncated output is incomplete: preserve the previous successful result. A validated empty result is successful and cached.
 
 ### Read-only sizing evidence
@@ -161,7 +161,7 @@ This is the agreed design proposal, not installed schema. Producer `AdamObservat
 (AdamUser)-[:OWNS_DERIVATION]->(AdamDerivation)
 ```
 
-One deterministic identity per **requesting user + configuration name + normalized filter type/value**. An unfiltered result and a Python-filtered result are separate buckets. Configuration version and model do not change this identity. YAML remains configuration authority.
+One deterministic identity per **requesting user + configuration name + normalized filter type/value + evidence depth**. An unfiltered result and a Python-filtered result are separate buckets. Configuration version and model do not change this identity. YAML remains configuration authority.
 
 Proposed properties:
 

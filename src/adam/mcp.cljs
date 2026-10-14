@@ -86,6 +86,7 @@
                                  :repository (-> (.string z) (.optional))
                                  :session (-> (.string z) (.optional))
                                  :language (-> (.string z) (.optional))
+                                 :depth (-> (.enum z #js ["full" "active" "observations" "reflections"]) (.optional))
                                  :history (-> (.boolean z) (.optional))
                                  :limit (-> (.number z) (.int) (.min 1) (.max 20) (.optional))}) (.strict))
                :outputSchema (-> (.object z #js {:status (.enum z #js ["ok" "empty"])
