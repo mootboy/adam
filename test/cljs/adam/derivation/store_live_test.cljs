@@ -2,6 +2,7 @@
   (:require [adam.derivation.config :as config]
             [adam.derivation.core :as core]
             [adam.derivation.pi :as pi]
+            [adam.derivation.read :as saved-read]
             [adam.derivation.store :as store]
             [cljs.test :refer [async deftest is]]
             ["neo4j-driver" :as neo4j]
@@ -339,7 +340,14 @@
                    (.run session "MATCH (d:AdamDerivation {id: $id}) RETURN d.refreshToken AS token, d.lastRefreshOutcome AS outcome" #js {:id id})))
           (.then (fn [^js result]
                    (let [^js row (first (array-seq (.-records result)))]
-                     (is (nil? (.get row "token"))) (is (= "failed" (.get row "outcome"))))))
+                     (is (nil? (.get row "token"))) (is (= "failed" (.get row "outcome"))))
+                   (saved-read/execute! {:load-configuration! (fn [] recipes)
+                                         :load-snapshot! #(store/read-snapshot! db %1 %2)}
+                                        {:name name :history true})))
+          (.then (fn [result]
+                   (is (.includes (:content result) "current"))
+                   (is (.includes (:content result) "Successful empty result"))
+                   (is (= 2 @calls) "reading never executes the model")))
           (.catch (fn [error] (is false (.-stack error))))
           (.finally (fn []
                       (-> (.run session "MATCH (d:AdamDerivation {id: $id}) OPTIONAL MATCH (d)-[:HAS_RUN]->(r)
@@ -504,14 +512,14 @@
           reader (str "urn:adam:user:" uuid) other (str "urn:adam:user:" uuid "-other")
           sid (str "urn:adam:session:" uuid ":pi:ownership-race")
           ids [reader other sid (str "entry:" uuid) (str "memory:" uuid)]
-          driver ((.-driver neo4j) (aget env "ADAM_TEST_NEO4J_URI")
+          ^js driver ((.-driver neo4j) (aget env "ADAM_TEST_NEO4J_URI")
                   (.basic (.-auth neo4j) (aget env "ADAM_TEST_NEO4J_USERNAME") (aget env "ADAM_TEST_NEO4J_PASSWORD")))
           database (or (aget env "ADAM_TEST_NEO4J_DATABASE") "neo4j")
           session (.session driver #js {:database database})
           params (clj->js {:ids ids :raw "{\"id\":\"u\",\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"Use pure functions\"}}"})
           proxy #js {:session
                      (fn [options]
-                       (let [actual (.session driver options)]
+                       (let [^js actual (.session driver options)]
                          #js {:close (fn [] (.close actual))
                               :executeRead
                               (fn [work]

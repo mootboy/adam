@@ -183,7 +183,7 @@ test("the release tarball is complete and runs without source compilation", asyn
     );
     assert.deepEqual(Object.keys(mcpConfiguration.mcpServers), ["adam"]);
     const tools = await probePluginMcpServer(packageRoot, temporaryDirectory);
-    assert.deepEqual(tools.map(({ name }) => name), ["adam_file_context"]);
+    assert.deepEqual(tools.map(({ name }) => name), ["adam_file_context", "adam_derivations"]);
     await access(path.join(packageRoot, "mcp.js"), constants.X_OK);
     await access(path.join(packageRoot, "hook.js"), constants.X_OK);
     await access(path.join(packageRoot, "worker.js"), constants.X_OK);

@@ -56,8 +56,8 @@ test("packaged Pi derives explicitly, reuses authorized results and preserves la
       import assert from 'node:assert/strict';
       import { appendFile } from 'node:fs/promises';
       import extension from './extension.js';
-      const commands = new Map(), events = new Map(), notices = [];
-      const runtime = extension({ registerCommand(n, c) { commands.set(n, c); }, registerTool() {},
+      const commands = new Map(), events = new Map(), tools = new Map(), notices = [];
+      const runtime = extension({ registerCommand(n, c) { commands.set(n, c); }, registerTool(tool) { tools.set(tool.name, tool); },
         on(n, f) { events.set(n, f); }, async exec() { return { code: 1, stdout: '', stderr: '' }; } });
       let count = 0, truncated = false;
       const ctx = { cwd: ${JSON.stringify(root)}, hasUI: true, waitForIdle: async () => {},
@@ -81,6 +81,12 @@ test("packaged Pi derives explicitly, reuses authorized results and preserves la
       assert.equal(notices.at(-1), 'preferences: generated');
       await commands.get('adam:derive').handler('preferences', ctx);
       assert.equal(notices.at(-1), 'preferences: reused'); assert.equal(count, 1);
+      await commands.get('adam:derivations').handler('preferences', ctx);
+      const commandRead = notices.at(-1);
+      const toolRead = await tools.get('adam_derivations').execute('read', { name: 'preferences' }, new AbortController().signal, undefined, ctx);
+      assert.equal(toolRead.content[0].text, commandRead);
+      assert.match(commandRead, /current/); assert.match(commandRead, /Prefer small functions in this context/);
+      assert.ok(!commandRead.includes('Please use small functions.')); assert.equal(count, 1);
       truncated = true; await appendFile(${JSON.stringify(configPath)}, ${JSON.stringify('# configuration comment alone does not change fingerprints\n')});
       await commands.get('adam:derive').handler('preferences', ctx); assert.equal(count, 1);
       const fs = await import('node:fs/promises');
@@ -93,6 +99,29 @@ test("packaged Pi derives explicitly, reuses authorized results and preserves la
     const result = await probe(program, env);
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stderr, /packaged derivation acceptance passed/);
+    const mcpResult = await probe(`
+      import assert from 'node:assert/strict';
+      import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+      import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+      const client = new Client({ name: 'isolated-saved-read', version: '1' });
+      const transport = new StdioClientTransport({ command: process.execPath,
+        args: [${JSON.stringify(path.resolve('mcp.js'))}], env: process.env });
+      try {
+        await client.connect(transport);
+        const listing = await client.listTools();
+        const definition = listing.tools.find(tool => tool.name === 'adam_derivations');
+        assert.equal(definition.annotations.readOnlyHint, true); assert.ok(definition.outputSchema);
+        const read = await client.callTool({ name: 'adam_derivations', arguments: { name: 'preferences' } });
+        assert.ok(!read.isError); assert.match(read.content[0].text, /Prefer small functions in this context/);
+        assert.match(read.content[0].text, /outdated/);
+        assert.equal(read.structuredContent['result-count'], 1);
+        const invalid = await client.callTool({ name: 'adam_derivations', arguments: { name: 'preferences', readerId: 'other' } });
+        assert.ok(invalid.isError);
+      } finally { await client.close(); }
+      console.error('saved Pi/MCP parity acceptance passed');
+    `, env);
+    assert.equal(mcpResult.code, 0, mcpResult.stderr);
+    assert.match(mcpResult.stderr, /saved Pi\/MCP parity acceptance passed/);
     const saved = await session.run(`MATCH (d:AdamDerivation {id: $id})-[:LATEST_RUN]->(r)
       OPTIONAL MATCH (d)-[:HAS_RUN]->(history)
       RETURN d.refreshToken AS token, d.lastRefreshOutcome AS outcome, count(history) AS runs, r.inputMemoryCount AS inputs`, { id: derivationId });

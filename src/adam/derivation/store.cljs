@@ -59,19 +59,20 @@
               (.then (fn [result]
                        (if (seq (rows result)) (work tx) {:status :unavailable})))))))))
 
+(defn- require-native-index! [^js tx]
+  (-> (.run tx "SHOW INDEXES YIELD labelsOrTypes, properties, state, type
+                WHERE labelsOrTypes = ['AdamEntry'] AND properties = ['entryId'] AND state = 'ONLINE' AND type = 'RANGE'
+                RETURN count(*) AS count")
+      (.then (fn [result]
+               (when-not (some-> (first (rows result)) (field "count") integer pos?)
+                 (config/reject! :schema-unavailable "online native-entry index is required"))))))
+
 (defn check-schema! [db]
   (with-session! db
     (fn [^js session]
       (.executeRead session
-        (fn [^js tx]
-          (-> (require-schema! tx)
-              (.then (fn [_]
-                       (.run tx "SHOW INDEXES YIELD labelsOrTypes, properties, state
-                                 WHERE labelsOrTypes = ['AdamEntry'] AND properties = ['entryId'] AND state = 'ONLINE'
-                                 RETURN count(*) AS count")))
-              (.then (fn [result]
-                       (when-not (some-> (first (rows result)) (field "count") integer pos?)
-                         (config/reject! :schema-unavailable "online native-entry index is required"))))))))))
+        (fn [tx]
+          (-> (require-schema! tx) (.then #(require-native-index! tx))))))))
 
 (defn ensure-schema! [db]
   (with-session! db
@@ -860,7 +861,7 @@
                                                        [(:streamId duplicate) (:entryId duplicate)])))])
                                    sources)))))))))
 
-(defn- stream-activity! [^js tx principal source]
+(defn- stream-activity! [^js tx principal source & [signal]]
   (js/Promise.
     (fn [resolve reject]
       (let [entries #js [] failed? (volatile! false)
@@ -879,7 +880,7 @@
              RETURN e {.entryId, streamId: coalesce(e.streamId, 'main'), .rawJson} AS activityEntry"
             (clj->js {:readerId principal :sessionId (:id source) :ownerId (first (:ownerIds source))}))
           #js {:onNext (fn [row]
-                         (when-not @failed?
+                         (when (and (not @failed?) (not (and signal (.-aborted signal))))
                            (try
                            (let [entry (field row "activityEntry")]
                              (when-let [compact (parsed-activity source
@@ -890,10 +891,12 @@
                :onError fail!
                :onCompleted (fn [_]
                               (when-not @failed?
-                                (try (resolve (activity-source (assoc source :entries (array-seq entries))))
+                                (try (when (and signal (.-aborted signal))
+                                       (config/reject! :cancelled "source read cancelled"))
+                                     (resolve (activity-source (assoc source :entries (array-seq entries))))
                                      (catch :default error (fail! error)))))})))))
 
-(defn- activity-input! [^js tx principal memories]
+(defn- activity-input! [^js tx principal memories & [signal]]
   (if (empty? memories)
     (js/Promise.resolve memories)
     (-> (.run tx
@@ -917,7 +920,7 @@
                            (.then pending
                              (fn [sources]
                                (let [source (js->clj (field row "activitySession") :keywordize-keys true)]
-                                 (-> (stream-activity! tx principal source)
+                                 (-> (stream-activity! tx principal source signal)
                                      (.then (fn [compact] (cond-> sources compact (assoc (:id compact) compact)))))))))
                          (js/Promise.resolve {}) (rows result))))
         (.then (fn [sources]
@@ -972,6 +975,71 @@
                                                                        (.then (fn [item] (conj items item)))))))
                                                 (js/Promise.resolve []) records)
                                         (.then (fn [items] {:items items :truncated? truncated?}))))))))))))))
+
+(defn- checked-page! [tx principal records]
+  (reduce (fn [pending record]
+            (.then pending (fn [items]
+                             (-> (read-record! tx principal record)
+                                 (.then #(conj items %))))))
+          (js/Promise.resolve []) records))
+
+(defn- freshness-snapshot! [tx principal records items truncated? signal]
+  (let [base {:reader-id principal :items items :truncated? truncated? :memories [] :grants []}]
+    (if-not (some #(= :available (:status %)) items)
+      (js/Promise.resolve base)
+      (-> (require-native-index! tx)
+          (.then (fn [_] (input-memories! tx principal)))
+          (.then #(activity-input! tx principal % signal))
+          (.then (fn [memories]
+                   ;; Reauthorize after potentially long native streaming. Managed
+                   ;; reads are read-committed, not an atomic point-in-time snapshot.
+                   (-> (checked-page! tx principal records)
+                       (.then (fn [checked]
+                                (assoc base :items checked :memories memories
+                                       :grants (mapv (fn [owner] {:owner-id owner :reader-id principal :permission "read"})
+                                                     (sort (disj (set (map :owner-id memories)) principal)))))))))))))
+
+(defn- abortable-read! [^js session signal work]
+  (if-not signal
+    (work)
+    (let [cancel (js/Promise.withResolvers)
+          closing (volatile! nil)
+          work-promise (-> (js/Promise.resolve)
+                           (.then (fn [_]
+                                    (when (.-aborted signal) (config/reject! :cancelled "saved read cancelled"))
+                                    (work))))
+          on-abort (fn []
+                     ((.-reject cancel) (ex-info "saved read cancelled" {:type :derivation :code :cancelled}))
+                     ;; Session.close cancels active Result subscriptions in the driver.
+                     (vreset! closing (-> (.close session) (.catch (fn [_] nil)))))]
+      (.addEventListener signal "abort" on-abort #js {:once true})
+      (when (.-aborted signal) (on-abort))
+      (-> (js/Promise.race
+           #js [(.-promise cancel) work-promise])
+          (.finally (fn []
+                      (.removeEventListener signal "abort" on-abort)
+                      ;; Hold the process gate until cancelled work and the FIRST
+                      ;; close wind down; a second close can be an immediate no-op.
+                      (when @closing (js/Promise.allSettled #js [@closing work-promise]))))))))
+
+(defn read-snapshot!
+  "Read-only full freshness: complete authorized generation rows/anchors; no DDL/repair."
+  ([db request] (read-snapshot! db request nil))
+  ([db request signal]
+   (-> (js/Promise.resolve)
+       (.then (fn []
+                (core/normalize-read request)
+                (when (and signal (.-aborted signal)) (config/reject! :cancelled "saved read cancelled"))
+                (with-session! (assoc db :fetch-size 100)
+                  (fn [^js session]
+                    (abortable-read! session signal
+                      (fn []
+                        (.executeRead session
+                          (fn [tx]
+                            (-> (run-records! tx (:principal db) request)
+                                (.then (fn [{:keys [records truncated?]}]
+                                         (-> (checked-page! tx (:principal db) records)
+                                             (.then #(freshness-snapshot! tx (:principal db) records % truncated? signal)))))))))))))))))
 
 (defn complete-reuse! [db request token run]
   (-> (js/Promise.resolve)

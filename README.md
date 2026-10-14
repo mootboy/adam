@@ -18,7 +18,7 @@ Adam provides a full [Pi](https://pi.dev) extension and a [Claude Code](https://
 - [`docs/plan-0.3.3.md`](docs/plan-0.3.3.md) — active file-memory retrieval.
 - [`docs/plan-0.4.0.md`](docs/plan-0.4.0.md) — 0.4.0 infrastructure release scope and separate standalone-producer/native-reader follow-up.
 - [`docs/plan-0.5.0.md`](docs/plan-0.5.0.md) — planned configurable memory derivations, explicit Pi generation, multi-user grants and provenance-bearing result history.
-- [`docs/derivation-contract.md`](docs/derivation-contract.md) — implemented derivation contracts/core, graph authorization/history and explicit Pi generation; saved-result read surfaces remain planned.
+- [`docs/derivation-contract.md`](docs/derivation-contract.md) — implemented derivation contracts/core, graph authorization/history, explicit Pi generation and read-only Pi/Claude saved-result browsing.
 - [`docs/acceptance-matrix.md`](docs/acceptance-matrix.md) — deterministic and live acceptance cases for incremental delivery.
 - [`docs/issues/`](docs/issues/) — repository-local issue tracker and issue template.
 
@@ -148,7 +148,20 @@ Output defaults to 8192 tokens and model-call timeout to five minutes; YAML `lim
 
 Pi awaits the command handler, so the invoking window may be occupied for input loading and generation. Cancellation is **shutdown-only**, plus the configured model-call timeout; Esc/turn-abort signals do not control this separate command. Abort requests do not promise instant billing cessation. Graph cleanup/shutdown may wait for driver timeouts; failed release falls back to lease expiry. Same-bucket refreshes report busy; different buckets are independent. Renewal failure cancels conservatively rather than retrying model work. `reused` describes the processed snapshot, not current freshness.
 
-Saved-result Pi/Claude browsing remains stage 4. Validation here uses fake providers and disposable Neo4j only; real-provider quality/cost probes require separate approval.
+Read saved results without generating or repairing anything:
+
+```text
+/adam:derivations
+/adam:derivations preferences --history --limit 10
+/adam:derivations preferences --repository git@github.com:example/project.git
+adam_derivations({"name":"preferences","history":true,"limit":10})
+```
+
+`adam_derivations` is read-only in both Pi and Claude MCP when Neo4j is configured. Optional name, one repository/session/language selector, history and limit (1–20, default 10) share the command contract. Omitting a selector lists all matching filter buckets. Results show scoped conclusions, prominent conflict/correction links, model, current configuration/evidence freshness and authorized source/producer/support locators. Free-form fields are JSON-quoted, not instructions. Output is capped at 200 lines/12,000 UTF-8 bytes with explicit omissions. Missing/invalid configuration are distinct; unavailable/revoked evidence withholds conclusions, and successful empty outcomes remain inspectable. Historical freshness is compared against current evidence/configuration, not against its own saved inputs.
+
+**Read cost:** truthful freshness currently rechecks the complete authorized memory corpus and streams retained native source activity, even for a small result page or filter. This can read hundreds of MB in a long transaction; it is not a cheap lookup or fixed-heap guarantee. Empty or entirely denied pages skip source loading. Avoid casual/repeated agent calls. One saved read per process is permitted; the command and tool share this gate, so `busy` means another read is active, not an authorization error. Pi/MCP tools propagate request cancellation; Pi shutdown and MCP stdin shutdown cancel and await read cleanup. The Pi command has shutdown cancellation rather than an unrelated agent-turn signal. Cleanup may wait for driver timeouts. Server `db.transaction.timeout` may stop a long read (`read-timeout`); selector filtering does not currently reduce full-corpus verification. Reads use a separate lazy pool so they cannot trigger replica migration/initialization or DDL. Reauthorization after streaming respects Neo4j read-committed isolation; this is not an atomic cross-query snapshot.
+
+Validation uses fake providers and disposable Neo4j only; real-provider quality/cost probes require separate approval.
 
 ## Releases
 

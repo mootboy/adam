@@ -26,6 +26,41 @@
                      :close (fn [] (swap! closes inc) (js/Promise.resolve nil))}]
     {:driver #js {:session (fn [_] session)} :calls calls :closes closes :transactions transactions})))
 
+(deftest saved-read-snapshot-is-empty-without-source-streaming-or-ddl
+  (async done
+    (let [{:keys [driver calls closes transactions]} (recording-driver (fn [_ _] []))
+          db (store/with-driver driver "neo4j" reader)]
+      (-> (store/read-snapshot! db {:history true :limit 2})
+          (.then (fn [snapshot]
+                   (is (= {:reader-id reader :memories [] :grants [] :items [] :truncated? false} snapshot))
+                   (is (= 1 @transactions))
+                   (is (= 1 @closes))
+                   (is (= 1 (count @calls)))
+                   (is (not-any? #(re-find #"CREATE|SET|DELETE|rawJson" (:query %)) @calls))))
+          (.catch (fn [error] (is false (.-stack error)))) (.finally done)))))
+
+(deftest aborting-a-saved-read-closes-its-session-and-pre-abort-opens-nothing
+  (async done
+    (let [opened (atom 0) closed (atom 0) entered (js/Promise.withResolvers)
+          work (js/Promise.withResolvers) winding-down (js/Promise.withResolvers) settled? (atom false)
+          driver #js {:session (fn [_]
+                                 (swap! opened inc)
+                                 #js {:executeRead (fn [_] ((.-resolve entered)) (.-promise work))
+                                      :close (fn [] (swap! closed inc) ((.-reject work) (js/Error. "cancelled backend")) (.-promise winding-down))})}
+          db (store/with-driver driver "neo4j" reader) control (js/AbortController.)
+          result (-> (store/read-snapshot! db {} (.-signal control)) (.finally #(reset! settled? true)))]
+      (-> (.-promise entered)
+          (.then (fn [_] (.abort control) (js/Promise.resolve)))
+          (.then (fn [_]
+                   (is (false? @settled?) "read does not finish before first session.close winds down")
+                   ((.-resolve winding-down))
+                   (-> result (.catch config/error-code))))
+          (.then (fn [code]
+                   (is (= :cancelled code)) (is (pos? @closed))
+                   (store/read-snapshot! db {} (.-signal control))))
+          (.catch (fn [error] (is (= :cancelled (config/error-code error))) (is (= 1 @opened))))
+          (.finally done)))))
+
 (deftest lease-interface-keeps-principal-and-bucket-fixed
   (async done
     (let [{:keys [driver calls closes transactions]}

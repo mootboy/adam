@@ -3,7 +3,9 @@
             [clojure.string :as string]
             ["yaml" :as yaml]
             ["node:buffer" :refer [Buffer]]
-            ["node:path" :as path]))
+            ["node:path" :as path]
+            ["node:fs" :as fs]
+            ["node:os" :refer [homedir]]))
 
 (defn reject! [code message]
   (throw (ex-info message {:type :derivation :code code})))
@@ -86,3 +88,27 @@
     (when-not (s/valid? ::configuration value)
       (reject! :invalid-config "invalid derivation configuration"))
     (into (sorted-map) (map (fn [[key recipe]] [(name key) (compile-recipe recipe)]) (:derivations value)))))
+
+
+(defn read-configuration []
+  (let [root (or (aget js/process.env "XDG_CONFIG_HOME") (path/join (homedir) ".config"))
+        filename (config-path root)]
+    (when-not (number? (.-O_NOFOLLOW (.-constants fs)))
+      (reject! :invalid-config "safe no-follow configuration reads are unsupported on this platform"))
+    (try
+      (let [descriptor (.openSync fs filename (bit-or (.-O_RDONLY (.-constants fs)) (.-O_NOFOLLOW (.-constants fs)) (.-O_NONBLOCK (.-constants fs))))
+            buffer (.alloc Buffer 262145)]
+        (try
+          (when-not (.isFile (.fstatSync fs descriptor))
+            (reject! :invalid-config "configuration must be a regular file"))
+          (let [size (loop [offset 0]
+                       (if (= offset 262145) offset
+                         (let [count (.readSync fs descriptor buffer offset (- 262145 offset) offset)]
+                           (if (zero? count) offset (recur (+ offset count))))))]
+            (when (> size 262144) (reject! :invalid-config "configuration exceeds 256 KiB"))
+            (parse-config (.decode (js/TextDecoder. "utf-8" #js {:fatal true}) (.subarray buffer 0 size))))
+          (finally (.closeSync fs descriptor))))
+      (catch :default error
+        (if (error-code error) (throw error)
+            (reject! (if (= "ENOENT" (.-code error)) :not-configured :invalid-config)
+                            "derivation configuration is missing or unreadable"))))))

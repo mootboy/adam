@@ -303,7 +303,25 @@ The revised [0.4 plan](plan-0.4.0.md) scopes 0.4.0 to implemented infrastructure
 | Complete unchanged empty/nonempty result | Authorized transactional reuse clears lease without creating a run (**live**) |
 | Truncation/model/publication failure | Preserves prior latest and releases token; normal mirroring remains functional (**live**) |
 | Real packaged Pi command with synthetic provider | Explicit generation/reuse, unlinked input inclusion, comment-only cache reuse, truncation preservation and scoped cleanup (**live**) |
-| Saved result browsing/real-provider capacity or quality | Deferred to later stages and separately approved probes; no certification inferred from fake providers |
+| Real-provider capacity or quality | Separately approved probes; no certification inferred from fake providers |
+
+## Saved derivation reads (0.5 stage 4)
+
+| Scenario | Expected result |
+| --- | --- |
+| Invalid name/combined selector/history/limit/reader override | Reject before config/storage IO |
+| Available latest/history/empty result | Same Pi command/tool and MCP bounded scope/model/evidence rendering; reads invoke no model (**live**) |
+| Recipe/source changes or only model changes | Truthful current/outdated/unavailable state; model-only changes do not stale saved results |
+| Configuration absent versus malformed/unsafe | Distinct not-configured/invalid-config metadata; no raw error disclosure |
+| Multiline/control-character model/metadata values | JSON-quoted fields cannot inject rendered headings; seeded property regression |
+| Grant revoked before read or during source streaming | Withhold conclusions and provenance after final authorization check (**live**) |
+| Dependency relationships missing after source rebuild | Deny until separate explicit authorized repair; reads never repair (**live**) |
+| Narrow selector/small page | Full authorized native verification is explicitly costly; no cheap-current claim |
+| Concurrent command/tool reads | Process-wide busy gate; cancellation holds the gate through work/session-close cleanup |
+| Tool cancellation or host shutdown | Propagate AbortSignal, close transaction/session, stop parsing; shutdown awaits cleanup |
+| Driver transaction timeout | Content-free read-timeout, not an authorization diagnosis |
+| Entirely denied/empty page | Skip full source stream and its index prerequisite |
+| Worker bundle | No derivation-read dependency; ordinary replication/worker behavior remains independent |
 
 ## Side-by-side proof
 
