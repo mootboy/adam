@@ -158,3 +158,62 @@
                           (.catch (fn [error] (is false (str "exact cleanup failed: " (.-message error)))))
                           (.finally #(.close session)) (.finally #(.close driver)))))
           (.finally done)))))
+
+(deftest live-depth-buckets-preserve-hidden-dependencies-and-filter-history
+  (async done
+    (let [env js/process.env uuid (randomUUID) reader (str "urn:adam:user:" uuid)
+          sid (str "urn:adam:session:" uuid ":pi:depth-fixture")
+          mids (mapv #(str "urn:adam:observation:" uuid ":pi:depth-fixture:fixture:" %) ["a" "b"])
+          rid (str "urn:adam:reflection:" uuid ":pi:depth-fixture:fixture:r")
+          name "depth-preferences" request {:name name}
+          ^js driver ((.-driver neo4j) (aget env "ADAM_TEST_NEO4J_URI")
+                      (.basic (.-auth neo4j) (aget env "ADAM_TEST_NEO4J_USERNAME") (aget env "ADAM_TEST_NEO4J_PASSWORD")))
+          database (or (aget env "ADAM_TEST_NEO4J_DATABASE") "neo4j")
+          ^js session (.session driver #js {:database database}) db (store/with-driver driver database reader)
+          recipe (get (config/parse-config "derivations:\n  depth-preferences:\n    version: 1\n    guidance: Preserve attribution.\n") name)
+          registered (atom (into [reader sid rid] mids))]
+      (-> (store/ensure-schema! db)
+          (.then (fn [_] (store/await-schema! db)))
+          (.then (fn [_]
+                   (.run session
+                     "CREATE (u:AdamUser {id: $reader}), (s:AdamSession {id: $sid, sourceKind: 'pi', sourceSessionId: 'depth-fixture'})
+                      CREATE (u)-[:OWNS]->(s)
+                      CREATE (a:AdamObservation {id: $a, producer: 'fixture', memoryId: 'a', content: 'Active evidence'})
+                      CREATE (b:AdamObservation {id: $b, producer: 'fixture', memoryId: 'b', content: 'Hidden support', dropped: true})
+                      CREATE (r:AdamReflection {id: $r, producer: 'fixture', memoryId: 'r', content: 'A reflection', supportingObservationIds: ['b']})
+                      CREATE (s)-[:HAS_MEMORY]->(a), (s)-[:HAS_MEMORY]->(b), (s)-[:HAS_MEMORY]->(r), (r)-[:SUPPORTED_BY]->(b)"
+                     #js {:reader reader :sid sid :a (first mids) :b (second mids) :r rid})))
+          (.then (fn [_]
+                   (reduce (fn [pending depth]
+                             (.then pending
+                               (fn [_]
+                                 (let [request (assoc request :depth depth)]
+                                   (-> (store/load-input! db request)
+                                       (.then (fn [snapshot]
+                                                (core/refresh!
+                                                  {:measure-input (constantly 200) :execute! (fn [_] {:finish-reason :stop :conclusions [] :links []})}
+                                                  (merge snapshot {:name name :filter {:type :none} :depth depth :recipe recipe
+                                                                   :model {:provider "fake" :id "fixture" :context-window 30000 :max-output-tokens 8192}}))))
+                                       (.then (fn [{:keys [run]}]
+                                                (swap! registered into [(:id run) (:derivation-id run)])
+                                                (when (= "reflections" depth)
+                                                  (is (= #{rid (second mids)} (set (:input-memory-ids run))))
+                                                  (is (= 1 (:input-memory-count run))))
+                                                (-> (store/acquire-refresh! db request 60000)
+                                                    (.then #(store/publish-refresh! db request (:token %) run)))))
+                                       (.then (fn [result] (is (= :published (:status result)) depth))))))))
+                           (js/Promise.resolve) ["full" "active" "observations" "reflections"])))
+          (.then (fn [_] (store/read-runs! db request)))
+          (.then (fn [result]
+                   (is (= 4 (count (:items result))))
+                   (is (= #{"full" "active" "observations" "reflections"} (set (map #(get-in % [:run :depth]) (:items result)))))
+                   (store/read-runs! db (assoc request :depth "reflections"))))
+          (.then (fn [result]
+                   (is (= 1 (count (:items result))))
+                   (is (= "reflections" (get-in result [:items 0 :run :depth])))))
+          (.catch (fn [error] (is false (str "isolated depth round trip failed: " (.-message error)))))
+          (.finally (fn []
+                      (-> (.run session "MATCH (n) WHERE n.id IN $ids DETACH DELETE n" #js {:ids (clj->js @registered)})
+                          (.finally (fn [] (.close session)))
+                          (.finally (fn [] (.close driver)))
+                          (.finally done))))))))

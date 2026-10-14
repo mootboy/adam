@@ -134,7 +134,7 @@
                              :signal (.-signal controller)}
                             (assoc input :name (:name request) :recipe recipe
                                    :filter (or (:filter (core/normalize-read request)) {:type :none})
-                                   :model (:model adapter) :cached-run (:comparison input))))))]
+                                   :depth (get request :depth "full") :model (:model adapter) :cached-run (:comparison input))))))]
     (when signal
       (.addEventListener signal "abort" abort! #js {:once true})
       (when (.-aborted signal) (abort!)))
@@ -193,7 +193,7 @@
               (config/reject! :invalid-selector "use a configured name and at most one repository/session/language filter"))
             request)
         (let [[flag value & more] remaining
-              key (get {"--repository" :repository "--session" :session "--language" :language} flag)]
+              key (get {"--repository" :repository "--session" :session "--language" :language "--depth" :depth} flag)]
           (when-not (and key value (not (contains? request key)))
             (config/reject! :invalid-selector "invalid derivation command arguments"))
           (recur more (assoc request key value)))))))
@@ -204,7 +204,7 @@
                                       :or {load-config! read-configuration provider-fn provider}}]
   (let [active (atom #{}) closed? (atom false)]
     (.registerCommand extension "adam:derive"
-      #js {:description "Explicitly refresh configured derivations: [name] [--repository origin|--session urn|--language language]"
+      #js {:description "Explicitly refresh configured derivations: [name] [--depth full|active|observations|reflections] [--repository origin|--session urn|--language language]"
            :handler
            (fn [arguments ^js ctx]
              (let [controller (js/AbortController.)
@@ -229,9 +229,10 @@
                                                   :provider! #(provider-fn ctx %)} recipes request)))))))
                        (.then (fn [outcomes]
                                 (.notify (.-ui ctx)
-                                  (string/join "\n" (map (fn [{:keys [name status code validation-reason measured-input-tokens available-input-tokens]}]
+                                  (string/join "\n" (map (fn [{:keys [name status code validation-reason measured-input-tokens available-input-tokens depth]}]
                                                            (str name ": " (clojure.core/name status)
                                                                 (when code (str " (" (clojure.core/name code) ")"))
+                                                                (when depth (str "; depth " depth))
                                                                 (when validation-reason (str "; validation " (clojure.core/name validation-reason)))
                                                                 (when available-input-tokens
                                                                   (str "; conservative input " measured-input-tokens " / " available-input-tokens

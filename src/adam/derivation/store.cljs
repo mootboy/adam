@@ -95,8 +95,8 @@
     (config/reject! :invalid-selector "a configured name and single refresh selector are required"))
   (let [{:keys [name filter]} (core/normalize-read request)
         filter (or filter {:type :none})]
-    {:readerId principal :derivationId (core/derivation-id principal name filter)
-     :name name :filterType (clojure.core/name (:type filter)) :filterValue (:value filter)}))
+    {:readerId principal :derivationId (core/derivation-id principal name filter (get request :depth "full"))
+     :depth (get request :depth "full") :name name :filterType (clojure.core/name (:type filter)) :filterValue (:value filter)}))
 
 (defn acquire-refresh! [db request lease-ms]
   (-> (js/Promise.resolve)
@@ -110,7 +110,7 @@
                      (-> (.run tx
                            "MATCH (u:AdamUser {id: $readerId})
                             MERGE (d:AdamDerivation {id: $derivationId})
-                            ON CREATE SET d.name = $name, d.filterType = $filterType, d.filterValue = $filterValue
+                            ON CREATE SET d.name = $name, d.filterType = $filterType, d.filterValue = $filterValue, d.depth = $depth
                             WITH u, d
                             WHERE NOT EXISTS { MATCH (other:AdamUser)-[:OWNS_DERIVATION]->(d) WHERE other <> u }
                             MERGE (u)-[:OWNS_DERIVATION]->(d)
@@ -224,7 +224,7 @@
          (s/keys :req-un [::created-at ::configuration-version ::configuration-fingerprint ::configuration-snapshot-json
                           ::input-fingerprint ::model ::provider ::model-id ::input-memory-count ::measured-input-tokens
                           ::dependency-fingerprints ::dependency-roles ::comparison-run-id ::diagnostics ::core/links])
-         (config/only-keys #{:id :derivation-id :created-at :configuration-version :configuration-fingerprint
+         (config/only-keys #{:id :derivation-id :depth :created-at :configuration-version :configuration-fingerprint
                             :configuration-snapshot-json :input-fingerprint :model :provider :model-id
                             :input-memory-count :measured-input-tokens :input-memory-ids :dependency-fingerprints
                             :dependency-roles :comparison-run-id :diagnostics :conclusions :links})
@@ -233,10 +233,10 @@
          #(s/valid? (s/coll-of ::core/link :kind vector? :distinct true) (:links %))
          #(= (set (:input-memory-ids %)) (set (keys (:dependency-fingerprints %))) (set (keys (:dependency-roles %))))
          #(or (:comparison-run-id %) (not-any? (fn [roles] (contains? roles :comparison-dependency)) (vals (:dependency-roles %))))
-         #(= (:input-memory-count %) (count (filter (fn [[_ roles]] (some roles [:evidence :historical-support])) (:dependency-roles %))))
+         #(= (:input-memory-count %) (count (filter (fn [[_ roles]] (core/visible-evidence? (get % :depth "full") {:roles roles})) (:dependency-roles %))))
          #(every? (fn [id] (contains? (get (:dependency-roles %) id) :evidence))
                   (mapcat :supporting-memory-ids (:conclusions %)))
-         #(every? (fn [id] (some (get (:dependency-roles %) id) [:evidence :historical-support]))
+         #(every? (fn [id] (core/visible-evidence? (get % :depth "full") {:roles (get (:dependency-roles %) id)}))
                   (mapcat :conflicting-memory-ids (:conclusions %)))
          #(= (:provider %) (get-in % [:model :provider]))
          #(= (:model-id %) (get-in % [:model :id]))
@@ -299,6 +299,7 @@
   (let [params (bucket db request)]
     (when-not (and (s/valid? ::publication run)
                    (= core/policy-version (aget (js/JSON.parse (:configuration-snapshot-json run)) "policy-version"))
+                   (= (:depth params) (get run :depth "full"))
                    (= (:derivationId params) (:derivation-id run)))
       (config/reject! :invalid-output "a complete validated candidate for this derivation is required"))
     params))
@@ -427,17 +428,18 @@
 ;; Capture immutable run metadata first. Authorization is always resolved from
 ;; current source ownership, never from a cached list of permitted users.
 (defn- run-records! [^js tx principal request & [derivation-id]]
-  (let [{:keys [name filter history? limit]} (core/normalize-read request)]
+  (let [{:keys [name filter history? limit depth]} (core/normalize-read request)]
     (-> (.run tx
           "MATCH (:AdamUser {id: $readerId})-[:OWNS_DERIVATION]->(d:AdamDerivation)-[:HAS_RUN]->(r:AdamDerivationRun)
            WHERE ($name IS NULL OR d.name = $name)
              AND ($derivationId IS NULL OR d.id = $derivationId)
+             AND ($depth IS NULL OR coalesce(d.depth, 'full') = $depth)
              AND ($filterType IS NULL OR (d.filterType = $filterType AND d.filterValue = $filterValue))
              AND ($history OR EXISTS { MATCH (d)-[:LATEST_RUN]->(r) })
            WITH DISTINCT d, r ORDER BY r.createdAt DESC, r.id LIMIT $limit
            OPTIONAL MATCH (parent:AdamDerivation)-[:HAS_RUN]->(r)
            OPTIONAL MATCH (r)-[:HAS_CONCLUSION]->(c:AdamDerivedObservation)
-           RETURN d.id AS derivationId, d.name AS name, d.filterType AS filterType, d.filterValue AS filterValue,
+           RETURN d.id AS derivationId, d.name AS name, coalesce(d.depth, 'full') AS depth, d.filterType AS filterType, d.filterValue AS filterValue,
                   r.id AS runId, r.createdAt AS createdAt, r.runJson AS runJson, r.inputMemoryIds AS memoryIds,
                   collect(DISTINCT parent.id) AS parents,
                   (size([(r)-[:USED_MEMORY]->() | 1]) = size(r.inputMemoryIds)
@@ -450,7 +452,7 @@
                                         MATCH (c)-[:CONFLICTING_EVIDENCE]->(m) WHERE m.id = id
                                       })}) AS conclusions
            ORDER BY createdAt DESC, runId"
-          #js {:readerId principal :derivationId derivation-id :name name :filterType (when filter (clojure.core/name (:type filter)))
+          #js {:readerId principal :derivationId derivation-id :name name :depth depth :filterType (when filter (clojure.core/name (:type filter)))
                :filterValue (:value filter) :history history? :limit ((.-int neo4j) (inc limit))})
         (.then (fn [result] {:records (vec (take limit (rows result))) :truncated? (> (count (rows result)) limit)})))))
 
@@ -469,7 +471,8 @@
                       (field record "conclusions"))]
       (when (and (s/valid? ::publication run) (s/valid? ::config/name name)
                  (contains? #{:none :repository :session :language} (:type filter))
-                 (= derivation (core/derivation-id principal name filter) (:derivation-id run))
+                 (= derivation (core/derivation-id principal name filter (get run :depth "full")) (:derivation-id run))
+                 (= (get run :depth "full") (or (field record "depth") "full"))
                  (= (:id run) (field record "runId"))
                  (= [derivation] (vec (field record "parents")))
                  (= (:input-memory-ids run) (vec (field record "memoryIds")))

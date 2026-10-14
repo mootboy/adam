@@ -23,6 +23,21 @@ Each named refresh reads its source snapshot once through the boundary callback.
 
 A configuration is at most 256 KiB UTF-8. Unknown fields, duplicate keys, multiple YAML documents, aliases, unsupported tags and invalid types/limits are rejected with sanitized errors. There are no inline credential fields, executable YAML tags, repo-local overrides or silently ignored options. These are configuration/parser safety bounds, not a memory-corpus sampling limit.
 
+## Evidence depth
+
+`/adam:derive [name] --depth full|active|observations|reflections` selects the model-visible evidence layer; `full` remains the default. Depth is independent of the single repository/session/language filter and is a command parameter, not a YAML field.
+
+| Depth | Model-visible content |
+|---|---|
+| `full` | Active observations and reflections, plus supporting observations including dropped ones |
+| `active` | Active observations and reflections; no extra supporting observation content |
+| `observations` | Active observations only |
+| `reflections` | Reflections only |
+
+Hidden reflection supports remain complete authorization/provenance dependencies, retain fingerprints, and participate in current grant/recreation checks. Native occasion metadata verifies source activity, not human endorsement or inspection of omitted evidence. Supports/conflicts in generated conclusions must refer to model-visible eligible memories. Cross-depth comparison/cache reuse is withheld, and each depth has its own identity/lease/history bucket. The default full identity is unchanged. Successful runs record depth and the visible input count separately from all dependency IDs.
+
+`/adam:derivations --depth ...` and Pi/Claude `adam_derivations({depth: ...})` select a depth bucket; omitted depth lists all buckets. Available results display their depth, and freshness recomputes the corresponding layer without relaxing full dependency authorization. Unknown or duplicate command depth arguments fail before graph/model work. These changes do not introduce classification, sampling, model calls on reads, or automatic refresh.
+
 ## Requests and selectors
 
 `core/refresh-configured!` accepts a request map with optional `name` and at most one of `repository`, `session`, `language`. The eventual host command tokenizer must preserve argument values; this core accepts structured requests, not an ad-hoc shell parser.
