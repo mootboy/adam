@@ -92,7 +92,7 @@
                    (is (= 3 (get-in result [:details :result-count])))
                    (is (.includes (:content result) "CONTRADICTS"))
                    (is (.includes (:content result) "SUPERSEDES"))
-                   (read/execute! deps (assoc request :evidence true))))
+                   (read/execute! deps request)))
           (.then (fn [result]
                    (is (.includes (:content result) "current"))
                    (is (.includes (:content result) "Small scoped interfaces"))
@@ -144,7 +144,7 @@
           (.then (fn [result]
                    (is (.includes (:content result) "unavailable"))
                    (is (not (.includes (:content result) "Small scoped interfaces - supersedes")))
-                   (is (.includes (:content result) "Small scoped interfaces \\- contradicts")
+                   (is (.includes (:content result) "Small scoped interfaces - contradicts")
                        "independently authorized older history remains visible")
                    (store/repair-dependencies! db request)))
           (.then (fn [_] (read/execute! deps request)))
