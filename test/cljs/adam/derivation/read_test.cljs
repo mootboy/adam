@@ -45,6 +45,7 @@
                                   (.then (fn [{:keys [content details]}]
                                            (is (.includes content expected))
                                            (is (= visible? (.includes content "Prefer small interfaces")))
+                                           (is (= visible? (.includes content (str "  Conclusion " (js/JSON.stringify (get-in run [:conclusions 0 :id]))))))
                                            (is (:truncated? details))
                                            (is (<= (.byteLength js/Buffer content "utf8") 12000))
                                            (is (= 2 (count @calls)))
