@@ -98,7 +98,7 @@ Read-only surfaces:
 adam_derivations
 ```
 
-The tool is available in both Pi and Claude MCP. Listing/reading shows saved scope/filter, freshness, generating provider/model, conclusions and evidence. Default reads show the latest run per result identity across all depth buckets, clearly labeled; optional depth restricts those buckets; an explicit history option exposes older versions under the same authorization rules. The [stage-1 contract](derivation-contract.md) pins optional name/single-filter arguments, boolean history and bounded item limits. Shared bounded rendering/paging and the host `--history` command boundary are implemented under issue 026.
+The tool is available in both Pi and Claude MCP. Listing/reading shows saved scope/filter, freshness, generating provider/model, complete conclusion text/IDs and conflict counts. Detailed memory evidence is requested separately using a conclusion ID; older owning runs remain addressable regardless of latest/history window. Selected output uses lossless continuation pages rather than clipping conclusion text. Default reads show the latest run per result identity across all depth buckets, clearly labeled; optional depth restricts those buckets; an explicit history option exposes older versions under the same authorization rules. The [stage-1 contract](derivation-contract.md) pins optional name/single-filter arguments, boolean history and bounded item limits. Shared bounded rendering/paging and the host `--history` command boundary are implemented under issue 026.
 
 ## Model input, budgets and completion
 
@@ -267,7 +267,7 @@ Behavior reviewed and agreed one by one with the user. Checkboxes remain impleme
 - [ ] Result identities separate users/names/filters. Runs/conclusions retain history, configuration snapshots and fingerprints. Default reads show latest; explicit history is authorized and bounded. Empty successful runs are cached.
 - [ ] Matching authorized input/configuration/model reuses cache. Changing session model affects only next refresh, not read freshness. Mid-generation evidence/configuration changes produce latest-but-outdated results, not automatic retry or falsely current status.
 - [ ] Same-identity concurrent refresh reports busy; independent identities can proceed. Token-fenced atomic publication and recoverable leases prevent stale writers and preserve prior completed results after failures. No model call occurs inside a retryable database transaction.
-- [ ] Pi and Claude MCP expose equivalent bounded read-only results and truncation/status metadata. Model/configuration failure does not affect source logs, producer memories, normal mirroring, imports, notification drains or existing file-context behavior.
+- [ ] Pi and Claude MCP expose equivalent bounded read-only pages with continuation/status metadata, complete selected conclusions and separately requested evidence. Model/configuration failure does not affect source logs, producer memories, normal mirroring, imports, notification drains or existing file-context behavior.
 - [ ] Normal tests use synthetic memories and a fake executor. Real-model probes require explicit opt-in/resource bounds; live database tests use disposable acknowledged endpoints, independent identities and exact resource-scoped cleanup.
 
 ## Staged delivery

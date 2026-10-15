@@ -428,14 +428,15 @@
 ;; Capture immutable run metadata first. Authorization is always resolved from
 ;; current source ownership, never from a cached list of permitted users.
 (defn- run-records! [^js tx principal request & [derivation-id]]
-  (let [{:keys [name filter history? limit depth]} (core/normalize-read request)]
+  (let [{:keys [name filter history? limit depth evidence]} (core/normalize-read request)]
     (-> (.run tx
           "MATCH (:AdamUser {id: $readerId})-[:OWNS_DERIVATION]->(d:AdamDerivation)-[:HAS_RUN]->(r:AdamDerivationRun)
            WHERE ($name IS NULL OR d.name = $name)
              AND ($derivationId IS NULL OR d.id = $derivationId)
              AND ($depth IS NULL OR coalesce(d.depth, 'full') = $depth)
              AND ($filterType IS NULL OR (d.filterType = $filterType AND d.filterValue = $filterValue))
-             AND ($history OR EXISTS { MATCH (d)-[:LATEST_RUN]->(r) })
+             AND ($evidenceId IS NOT NULL OR $history OR EXISTS { MATCH (d)-[:LATEST_RUN]->(r) })
+             AND ($evidenceId IS NULL OR EXISTS { MATCH (r)-[:HAS_CONCLUSION]->(:AdamDerivedObservation {id: $evidenceId}) })
            WITH DISTINCT d, r ORDER BY r.createdAt DESC, r.id LIMIT $limit
            OPTIONAL MATCH (parent:AdamDerivation)-[:HAS_RUN]->(r)
            OPTIONAL MATCH (r)-[:HAS_CONCLUSION]->(c:AdamDerivedObservation)
@@ -453,7 +454,7 @@
                                       })}) AS conclusions
            ORDER BY createdAt DESC, runId"
           #js {:readerId principal :derivationId derivation-id :name name :depth depth :filterType (when filter (clojure.core/name (:type filter)))
-               :filterValue (:value filter) :history history? :limit ((.-int neo4j) (inc limit))})
+               :filterValue (:value filter) :history history? :evidenceId evidence :limit ((.-int neo4j) (inc limit))})
         (.then (fn [result] {:records (vec (take limit (rows result))) :truncated? (> (count (rows result)) limit)})))))
 
 (defn- stored-run [principal record]

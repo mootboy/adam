@@ -309,8 +309,11 @@ The revised [0.4 plan](plan-0.4.0.md) scopes 0.4.0 to implemented infrastructure
 
 | Scenario | Expected result |
 | --- | --- |
-| Invalid name/combined selector/history/limit/reader override | Reject before config/storage IO |
-| Available latest/history/empty result | Same Pi command/tool and MCP bounded scope/model/evidence rendering; reads invoke no model (**live**) |
+| Invalid name/combined selector/history/limit/reader override/evidence/cursor | Reject before config/storage IO |
+| Available latest/history/empty result | Same Pi command/tool and MCP conclusion-first ordinary text, IDs, scope and conflict counts; reads invoke no model (**live**) |
+| Explicit evidence by saved conclusion ID | Direct supporting/conflicting memory text and provenance, not raw transcripts; older owning runs found even with limit 1; full run authorization still applies (**live**) |
+| Selected text exceeds page budget | Lossless UTF-8-safe continuation within 200 lines/12 KB; follow next-cursor to completion; no silently clipped conclusions |
+| Cursor malformed, stale or permission revoked | Invalid shape rejects before IO; each page reauthorizes; changed/denied output rejects old cursor without disclosing prior content |
 | Recipe/source changes or only model changes | Truthful current/outdated/unavailable state; model-only changes do not stale saved results |
 | Configuration absent versus malformed/unsafe | Distinct not-configured/invalid-config metadata; no raw error disclosure |
 | Multiline/control-character model/metadata values | JSON-quoted fields cannot inject rendered headings; seeded property regression |

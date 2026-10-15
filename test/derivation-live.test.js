@@ -88,6 +88,13 @@ test("packaged Pi generation, restart reuse and Pi/MCP reads preserve saved hist
       assert.equal(toolRead.content[0].text, commandRead);
       assert.match(commandRead, /current/); assert.match(commandRead, /Prefer small functions in this context/);
       assert.ok(!commandRead.includes('Please use small functions.')); assert.equal(count, 1);
+      assert.ok(!commandRead.includes('Supports:'));
+      const conclusionId = commandRead.match(/Conclusion "(urn:adam:derived-observation:[0-9a-f]+)"/)[1];
+      const evidenceRead = await tools.get('adam_derivations').execute('evidence', { name: 'preferences', evidence: conclusionId }, new AbortController().signal, undefined, ctx);
+      assert.match(evidenceRead.content[0].text, /Evidence text: "The user requests small functions\."/);
+      await commands.get('adam:derivations').handler('preferences --evidence ' + conclusionId, ctx);
+      assert.equal(notices.at(-1), evidenceRead.content[0].text);
+      assert.equal(count, 1, 'evidence reads must not generate');
       truncated = true; await appendFile(${JSON.stringify(configPath)}, ${JSON.stringify('# configuration comment alone does not change fingerprints\n')});
       await commands.get('adam:derive').handler('preferences', ctx); assert.equal(count, 1);
       const fs = await import('node:fs/promises');
@@ -129,6 +136,13 @@ test("packaged Pi generation, restart reuse and Pi/MCP reads preserve saved hist
         assert.ok(!read.isError); assert.match(read.content[0].text, /Prefer small functions in this context/);
         assert.match(read.content[0].text, /outdated/);
         assert.equal(read.structuredContent['result-count'], 1);
+        assert.equal(read.structuredContent['next-cursor'], null);
+        assert.ok(!read.content[0].text.includes('Supports:'));
+        const conclusionId = read.content[0].text.match(/Conclusion "(urn:adam:derived-observation:[0-9a-f]+)"/)[1];
+        const evidence = await client.callTool({ name: 'adam_derivations', arguments: { name: 'preferences', evidence: conclusionId } });
+        assert.ok(!evidence.isError);
+        assert.match(evidence.content[0].text, /The user requests small functions/);
+        assert.ok(!evidence.content[0].text.includes('Please use small functions.'));
         const invalid = await client.callTool({ name: 'adam_derivations', arguments: { name: 'preferences', readerId: 'other' } });
         assert.ok(invalid.isError);
       } finally { await client.close(); }
