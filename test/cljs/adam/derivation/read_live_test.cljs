@@ -27,7 +27,7 @@
           params #js {:reader reader :owner owner :sessions (clj->js sids) :memories (clj->js mids) :entries (clj->js eids)}
           registered (atom (into [reader owner did] (concat sids mids eids)))
           deps {:load-configuration! (fn [] recipes) :load-snapshot! #(store/read-snapshot! db %1 %2)}
-          request {:name name} model-calls (atom 0) saved (atom nil)]
+          request {:name name} model-calls (atom 0) saved (atom nil) original (atom nil)]
       (-> (store/ensure-schema! db)
           (.then (fn [_] (store/await-schema! db)))
           (.then (fn [_]
@@ -57,6 +57,7 @@
                     (merge snapshot {:name name :filter filter :recipe (get recipes name)
                                      :model {:provider "fake" :id "fixture" :context-window 30000 :max-output-tokens 8192}}))))
           (.then (fn [{:keys [run]}]
+                   (reset! original run)
                    (reset! saved run)
                    (swap! registered into (cons (:id run) (map :id (:conclusions run))))
                    (-> (store/acquire-refresh! db request 60000)
@@ -92,12 +93,20 @@
                    (is (= 3 (get-in result [:details :result-count])))
                    (is (.includes (:content result) "CONTRADICTS"))
                    (is (.includes (:content result) "SUPERSEDES"))
+                   (is (not (.includes (:content result) "Supports:")))
+                   (read/execute! deps (assoc request :limit 1 :evidence (get-in @original [:conclusions 0 :id])))))
+          (.then (fn [result]
+                   (is (= 1 (get-in result [:details :result-count])))
+                   (is (.includes (:content result) (:id @original)) "exact evidence lookup finds an older non-latest run")
+                   (is (.includes (:content result) "request"))
+                   (is (.includes (:content result) "Evidence text: \"Small interfaces\""))
+                   (is (not (.includes (:content result) "Competing scoped position")))
                    (read/execute! deps request)))
           (.then (fn [result]
                    (is (.includes (:content result) "current"))
                    (is (.includes (:content result) "Small scoped interfaces"))
                    (is (.includes (:content result) "fixture"))
-                   (is (.includes (:content result) "request"))
+                   (is (not (.includes (:content result) "Supports:")))
                    (is (not (.includes (:content result) "Use small interfaces.")) "raw requests are not returned")
                    ;; A different transaction revokes access after streaming has
                    ;; begun. Read-committed reads must reauthorize afterwards.
@@ -124,7 +133,8 @@
                                                                                                                                 (.catch (aget observer "onError"))))}))}
                                                                                     result)))}))))}))}
                          delayed-db (store/with-driver delayed-driver database reader)]
-                     (-> (read/execute! (assoc deps :load-snapshot! #(store/read-snapshot! delayed-db %1 %2)) request)
+                     (-> (read/execute! (assoc deps :load-snapshot! #(store/read-snapshot! delayed-db %1 %2))
+                                      (assoc request :evidence (get-in @original [:conclusions 0 :id])))
                          (.then (fn [result]
                                   (is @revoked?)
                                   (is (.includes (:content result) "unauthorized"))

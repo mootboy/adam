@@ -77,6 +77,7 @@
 (s/def ::language
   (s/and (config/text-spec 64) #(contains? language-extensions (language-name %))))
 (s/def ::history boolean?)
+(s/def ::evidence (config/text-spec 2048))
 (s/def ::limit (s/and ::config/positive-integer #(<= % 20)))
 
 (defn- single-filter? [request]
@@ -87,8 +88,8 @@
   (s/and (s/keys :opt-un [::config/name ::repository ::session ::language ::depth])
          (config/only-keys #{:name :repository :session :language :depth}) single-filter?))
 (s/def ::read-request
-  (s/and (s/keys :opt-un [::config/name ::repository ::session ::language ::history ::limit ::depth])
-         (config/only-keys #{:name :repository :session :language :history :limit :depth}) single-filter?))
+  (s/and (s/keys :opt-un [::config/name ::repository ::session ::language ::history ::limit ::depth ::evidence])
+         (config/only-keys #{:name :repository :session :language :history :limit :depth :evidence}) single-filter?))
 
 (defn- normalize-selector [request]
   (when-not (s/valid? ::refresh-request request)
@@ -107,9 +108,10 @@
 (defn normalize-read [request]
   (when-not (s/valid? ::read-request request)
     (config/reject! :invalid-selector "invalid read arguments"))
-  (cond-> (assoc (normalize-selector (dissoc request :history :limit))
+  (cond-> (assoc (normalize-selector (dissoc request :history :limit :evidence))
                  :history? (get request :history false) :limit (get request :limit 10))
-    (empty? (select-keys request [:repository :session :language])) (assoc :filter nil)))
+    (empty? (select-keys request [:repository :session :language])) (assoc :filter nil)
+    (:evidence request) (assoc :evidence (:evidence request))))
 
 (defn- matches-filter? [{:keys [type value]} memory]
   (case type
