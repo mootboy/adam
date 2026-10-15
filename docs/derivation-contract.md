@@ -23,6 +23,8 @@ Each named refresh reads its source snapshot once through the boundary callback.
 
 A configuration is at most 256 KiB UTF-8. Unknown fields, duplicate keys, multiple YAML documents, aliases, unsupported tags and invalid types/limits are rejected with sanitized errors. There are no inline credential fields, executable YAML tags, repo-local overrides or silently ignored options. These are configuration/parser safety bounds, not a memory-corpus sampling limit.
 
+Saved-read text labels each available conclusion with its existing run-scoped persisted ID, so follow-up evidence questions can identify the exact conclusion without regeneration. Unavailable/unauthorized results withhold conclusion IDs with their content. This exposes existing identity rather than creating a new reference scheme or evidence-inspection endpoint; existing output limits remain unchanged.
+
 ## Command progress
 
 Generation immediately acknowledges the request and uses its own footer key for progress, clearing it in finally on success/failure/cancellation. It does not commandeer Pi's main-agent working indicator or stream unvalidated JSON. Saved reads use ordinary text output without custom screens or tool renderers; the local session can present that output in its normal response when asked. No model call is added automatically.

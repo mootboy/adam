@@ -73,7 +73,8 @@
        (str "  Input measurement: " (quoted (or (:measured-input-tokens run) "unknown")) " | " (quoted (get run :measurement-method "unspecified")))]
       (when (empty? (:conclusions run)) ["  Successful empty result: no supported conclusions."])
       (mapcat (fn [item]
-                (concat [(str "  [" (clojure.core/name (:basis item)) "/" (:category item) "] " (quoted (:content item)))
+                (concat [(str "  Conclusion " (quoted (:id item)))
+                         (str "  [" (clojure.core/name (:basis item)) "/" (:category item) "] " (quoted (:content item)))
                          (str "    Scope: " (clojure.core/name (:scope-type item)) " " (string/join ", " (map quoted (:scope-subject-ids item))))
                          "    Supports:"]
                         (map #(memory-provenance by-id %) (:supporting-memory-ids item))
