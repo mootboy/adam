@@ -17,7 +17,7 @@ Adam provides a full [Pi](https://pi.dev) extension and a [Claude Code](https://
 - [`docs/memory-notification-contract.md`](docs/memory-notification-contract.md) — optional experimental protocol-v1 spool and shared reconciliation/repair behavior.
 - [`docs/plan-0.3.3.md`](docs/plan-0.3.3.md) — active file-memory retrieval.
 - [`docs/plan-0.4.0.md`](docs/plan-0.4.0.md) — 0.4.0 infrastructure release scope and separate standalone-producer/native-reader follow-up.
-- [`docs/plan-0.5.0.md`](docs/plan-0.5.0.md) — planned configurable memory derivations, explicit Pi generation, multi-user grants and provenance-bearing result history.
+- [`docs/plan-0.5.0.md`](docs/plan-0.5.0.md) — 0.5.0 derivation scope/contracts: explicit Pi generation, multi-user grants and provenance-bearing result history.
 - [`docs/derivation-contract.md`](docs/derivation-contract.md) — implemented derivation contracts/core, graph authorization/history, explicit Pi generation and read-only Pi/Claude saved-result browsing.
 - [`docs/acceptance-matrix.md`](docs/acceptance-matrix.md) — deterministic and live acceptance cases for incremental delivery.
 - [`docs/issues/`](docs/issues/) — repository-local issue tracker and issue template.
@@ -65,7 +65,7 @@ Normal/live gates compile then execute the ClojureScript Node runner explicitly;
 Install a stable GitHub release tag:
 
 ```bash
-pi install git:github.com/mootboy/adam@v0.4.1
+pi install git:github.com/mootboy/adam@v0.5.0
 ```
 
 The repository is public and releases are distributed through GitHub. For local development, build and load the checkout directly:
@@ -129,7 +129,7 @@ Import requires interactive confirmation. Resume lists the exact-cwd union of lo
 
 With valid configuration, adam lazily initializes the graph and reconciles persistent sessions at startup and persisted lifecycle boundaries. Before normal synchronization, graph-native transactional migrations source-scope existing Pi session identities and producer-scope observation/reflection identities without requiring local JSONL; each validated version marker advances only with its complete successful transaction. A separate versioned, restart-safe code-memory rebuild reindexes local authoritative session logs when the derived schema changes and advances its marker only after successful completion. Derived memory projection aggregates embedded Pi records with every retained mirrored producer stream in one source-session transaction, preserving producer isolation and stream-qualified provenance. `/adam:status` reports migration/rebuild state and the latest lifecycle event's queue, initialization, replica synchronization, repository discovery, evidence extraction, Neo4j projection, and total durations. These diagnostics are in-memory, retain only the latest run, and contain no session content. Missing configuration disables replication without preventing Pi from loading. Pi executes the committed JavaScript in `dist/`; Java is only required when rebuilding the ClojureScript source.
 
-## Unreleased 0.5 Pi generation tracer
+## Memory derivations (0.5.0)
 
 Create user-wide `$XDG_CONFIG_HOME/adam/derivations.yaml` (default `~/.config/adam/derivations.yaml`):
 
@@ -140,7 +140,7 @@ derivations:
     guidance: Identify attributed architectural and style preferences; preserve scope, uncertainty and disagreements.
 ```
 
-`/adam:derive preferences` refreshes one recipe. `/adam:derive` processes configured recipes sequentially, continuing after failures. Either form accepts `--depth full|active|observations|reflections` (default `full`) independently of at most one `--repository <git-origin>`, `--session <source-scoped-session-urn>` or `--language <language>` filter. Configuration and explicit refresh authorize the model call; no lifecycle event generates automatically. These commands are not in the published 0.4.1 artifact.
+`/adam:derive preferences` refreshes one recipe. `/adam:derive` processes configured recipes sequentially, continuing after failures. Either form accepts `--depth full|active|observations|reflections` (default `full`) independently of at most one `--repository <git-origin>`, `--session <source-scoped-session-urn>` or `--language <language>` filter. Configuration and explicit refresh authorize the model call; no lifecycle event generates automatically. Derivation generation and saved-result reads are available starting with 0.5.0.
 
 The first use checks graph schema. If constraints or the online native-entry index are missing, **interactive approval is required** before creating/checking three derivation uniqueness constraints and the native-entry index. This can build an index over all mirrored entries; source content is unchanged. Back up production and explicitly approve its first use—stage-3 tests do not authorize it. Existing ready schema needs no DDL. Initialization is cached only after success; `/adam:status` shows its outcome.
 

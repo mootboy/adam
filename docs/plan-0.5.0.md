@@ -282,19 +282,19 @@ Deliver this minor-release scope through reviewable implementation increments; e
 
 Keep existing session replication, producer projection and notification-worker behavior independently functional throughout. PRs remain user-merged with history preserved; merging this documentation does not initiate implementation, migrations or publication.
 
-## Remaining acceptance/release gates
+## Release readiness and retained limits
 
 Stages 1–4 implement the interface, graph, provider and read contracts. [Issue 027](issues/027-derivation-acceptance-and-release-gates.md) audits acceptance and closes isolated integration/test-gate defects. The [acceptance matrix](acceptance-matrix.md) distinguishes structural proof from semantic/provider certification.
 
-1. Real-provider evidence is partial: the approved three-call default Codex probe completed normally, with valid scoped-correction and empty outcomes but one rejected disagreement response. A follow-up makes existing output constraints model-visible and adds content-free failure reasons; it has no renewed real-model evidence yet. Additional probes require approval. Fake outputs cannot certify interpretation or billing/cancellation behavior, and three small calls do not certify context-capacity extremes.
-2. Production first use/operational acceptance only with explicit approval and backup as appropriate: schema/index initialization, owned evidence, saved reads/restart, latency, outage behavior and lease cleanup. Disposable validation is not authorization.
-3. Final version/changelog/plugin/tarball transition and release PR after readiness is explicitly decided. Only the final increment bumps 0.5.0; merging a version bump can trigger publication. User controls history-preserving merges.
+1. Real-provider evidence remains sample-specific, not universal certification. The earlier three-call probe had one rejected disagreement response; the separately approved policy-v2 follow-up is recorded only in [PR #35's evidence comment](https://github.com/mootboy/adam/pull/35#issuecomment-6166816603), as requested. No further real-model probe is part of release preparation. Provider billing/cancellation and context-capacity extremes retain the documented limitations.
+2. The user confirmed candidate restarts and successful repository-scoped observations/reflections generation and saved reads. This is operational evidence, not a blanket production-performance or all-provider guarantee. Production access/mutation and new model calls still require their own authorization.
+3. The user accepted launch after correcting clipped saved output. [Issue 030](issues/030-complete-derivation-reads-and-evidence-inspection.md) separates evidence inspection and implements lossless continuation; versions/changelog/plugin metadata are prepared for 0.5.0. Final local/hosted validation and user review/merge remain required. Merging the version bump triggers post-main-CI tagging and GitHub release publication; the assistant does not merge or tag.
 
 This document alone authorizes no production grant/access, real model call, runtime migration, version bump, tag, merge or publication.
 
 ## Validation
 
-Stages 1–4 implement deterministic core, graph persistence/authorization, explicit Pi generation and read-only Pi/MCP surfaces. Synthetic/fake-provider and disposable graph/compiled-host acceptance does not certify real-provider quality, production latency or first-use migrations. The sizing query was read-only and made no model call or graph mutation. Separately approved real-model quality/cost evaluation and final operational/release acceptance remain stage 5.
+Stages 1–4 implement deterministic core, graph persistence/authorization, explicit Pi generation and read-only Pi/MCP surfaces. Synthetic/fake-provider and disposable graph/compiled-host acceptance does not certify real-provider quality, production latency or first-use migrations. The sizing query was read-only and made no model call or graph mutation. Stage-5 sample-specific provider/operational evidence and remaining limitations are recorded above; final release validation does not authorize new production actions or model calls.
 
 ## Notes
 

@@ -330,19 +330,19 @@ The revised [0.4 plan](plan-0.4.0.md) scopes 0.4.0 to implemented infrastructure
 
 | Approved behavior | Existing/added evidence | Remaining gate |
 | --- | --- | --- |
-| Closed YAML, selectors, model resolution and isolated request | config/core/provider/controller interfaces; packaged Pi fixture; three real default Codex calls | New policy-v2 prompt not yet model-probed |
+| Closed YAML, selectors, model resolution and isolated request | config/core/provider/controller interfaces; packaged Pi fixture; three real default Codex calls | Sample-specific follow-up evidence linked from PR #35; no general certification |
 | Complete-input sizing, timeout/truncation and one-call policy | core/controller matrix; shared Pi-owned sizing; 1 MiB accepted-text cap; three small Codex calls with SDK usage | No universal output/cost cap; context-capacity extremes not certified |
 | Directional/non-transitive grants, all-input/comparison restrictions | core/store interfaces and disposable revocation/ownership tests | No production grants authorized |
-| Explicit/inferred scope, source occasions, duplicates and corrections | parameterized core/native-anchor tests; Codex accepted scoped correction and empty unendorsed-choice cases | Updated prompt has only synthetic validation |
-| Conflicts and scoped supersession | Core validator; disposable within/across-run links/history; model-visible exact constraints and content-free rejection reasons | Real disagreement call was rejected; cause unknown; follow-up needs approved re-probe |
-| Inspectable producer/source/support provenance and memory rebuild | Saved-read/live repair and branch-removal tests | Production operational acceptance |
+| Explicit/inferred scope, source occasions, duplicates and corrections | parameterized core/native-anchor tests; Codex accepted scoped correction and empty unendorsed-choice cases | Sample-specific evidence, not universal semantic certification |
+| Conflicts and scoped supersession | Core validator; disposable within/across-run links/history; model-visible exact constraints and content-free rejection reasons | Initial failure cause remains unknown; separately approved follow-up is linked from PR #35's evidence comment |
+| Inspectable producer/source/support provenance and memory rebuild | Saved-read/live repair, branch-removal and explicit evidence tests; user-confirmed candidate reads | General production-performance guarantees remain out of scope |
 | Stable users/names/filters, successful/empty history and cache | Core/store identity, history, empty/reuse tests | — |
 | Fingerprints/current freshness and latest-but-outdated | Core mid-call change and saved-read change/history tests | — |
 | Refresh concurrency, renewable fenced publication and failure preservation | Disposable single-winner/expiry/rollback plus controller matrix | Production completion/latency unmeasured |
 | Equivalent bounded Pi/MCP reads and independent replication | Compiled Pi/MCP parity, read adversarial/property tests and existing replica/worker suites | Production read cost remains unmeasured |
 | Restart with ordinary session reprojection | Packaged Pi restart reuses without new model work/history; removed evidence denies reads | — |
 | CI actually gates ClojureScript failures | Explicit compiled-runner execution; assertion/error/uncaught/incomplete/hang/empty probes | Prior main logs checked as passing, but old CI did not enforce exit status |
-| Release | No version/tag/installation change in acceptance increment | Explicit readiness decision, final release PR |
+| Release | User accepted launch after output correction; 0.5.0 versions/changelog/plugin/docs prepared | Final CI, user review/history-preserving merge and post-main-CI publication |
 
 Synthetic/disposable proof does not complete semantic/provider or production gates. No authoritative logs, producer content or grants are changed by this audit.
 
