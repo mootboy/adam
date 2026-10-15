@@ -4,6 +4,32 @@ All notable changes to adam are documented here.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-15
+
+### Added
+
+- Optional, explicitly refreshed memory derivations guided by user-wide YAML recipes. `/adam:derive` uses the executing Pi model or a configured Pi registry override, with isolated tool-free requests, scoped evidence, conflicts and preserved successful history. No lifecycle event generates automatically.
+- Principal-bound derivation storage, explicit directional/non-transitive memory grants, complete run-wide authorization, revocation-sensitive saved reads, atomic token-fenced publication and renewable refresh leases. Missing evidence fails closed; empty successful results are cached.
+- `/adam:derivations` and read-only `adam_derivations` in Pi and Claude MCP, with existing stable conclusion IDs, scope, freshness, conflict/correction links and separately requested supporting/conflicting memory evidence. Exact evidence lookup remains available for older saved conclusions under current authorization.
+- Lossless continuation pages for oversized selected read output instead of clipped conclusions; ordinary text output stays within the existing per-page budget. No separate viewer or custom rendering.
+- Command-selected full/active/observations/reflections evidence depth with distinct saved identities and retained authorization dependencies for omitted supporting text.
+- Compact model requests with request-local reference aliases and complete selected content; labelled local OpenAI-family token estimates with conservative margins and UTF-8-byte fallback. No remote counting calls or silent input sampling.
+- Immediate derivation acknowledgement and namespaced footer progress, cleared after success, failure or cancellation.
+
+### Fixed
+
+- Preserve stable memory nodes and incoming derivation dependency relationships across whole-session reprojection and restart; genuinely removed evidence still denies saved reads.
+- Recognize both Cypher node-uniqueness vocabularies while requiring the exact constraints and ONLINE native-entry index. Explicit schema initialization remains approval-gated.
+- CI runs compiled ClojureScript test runners explicitly and fails on assertion/error, incomplete/hanging completion or empty test selections rather than trusting Shadow compiler autorun status. Serial release compilation prevents generated-runtime drift.
+
+### Limits
+
+- Derivations synthesize authorized memory; they are not authoritative statements of universal preferences. Attribution, scope, uncertainty and disagreement remain important.
+- Provider output allowances and cancellation are best-effort, not strict spending ceilings. Local tokenizer estimates, especially newer Codex aliases, are not server-certified. Invalid/truncated generation preserves prior successful results but may still incur usage.
+- Truthful saved freshness and evidence inspection can scan the full authorized corpus. Every continuation reauthorizes and repeats that read cost; changed output requires restarting continuation. Whole-history browsing beyond the requested bounded run selection is not added.
+- The installed Pi peer tooling retains one high-severity indirect `brace-expansion` audit finding in its published shrinkwrap. Local patch-only/audit-fix attempts do not update it; [issue 031](docs/issues/031-pi-peer-shrinkwrap-brace-expansion-audit.md) tracks upstream remediation. Adam does not silently override the host's dependency tree.
+- Distribution remains GitHub-release/Git installation, not npm publication. The independent Claude memory producer and native producer-log reader remain separate follow-up work.
+
 ## [0.4.1] - 2026-10-09
 
 ### Fixed
