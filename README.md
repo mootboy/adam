@@ -65,7 +65,7 @@ Normal/live gates compile then execute the ClojureScript Node runner explicitly;
 Install a stable GitHub release tag:
 
 ```bash
-pi install git:github.com/mootboy/adam@v0.5.0
+pi install git:github.com/mootboy/adam@v0.5.1
 ```
 
 The repository is public and releases are distributed through GitHub. For local development, build and load the checkout directly:
@@ -129,7 +129,7 @@ Import requires interactive confirmation. Resume lists the exact-cwd union of lo
 
 With valid configuration, adam lazily initializes the graph and reconciles persistent sessions at startup and persisted lifecycle boundaries. Before normal synchronization, graph-native transactional migrations source-scope existing Pi session identities and producer-scope observation/reflection identities without requiring local JSONL; each validated version marker advances only with its complete successful transaction. A separate versioned, restart-safe code-memory rebuild reindexes local authoritative session logs when the derived schema changes and advances its marker only after successful completion. Derived memory projection aggregates embedded Pi records with every retained mirrored producer stream in one source-session transaction, preserving producer isolation and stream-qualified provenance. `/adam:status` reports migration/rebuild state and the latest lifecycle event's queue, initialization, replica synchronization, repository discovery, evidence extraction, Neo4j projection, and total durations. These diagnostics are in-memory, retain only the latest run, and contain no session content. Missing configuration disables replication without preventing Pi from loading. Pi executes the committed JavaScript in `dist/`; Java is only required when rebuilding the ClojureScript source.
 
-## Memory derivations (0.5.0)
+## Memory derivations (since 0.5.0)
 
 Create user-wide `$XDG_CONFIG_HOME/adam/derivations.yaml` (default `~/.config/adam/derivations.yaml`):
 
