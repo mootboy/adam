@@ -35,21 +35,8 @@
              :reflections []
              :diagnostics [{:producer "unknown" :reason :adapter-error}]}))
         _ (measure! :evidence-extraction-ms extraction-started-at)
-        resolve-from-evidence!
-        (fn []
-          (let [paths (evidence/explicit-file-tool-paths @entries selected-leaf)]
-            (reduce
-             (fn [promise candidate-path]
-               (.then promise
-                      (fn [resolved]
-                        (if resolved
-                          resolved
-                          (repository/resolve-from-file-path!
-                           resolve-repository
-                           (:cwd summary)
-                           candidate-path)))))
-             (js/Promise.resolve nil)
-             paths)))
+        file-locators (mapv (fn [path] {:cwd (:cwd summary) :path path})
+                            (evidence/explicit-file-tool-paths @entries selected-leaf))
         write-projection!
         (fn [resolved projection]
           (when on-memory-diagnostics
@@ -61,8 +48,9 @@
                    (measure! :neo4j-projection-ms projection-write-started-at)))
                 (.then (fn [_] resolved)))))
         project!
-        (fn [resolved]
-          (let [session-id (identity/session-urn user-uuid (:pi-session-id summary))
+        (fn [repositories]
+          (let [resolved (first repositories)
+                session-id (identity/session-urn user-uuid (:pi-session-id summary))
                 memory-read-started-at (now-ms)]
             (-> (memory/load-session-projection!
                  {:store store
@@ -85,6 +73,7 @@
                              :session-id session-id
                              :cwd (:cwd summary)
                              :repository resolved
+                             :repositories repositories
                              :entries @entries
                              :current-leaf-id selected-leaf
                              :memory-projection aggregate-memory})
@@ -95,7 +84,7 @@
                              :pi-session-id (:pi-session-id summary)
                              :source-kind identity/pi-source-kind
                              :source-session-id (:pi-session-id summary)
-                             :repository nil :files [] :entry-file-evidence []
+                             :repository nil :repositories [] :files [] :entry-file-evidence []
                              :available-source-entries
                              (set (map (fn [entry]
                                          [evidence/pi-implicit-stream (:entry-id entry)])
@@ -108,11 +97,8 @@
         (when on-timing (on-timing @timings))
         (js/Promise.resolve nil))
       (let [repository-started-at (now-ms)]
-        (-> (if repository
-              (js/Promise.resolve repository)
-              (resolve-repository (:cwd summary)))
-            (.then (fn [resolved]
-                     (if resolved resolved (resolve-from-evidence!))))
+        (-> (repository/resolve-file-repositories!
+             resolve-repository (:cwd summary) repository file-locators)
             (.finally
              (fn []
                (measure! :repository-discovery-ms repository-started-at)))

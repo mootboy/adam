@@ -4,6 +4,8 @@
             [adam.derivation.pi :as pi]
             [adam.derivation.read :as saved-read]
             [adam.derivation.store :as store]
+            [adam.knowledge.store :as knowledge-store]
+            [adam.replica.neo4j :as replica]
             [cljs.test :refer [async deftest is]]
             ["neo4j-driver" :as neo4j]
             ["node:crypto" :refer [randomUUID]]))
@@ -425,7 +427,7 @@
                     (o:AdamObservation {id: $ids[4], memoryId: 'obs', producer: 'synthetic', content: 'Prefer simple boundaries'}),
                     (r:AdamReflection {id: $ids[5], producer: 'synthetic', content: 'Scoped synthesis', supportingObservationIds: ['obs']})
              CREATE (u)-[:OWNS]->(s), (s)-[:WORKED_ON]->(repo), (s)-[:HAS_MEMORY]->(o), (s)-[:HAS_MEMORY]->(r),
-                    (o)-[:ABOUT]->(file), (r)-[:SUPPORTED_BY]->(o)" params)
+                    (repo)-[:CONTAINS]->(file), (o)-[:ABOUT]->(file), (r)-[:SUPPORTED_BY]->(o)" params)
           (.then (fn [_] (check! {:name "preferences" :repository "git@example.com:repo.git"})))
           (.then (fn [_] (check! {:name "preferences" :language "cljs"})))
           (.then (fn [_]
@@ -553,6 +555,151 @@
           (.catch (fn [error] (is false (.-stack error))))
           (.finally (fn [] (-> (.run session "MATCH (n) WHERE n.id IN $ids DETACH DELETE n" params)
                               (.finally #(.close session)) (.finally #(.close driver)))))
+          (.finally done)))))
+
+(deftest live-memory-repository-scope-does-not-inherit-the-initial-session-repository
+  (async done
+    (let [uuid (randomUUID) env js/process.env
+          reader (str "urn:adam:user:" uuid) sid (str "urn:adam:session:" uuid ":pi:repo-switch")
+          ids (into [reader sid] (map #(str "repo-switch:" uuid ":" %) ["repo-a" "repo-b" "file-a" "file-b" "obs-a" "obs-b" "reflection-b" "unlinked" "mixed" "context-and-b"]))
+          origin-a (str "example.com/" uuid "/a") origin-b (str "example.com/" uuid "/b")
+          ^js driver ((.-driver neo4j) (aget env "ADAM_TEST_NEO4J_URI")
+                  (.basic (.-auth neo4j) (aget env "ADAM_TEST_NEO4J_USERNAME") (aget env "ADAM_TEST_NEO4J_PASSWORD")))
+          database (or (aget env "ADAM_TEST_NEO4J_DATABASE") "neo4j") ^js session (.session driver #js {:database database})
+          db (store/with-driver driver database reader)
+          cleanup-ids (atom ids) saved-run (atom nil)
+          request {:name "preferences" :repository (str "https://" origin-a) :depth "observations"}
+          replica (replica/replica-with-driver driver database)
+          params #js {:ids (clj->js ids) :a origin-a :b origin-b}
+          recipe (get (config/parse-config "derivations:\n  preferences:\n    version: 1\n    guidance: Preserve scope.\n") "preferences")]
+      (-> (.run session
+            "CREATE (u:AdamUser {id:$ids[0]}), (s:AdamSession {id:$ids[1], sourceKind:'pi', sourceSessionId:'repo-switch'}),
+                    (a:AdamRepository {id:$ids[2], normalizedOrigin:$a}), (b:AdamRepository {id:$ids[3], normalizedOrigin:$b}),
+                    (fa:AdamCodeFile {id:$ids[4], repositoryId:$ids[2], relativePath:'src/shared.cljs'}),
+                    (fb:AdamCodeFile {id:$ids[5], repositoryId:$ids[3], relativePath:'src/shared.cljs'}),
+                    (oa:AdamObservation {id:$ids[6], memoryId:'a', producer:'synthetic', content:'A-specific memory'}),
+                    (ob:AdamObservation {id:$ids[7], memoryId:'b', producer:'synthetic', content:'B-specific memory'}),
+                    (rb:AdamReflection {id:$ids[8], producer:'synthetic', content:'B synthesis', supportingObservationIds:['b']}),
+                    (unlinked:AdamObservation {id:$ids[9], memoryId:'u', producer:'synthetic', content:'Design dialogue'}),
+                    (mixed:AdamReflection {id:$ids[10], producer:'synthetic', content:'Mixed synthesis', supportingObservationIds:['a','b']}),
+                    (contextual:AdamReflection {id:$ids[11], producer:'synthetic', content:'Context and B', supportingObservationIds:['u','b']})
+             CREATE (u)-[:OWNS]->(s), (s)-[:WORKED_ON]->(a),
+                    (a)-[:CONTAINS]->(fa), (b)-[:CONTAINS]->(fb),
+                    (s)-[:HAS_MEMORY]->(oa), (s)-[:HAS_MEMORY]->(ob), (s)-[:HAS_MEMORY]->(rb),
+                    (oa)-[:ABOUT]->(fa), (ob)-[:ABOUT]->(fb), (rb)-[:SUPPORTED_BY]->(ob),
+                    (s)-[:HAS_MEMORY]->(unlinked), (s)-[:HAS_MEMORY]->(mixed), (s)-[:HAS_MEMORY]->(contextual),
+                    (mixed)-[:SUPPORTED_BY]->(oa), (mixed)-[:SUPPORTED_BY]->(ob),
+                    (contextual)-[:SUPPORTED_BY]->(unlinked), (contextual)-[:SUPPORTED_BY]->(ob)" params)
+          (.then (fn [_] (store/load-input! db {:name "preferences"})))
+          (.then (fn [snapshot]
+                   (let [memories (into {} (map (juxt :id identity) (:memories snapshot)))
+                         filter (:filter (core/normalize-read {:repository (str "https://" origin-a)}))
+                         prepared (core/prepare-refresh
+                                   (assoc snapshot :name "preferences" :recipe recipe :filter filter :depth "observations"
+                                          :model {:provider "fake" :id "model" :context-window 20000 :max-output-tokens 8192})
+                                   (constantly 100))]
+                     (is (= [origin-b] (:repository-origins (get memories (ids 7))))
+                         "B observation scope follows its file evidence, not the initial session repository")
+                     (is (= [origin-b] (:repository-origins (get memories (ids 8))))
+                         "B reflection scope follows supporting observations")
+                     (is (= #{(ids 6) (ids 9)} (set (get-in prepared [:snapshot :candidate-ids])))
+                         "A retains single-context discussion, not B-only observations")
+                     (is (= [origin-a] (:repository-origins (get memories (ids 9)))))
+                     (is (= #{origin-a origin-b} (set (:repository-origins (get memories (ids 10))))))
+                     (is (= #{origin-a origin-b} (set (:repository-origins (get memories (ids 11)))))
+                         "reflection unions both file-backed and single-context supports"))))
+          (.then (fn [_] (store/repository-origins! db nil)))
+          (.then (fn [origins] (is (= #{origin-a origin-b} (set origins)) "completion uses the same memory scope")))
+          (.then (fn [_] (.run session "MATCH (s:AdamSession {id:$ids[1]}), (b:AdamRepository {id:$ids[3]}) CREATE (s)-[:WORKED_ON]->(b)" params)))
+          (.then (fn [_] (store/load-input! db {:name "preferences"})))
+          (.then (fn [snapshot]
+                   (let [memories (into {} (map (juxt :id identity) (:memories snapshot)))]
+                     (is (empty? (:repository-origins (get memories (ids 9)))) "multi-context discussion is unknown, not dual-scoped")
+                     (is (empty? (:repository-ids (get memories (ids 9)))))
+                     (is (= [origin-b] (:repository-origins (get memories (ids 11)))))
+                     (is (= #{origin-a origin-b} (set (:repository-origins (get memories (ids 10)))))))))
+          (.then (fn [_] (.run session "MATCH (b:AdamRepository {id:$ids[3]}) REMOVE b.normalizedOrigin" params)))
+          (.then (fn [_] (store/load-input! db {:name "preferences"})))
+          (.then (fn [snapshot]
+                   (let [memories (into {} (map (juxt :id identity) (:memories snapshot)))]
+                     (is (empty? (:repository-origins (get memories (ids 7)))))
+                     (is (= [(ids 3)] (:repository-ids (get memories (ids 7)))) "originless file identity is retained")
+                     (is (empty? (:repository-ids (get memories (ids 9)))) "originless second context still prevents fallback"))))
+          (.then (fn [_] (store/ensure-schema! db)))
+          (.then (fn [_] (store/load-input! db {:name "preferences"})))
+          (.then (fn [snapshot]
+                   ;; Emulate the former session-wide scope with a fake executor.
+                   (core/refresh!
+                    {:measure-input (constantly 100)
+                     :execute! (fn [_] {:finish-reason :stop :conclusions [] :links []})}
+                    (assoc snapshot :name "preferences" :recipe recipe :depth "observations"
+                           :filter (:filter (core/normalize-read request))
+                           :model {:provider "fake" :id "model" :context-window 20000 :max-output-tokens 8192}
+                           :memories (mapv #(assoc % :repository-origins [origin-a] :repository-ids [(ids 2)])
+                                           (:memories snapshot))))))
+          (.then (fn [{:keys [run]}]
+                   (reset! saved-run run)
+                   (swap! cleanup-ids into [(:id run) (:derivation-id run)])
+                   (publish! db request run)))
+          (.then (fn [_] (knowledge-store/ensure-file-evidence-schema! replica)))
+          (.then (fn [_]
+                   (let [entries (mapv (fn [i suffix]
+                                         {:id (str "scope-entry:" uuid ":" suffix) :entryId suffix :streamId "main"
+                                          :sessionId sid :ordinal i
+                                          :rawJson (js/JSON.stringify
+                                                    (clj->js {:type "message" :id suffix :parentId (when (pos? i) "entry-a")
+                                                              :message {:role "assistant"
+                                                                        :content [{:type "toolCall" :id suffix :name "read"
+                                                                                   :arguments {:path (str "/work/" (if (zero? i) "a" "b") "/src/shared.cljs")}}]}}))})
+                                       [0 1] ["entry-a" "entry-b"])]
+                     (swap! cleanup-ids into (map :id entries))
+                     (.run session "MATCH (s:AdamSession {id:$sid}) UNWIND $entries AS input
+                                    CREATE (entry:AdamEntry) SET entry = input CREATE (s)-[:HAS_ENTRY]->(entry)"
+                           #js {:sid sid :entries (clj->js entries)}))))
+          (.then (fn [_] (store/load-input! db {:name "preferences"})))
+          (.then (fn [snapshot]
+                   (let [mid {(ids 6) "a" (ids 7) "b" (ids 9) "u"}
+                         observations (filterv #(= :observation (:kind %)) (:memories snapshot))
+                         reflections (filterv #(= :reflection (:kind %)) (:memories snapshot))
+                         projection
+                         {:session-id sid :source-kind "pi" :source-session-id "repo-switch" :extractor-version 3
+                          :repositories [{:id (ids 2) :normalized-remote origin-a :root "/work/a" :commit "a-head"}
+                                         {:id (ids 3) :root "/work/b" :commit "b-head"}]
+                          :files [{:id (ids 4) :repository-id (ids 2) :relative-path "src/shared.cljs"}
+                                  {:id (ids 5) :repository-id (ids 3) :relative-path "src/shared.cljs"}]
+                          :entry-file-evidence [{:entry-id "entry-a" :stream-id "main" :file-id (ids 4) :commit "a-head"}
+                                                {:entry-id "entry-b" :stream-id "main" :file-id (ids 5) :commit "b-head"}]
+                          :observations (mapv #(assoc % :memory-id (mid (:id %)) :source-kind "pi" :source-session-id "repo-switch"
+                                                      :source-entries (cond (= (:id %) (ids 6)) [{:stream-id "main" :entry-id "entry-a"}]
+                                                                            (= (:id %) (ids 7)) [{:stream-id "main" :entry-id "entry-b"}] :else [])
+                                                      :file-ids (cond (= (:id %) (ids 6)) [(ids 4)] (= (:id %) (ids 7)) [(ids 5)] :else [])) observations)
+                          :reflections (mapv #(assoc % :memory-id (:id %) :source-kind "pi" :source-session-id "repo-switch"
+                                                     :supporting-observation-ids (mapv mid (:supporting-memory-ids %))) reflections)}]
+                     (-> (knowledge-store/index-file-evidence! replica projection)
+                         (.then (fn [_] (knowledge-store/index-file-evidence! replica projection)))))))
+          (.then (fn [_] (store/read-runs! db request)))
+          (.then (fn [result]
+                   (is (= :available (get-in result [:items 0 :status])) "repeated projection preserves incoming run dependencies")
+                   (is (= (:id @saved-run) (get-in result [:items 0 :run :id])))))
+          (.then (fn [_] (store/load-input! db {:name "preferences"})))
+          (.then (fn [snapshot]
+                   (let [memories (into {} (map (juxt :id identity) (:memories snapshot)))]
+                     (is (= [(ids 2)] (:repository-ids (get memories (ids 6)))))
+                     (is (= [(ids 3)] (:repository-ids (get memories (ids 7)))))
+                     (is (empty? (:repository-ids (get memories (ids 9))))))
+                   (is (= :outdated (core/freshness (assoc snapshot :name "preferences" :recipe recipe :depth "observations"
+                                                         :filter (:filter (core/normalize-read request))) @saved-run))
+                       "corrected scope marks the historical result outdated, not unavailable")))
+          (.then (fn [_] (knowledge-store/query-file-memory! replica reader (ids 2) "src/shared.cljs" 20)))
+          (.then (fn [memories]
+                   (is (= #{"a" (ids 10)} (set (map :memory-id memories))) "A retrieval excludes B-only memory")))
+          (.then (fn [_] (knowledge-store/query-file-memory! replica reader (ids 3) "src/shared.cljs" 20)))
+          (.then (fn [memories]
+                   (is (= #{"b" (ids 8) (ids 10) (ids 11)} (set (map :memory-id memories))))
+                   (is (every? #(= #{"b-head"} (set (map :commit (:source-contexts %)))) memories))))
+          (.catch (fn [error] (is false (.-stack error))))
+          (.finally (fn [] (-> (.run session "MATCH (n) WHERE n.id IN $ids DETACH DELETE n" #js {:ids (clj->js @cleanup-ids)})
+                               (.finally #(.close session)) (.finally #(.close driver)))))
           (.finally done)))))
 
 (deftest live-repository-completion-is-directly-authorized-and-unambiguous

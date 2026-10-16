@@ -180,9 +180,14 @@ These cases define the implemented 0.3 scanner, graph-storage, file-evidence, an
 | The same origin-relative path is observed across users, sessions, machines, checkouts, and worktrees | One canonical file identity while queries remain user-isolated |
 | Repository has no normalizable origin | User-scoped local fallback remains isolated and is unavailable to origin lookup |
 | Main checkout and linked worktree paths identify the same relative file | One file identity; evidence retains each actual revision |
-| Session cwd is a non-Git workspace and explicit file evidence enters a repository | First selected-branch resolvable path discovers the repository |
+| Continuing Pi/Claude session enters another repository, including from a non-Git workspace | Every selected native file locator contributes its containing repository; Claude uses per-call cwd |
+| Many files share a repository, or a nested Git root lies inside a known checkout | Reuse root/worktree snapshots without hiding the nested repository |
+| Unlinked observation has one versus multiple repository contexts | Inherit the sole context; otherwise remain unknown, not dual-scoped |
+| Reflection supports A/B observations, or B plus unknown | Union known scopes; unknown does not invent a repository |
+| Normal multi-repository projection repeats | All repositories and stable memory dependencies survive; changed scope stales, not hides, an authorized result |
+| Existing misattributed data is dormant | No automatic repair/version bump; current status does not certify corrected attribution |
 | Workspace has no resolvable file evidence | Replica remains healthy and projection reports a waiting state |
-| Path is outside all registered worktree roots | No file evidence is created |
+| No repository/worktree resolves for an explicit path | No file evidence; do not substitute the initial repository |
 | Path occurs only in prose, memory text, or a shell command | No file evidence is created |
 | Same relative path exists in different repositories | Distinct file identities |
 | Abandoned branch contains memory | It remains mirrored but is excluded from the current projection |

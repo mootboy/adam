@@ -1,9 +1,10 @@
 (ns adam.knowledge.index-test
-  (:require [adam.knowledge.index :as index]
+  (:require [adam.knowledge.evidence :as evidence]
+            [adam.knowledge.index :as index]
             [adam.knowledge.store :as store]
             [adam.sources.pi-observational-memory.adapter :as memory-adapter]
             [cljs.test :refer [async deftest is]]
-            ["node:fs" :refer [mkdtempSync rmSync writeFileSync]]
+            ["node:fs" :refer [mkdirSync mkdtempSync rmSync writeFileSync]]
             ["node:os" :refer [tmpdir]]
             ["node:path" :refer [join]]))
 
@@ -15,6 +16,90 @@
   (index-file-evidence! [_ projection]
     (swap! projections conj projection)
     (js/Promise.resolve nil)))
+
+(deftest continuing-session-keeps-evidence-from-both-repositories
+  (async done
+    (let [directory (mkdtempSync (join (tmpdir) "adam-multi-repo-"))
+          path (join directory "session.jsonl") projections (atom [])
+          repositories (mapv (fn [name]
+                               (evidence/build-repository
+                                {:user-uuid "test-user" :root (str "/work/" name)
+                                 :remote (str "https://example.com/" name ".git")
+                                 :commit (str name "-head") :branch "main" :dirty? false
+                                 :worktrees [{:root (str "/work/" name) :commit (str name "-head")
+                                              :branch "main" :dirty? false}]})) ["repo-a" "repo-b"])
+          entries [{:type "session" :id "multi-repo-session" :cwd "/work"}
+                   {:type "message" :id "call-a" :parentId nil
+                    :message {:role "assistant" :content [{:type "toolCall" :id "read-a" :name "read"
+                                                           :arguments {:path "/work/repo-a/src/shared.cljs"}}]}}
+                   {:type "message" :id "call-b" :parentId "call-a"
+                    :message {:role "assistant" :content [{:type "toolCall" :id "read-b" :name "read"
+                                                           :arguments {:path "/work/repo-b/src/shared.cljs"}}]}}]
+          adapter (reify memory-adapter/MemorySourceAdapter
+                    (extract-memories [_ _]
+                      {:observations (mapv (fn [id entry]
+                                             {:producer "test-producer" :adapter-version 1 :memory-id id
+                                              :content (str "Memory " id) :timestamp "2026-10-16T00:00:00.000Z"
+                                              :relevance "high" :token-count 1 :recording-entry-id "recording"
+                                              :source-entry-ids [entry] :dropped? false})
+                                           ["aaaaaaaaaaaa" "bbbbbbbbbbbb"] ["call-a" "call-b"])
+                       :reflections [] :diagnostics []}))]
+      (writeFileSync path (str (apply str (map #(str (js/JSON.stringify (clj->js %)) "\n") entries))) "utf8")
+      (-> (index/index-session!
+           {:store (->RecordingEvidenceStore projections (atom [])) :path path :user-uuid "test-user"
+            :memory-adapter adapter
+            :resolve-repository (fn [candidate]
+                                  (js/Promise.resolve (first (filter #(= candidate (:root %)) repositories))))})
+          (.then (fn [_]
+                   (let [projection (first @projections)
+                         files (into {} (map (juxt :id identity) (:files projection)))]
+                     (is (= (set (map :id repositories)) (set (map :repository-id (:files projection))))
+                         "a continuing session retains both repositories, not just its initial cwd")
+                     (is (= ["src/shared.cljs" "src/shared.cljs"] (sort (map :relative-path (:files projection)))))
+                     (doseq [[memory repo] (map vector (:observations projection) repositories)]
+                       (is (= [(:id repo)] (mapv #(:repository-id (get files %)) (:file-ids memory)))
+                           "each observation links only to its cited repository evidence")))))
+          (.catch (fn [error] (is false (.-stack error))))
+          (.finally (fn [] (rmSync directory #js {:recursive true :force true}) (done)))))))
+
+(deftest repository-snapshots-are-reused-without-hiding-nested-roots
+  (async done
+    (-> (js/Promise.all
+         (clj->js
+          (mapv
+           (fn [nested?]
+             (let [directory (mkdtempSync (join (tmpdir) "adam-repo-roots-"))
+                   a (join directory "outer") b (if nested? (join a "nested") (join directory "other"))
+                   roots (mapv (fn [root]
+                                 (evidence/build-repository {:user-uuid "test-user" :root root :commit "head" :dirty? false})) [a b])
+                   calls (atom []) projections (atom [])
+                   file-paths (into [(join a "src" "a.cljs")]
+                                    (map #(join b (str "directory-" %) "b.cljs") (range 50)))
+                   entries (map-indexed (fn [i file]
+                                          {:type "message" :id (str "entry-" i) :parentId (when (pos? i) (str "entry-" (dec i)))
+                                           :message {:role "assistant" :content [{:type "toolCall" :id (str "call-" i)
+                                                                                 :name "read" :arguments {:path file}}]}}) file-paths)
+                   path (join directory "session.jsonl")]
+               (mkdirSync (join b ".git") #js {:recursive true})
+               (writeFileSync path
+                              (apply str (map #(str (js/JSON.stringify (clj->js %)) "\n")
+                                              (cons {:type "session" :id "root-cache" :cwd a} entries))) "utf8")
+               (-> (index/index-session!
+                    {:store (->RecordingEvidenceStore projections (atom [])) :path path :user-uuid "test-user"
+                     :resolve-repository
+                     (fn [candidate]
+                       (swap! calls conj candidate)
+                       (js/Promise.resolve
+                        (first (filter #(or (= candidate (:root %)) (.startsWith candidate (str (:root %) "/")))
+                                       (reverse roots)))))})
+                   (.then (fn [_]
+                            (is (= 2 (count @calls)) "one full snapshot per root, not per source directory")
+                            (is (= (set (map :id roots)) (set (map :id (:repositories (first @projections))))))
+                            (is (= 51 (count (:files (first @projections)))))))
+                   (.finally #(rmSync directory #js {:recursive true :force true})))))
+           [false true])))
+        (.catch #(is false (str %)))
+        (.finally done))))
 
 (deftest workspace-session-discovers-repository-from-selected-explicit-file-evidence
   (async done

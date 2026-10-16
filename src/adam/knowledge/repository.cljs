@@ -1,6 +1,7 @@
 (ns adam.knowledge.repository
   (:require [adam.knowledge.evidence :as evidence]
             [clojure.string :as string]
+            ["node:fs" :refer [existsSync]]
             ["node:path" :as node-path]))
 
 (def ^:private git-timeout-ms 2000)
@@ -97,3 +98,51 @@
                          (= parent candidate) nil
                          :else (walk parent)))))))]
       (walk (.dirname node-path absolute)))))
+
+(defn resolve-file-repositories!
+  "Discover every explicit locator, including when the initial cwd is already Git.
+  Cache positive and negative directory lookups within this reconciliation only."
+  [resolve-repository cwd initial-repository locators]
+  (let [lookups (atom {})
+        boundaries (atom {})
+        nested-boundary?
+        (fn [root directory]
+          (loop [directory directory]
+            (cond
+              (= root directory) false
+              (contains? @boundaries [root directory]) (get @boundaries [root directory])
+              (existsSync (.join node-path directory ".git")) true
+              :else (let [parent (.dirname node-path directory)]
+                      (if (= parent directory) true (recur parent))))))
+        resolve! (fn [directory]
+                   (or (get @lookups directory)
+                       (let [pending (-> (js/Promise.resolve)
+                                         (.then #(resolve-repository directory)))]
+                         (swap! lookups assoc directory pending)
+                         pending)))]
+    (-> (cond initial-repository (js/Promise.resolve initial-repository)
+              resolve-repository (resolve! cwd)
+              :else (js/Promise.resolve nil))
+        (.then
+         (fn [initial]
+           (reduce
+            (fn [pending {:keys [cwd path]}]
+              (.then pending
+                     (fn [repositories]
+                       (let [covered (evidence/resolve-file-across-repositories repositories cwd path)
+                             directory (.dirname node-path (.resolve node-path cwd path))
+                             root (get-in covered [:worktree :root])
+                             nested? (when root (nested-boundary? root directory))]
+                         (when root (swap! boundaries assoc [root directory] nested?))
+                         ;; Reuse a captured root/worktree snapshot, but never let a
+                         ;; parent checkout conceal an explicitly nested Git root.
+                         (if (and covered (not nested?))
+                           repositories
+                           (-> (resolve-from-file-path! resolve! cwd path)
+                               (.then (fn [repository]
+                                        (if (or (nil? repository)
+                                                (some #(= (:id repository) (:id %)) repositories))
+                                          repositories
+                                          (conj repositories repository))))))))))
+            (js/Promise.resolve (if initial [initial] []))
+            (if resolve-repository (distinct locators) [])))))))

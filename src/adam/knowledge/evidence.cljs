@@ -86,6 +86,12 @@
                   :relative-path relative-path}
            :worktree (:worktree match)})))))
 
+(defn resolve-file-across-repositories [repositories cwd path]
+  (->> repositories
+       (keep #(resolve-repository-file-with-worktree % cwd path))
+       (sort-by #(count (get-in % [:worktree :root])) >)
+       first))
+
 (defn resolve-repository-file [repository cwd path]
   (:file (resolve-repository-file-with-worktree repository cwd path)))
 
@@ -192,9 +198,10 @@
 
 (defn extract-projection
   [{:keys [user-uuid pi-session-id session-id source-kind source-session-id
-           cwd repository entries memory-projection]
+           cwd repository repositories entries memory-projection]
     :as input}]
-  (let [source-kind (or source-kind identity/pi-source-kind)
+  (let [repositories (or repositories (when repository [repository]) [])
+        source-kind (or source-kind identity/pi-source-kind)
         source-session-id (or source-session-id pi-session-id)
         selected (selected-entries entries
                                    (if (contains? input :current-leaf-id)
@@ -221,7 +228,7 @@
                    (js/Array.isArray (aget message "content")))
           (doseq [block (array-seq (aget message "content"))]
             (when-let [{:keys [call-id path]} (tool-call-path block)]
-              (when-let [resolved (resolve-repository-file-with-worktree repository cwd path)]
+              (when-let [resolved (resolve-file-across-repositories repositories cwd path)]
                 (swap! paths-by-call assoc call-id resolved)
                 (add-evidence! (:entry-id stored) resolved)))))))
     (doseq [{:keys [stored value]} selected]
@@ -275,6 +282,7 @@
        :session-id session-id
        :pi-session-id pi-session-id
        :repository repository
+       :repositories repositories
        :files (->> (vals @files) (sort-by :relative-path) vec)
        :entry-file-evidence (->> (vals @evidence-by-entry)
                                  (sort-by (juxt :entry-id :file-id))

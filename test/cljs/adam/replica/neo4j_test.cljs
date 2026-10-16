@@ -478,7 +478,7 @@
                    ^js reflection (first (array-seq (aget (:params reflection-call) "reflections")))]
                (is (some #(re-find #"DELETE touch" %) queries))
                (is (some #(re-find #"WORKED_ON" %) queries))
-               (is (some #(re-find #"worked\.root = \$root" %) queries))
+               (is (some #(re-find #"worked\.root = input\.root" %) queries))
                (is (some #(re-find #"s\.codeMemoryVersion = \$extractorVersion" %) queries))
                (is (not-any? #(re-find #"\(u\)-\[:OWNS\]->\(repository\)" %) queries))
                (is (some #(re-find #"AdamCodeFile" %) queries))

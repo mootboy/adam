@@ -80,6 +80,39 @@
              (rmSync root #js {:recursive true :force true})
              (done)))))))
 
+(deftest continuing-claude-session-discovers-each-records-repository
+  (async done
+    (let [root (mkdtempSync (join (tmpdir) "adam-claude-multi-repo-"))
+          projections (atom [])
+          repositories
+          (mapv (fn [path remote commit]
+                  (common-evidence/build-repository
+                   {:user-uuid user-uuid :root path :remote remote :commit commit :branch "main" :dirty? false}))
+                ["/work/repo" "/work/tree"] ["https://example.com/repo-a.git" nil] ["a-head" "b-head"])]
+      (-> (reconcile/reconcile!
+           {:locator-options {:config-home root}
+            :notification {:event "Stop" :session-id "claude-session-1"
+                           :transcript-path main-fixture :cwd "/work/repo"}
+            :user-uuid user-uuid :store :store
+            :sync! (fn [_] (js/Promise.resolve {:status :unchanged}))
+            :resolve-repository! (fn [cwd _]
+                                   (js/Promise.resolve (first (filter #(= cwd (:root %)) repositories))))
+            :ensure-file-schema! (fn [_] (js/Promise.resolve nil))
+            :index-file-evidence! (fn [_ projection]
+                                    (swap! projections conj projection) (js/Promise.resolve nil))})
+          (.then (fn [_]
+                   (let [projection (first @projections)
+                         files (into {} (map (juxt :id identity) (:files projection)))
+                         evidence (:entry-file-evidence projection)]
+                     (is (= (set (map :id repositories)) (set (map :id (:repositories projection)))))
+                     (is (= (set (map :id repositories)) (set (map :repository-id (:files projection)))))
+                     (is (= 6 (count evidence)) "read in A; edit/write in B, with their matched results")
+                     (doseq [item evidence]
+                       (is (= (if (= (:repository-id (get files (:file-id item))) (:id (first repositories)))
+                                "a-head" "b-head") (:commit item)))))))
+          (.catch #(is false (str %)))
+          (.finally (fn [] (rmSync root #js {:recursive true :force true}) (done)))))))
+
 (deftest removed-subagent-transcript-projects-evidence-from-its-mirrored-entries
   (async done
     (let [root (mkdtempSync (join (tmpdir) "adam-reconcile-test-"))

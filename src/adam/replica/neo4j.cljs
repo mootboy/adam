@@ -887,41 +887,44 @@
                :extractorVersion (:extractor-version projection)})))))
 
 (defn- write-file-evidence-transaction! [^js tx projection]
-  (let [repository (:repository projection)]
+  (let [repositories (or (:repositories projection)
+                         (when-let [repository (:repository projection)] [repository]))]
     (-> (.run
          tx
          "MATCH (s:AdamSession {id: $sessionId})
-          MERGE (repository:AdamRepository {id: $repository.id})
-          SET repository.normalizedOrigin = $repository.normalizedOrigin
+          UNWIND $repositories AS input
+          MERGE (repository:AdamRepository {id: input.id})
+          SET repository.normalizedOrigin = input.normalizedOrigin
           REMOVE repository.root, repository.normalizedRemote
-          WITH s, repository
+          WITH s, repository, input
           OPTIONAL MATCH (:AdamUser)-[legacyOwnership:OWNS]->(repository)
           DELETE legacyOwnership
-          WITH s, repository
+          WITH s, repository, input
           MERGE (s)-[worked:WORKED_ON]->(repository)
-          SET worked.root = $root,
-              worked.commit = $commit,
-              worked.branch = $branch,
-              worked.dirty = $dirty,
+          SET worked.root = input.root,
+              worked.commit = input.commit,
+              worked.branch = input.branch,
+              worked.dirty = input.dirty,
               worked.extractorVersion = $extractorVersion,
               worked.indexedAt = datetime()"
          #js {:sessionId (:session-id projection)
-              :repository (repository-properties repository)
-              :root (:root repository) :commit (:commit repository)
-              :branch (:branch repository) :dirty (= true (:dirty? repository))
+              :repositories (clj->js (mapv (fn [repository]
+                                             (merge (js->clj (repository-properties repository))
+                                                    {"root" (:root repository) "commit" (:commit repository)
+                                                     "branch" (:branch repository) "dirty" (= true (:dirty? repository))}))
+                                           repositories))
               :extractorVersion (:extractor-version projection)})
         (.then
          (fn [_]
            (.run
             tx
-            "MATCH (repository:AdamRepository {id: $repositoryId})
-             UNWIND $files AS input
+            "UNWIND $files AS input
+             MATCH (repository:AdamRepository {id: input.repositoryId})
              MERGE (file:AdamCodeFile {id: input.id})
              SET file.repositoryId = input.repositoryId,
                  file.relativePath = input.relativePath
              MERGE (repository)-[:CONTAINS]->(file)"
-            #js {:repositoryId (:id repository)
-                 :files (clj->js (mapv file-properties (:files projection)))})))
+            #js {:files (clj->js (mapv file-properties (:files projection)))})))
         (.then
          (fn [_]
            (.run
@@ -945,7 +948,7 @@
   (-> (clear-file-evidence-transaction! tx projection)
       (.then
        (fn [_]
-         (if (:repository projection)
+         (if (or (seq (:repositories projection)) (:repository projection))
            (write-file-evidence-transaction! tx projection)
            (js/Promise.resolve nil))))
       (.then (fn [_] (replace-memory-projection! tx projection)))))

@@ -4,6 +4,10 @@ All notable changes to adam are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Retain multiple repositories and per-worktree evidence in continuing Pi/Claude sessions. Repository filters follow observation files and reflection supports; only single-context sessions supply scope to unlinked discussion. Reference reads count as contexts and may appear in grant-authorized origin hints. No bulk repair or migration of existing data; correction uses normal reconciliation. Dedicated repair and local file locators remain deferred.
+
 ## [0.5.1] - 2026-10-16
 
 ### Added

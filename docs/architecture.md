@@ -112,7 +112,7 @@ For repositories with a normalizable Git origin, repository identity is the cred
 
 Originless repositories use a user-scoped local fallback derived from their resolved root. They cannot converge across machines or users and cannot be queried by origin.
 
-When a session cwd is a non-Git workspace, the selected branch is searched in session order for the first explicit file-tool path that resolves to a repository. Shell commands, prose, and path-looking memory text never establish evidence.
+Repository discovery considers the session cwd and every selected explicit file-tool locator, even after one repository resolves. Pi relative paths use the session cwd; Claude relative paths use each call record's cwd. Known containing checkout/worktree snapshots are reused, with nested Git boundaries checked before skipping discovery. One session-wide replacement clears evidence once and writes all discovered repositories and their files, preserving per-evidence revisions. Shell commands, prose, and path-looking memory text never establish file evidence. Path containment remains lexical: cross-repository symlink aliases are not supported for attribution and can retain the lexical checkout's scope; use actual checkout/worktree paths. Full realpath-aware attribution is deferred.
 
 The projection follows parent links from the recorded current leaf. Abandoned branches remain in the lossless replica but do not contribute current code-memory associations.
 
