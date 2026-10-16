@@ -1,5 +1,6 @@
 (ns adam.derivation.read
-  (:require [adam.derivation.config :as config]
+  (:require [adam.derivation.completion :as completion]
+            [adam.derivation.config :as config]
             [adam.derivation.core :as core]
             [adam.derivation.store :as store]
             [adam.replica.identity :as identity]
@@ -226,6 +227,7 @@
                  work))]
     (.registerCommand extension "adam:derivations"
       #js {:description "Read saved derivations: [name] [--history] [--evidence conclusion-ID] [--cursor continuation] [--limit 1..20] [--depth full|active|observations|reflections] [one repository/session/language selector]"
+           :getArgumentCompletions #(completion/arguments true %)
            :handler (fn [arguments ^js ctx]
                       (-> (run! #(parse-command arguments) nil)
                           (.then (fn [result] (.notify (.-ui ctx) (:content result) "info") js/undefined))

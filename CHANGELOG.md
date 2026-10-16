@@ -4,6 +4,10 @@ All notable changes to adam are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Native Pi argument completion for `/adam:derive` and `/adam:derivations`: flags, evidence-depth and language values, plus saved-read limits. Preserves preceding arguments and omits used/incompatible flags without configuration, graph or model work.
+
 ## [0.5.0] - 2026-10-15
 
 ### Added

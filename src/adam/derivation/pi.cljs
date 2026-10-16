@@ -1,5 +1,6 @@
 (ns adam.derivation.pi
-  (:require [adam.derivation.config :as config]
+  (:require [adam.derivation.completion :as completion]
+            [adam.derivation.config :as config]
             [adam.derivation.core :as core]
             [cljs.spec.alpha :as s]
             ["node:buffer" :refer [Buffer]]
@@ -228,6 +229,7 @@
   (let [active (atom #{}) closed? (atom false)]
     (.registerCommand extension "adam:derive"
       #js {:description "Explicitly refresh configured derivations: [name] [--depth full|active|observations|reflections] [--repository origin|--session urn|--language language]"
+           :getArgumentCompletions #(completion/arguments false %)
            :handler
            (fn [arguments ^js ctx]
              (let [controller (js/AbortController.)
