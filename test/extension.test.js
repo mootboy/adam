@@ -4,6 +4,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import adam from "../extension.js";
 import { isolatedAdamEnvironment } from "./support/adam-environment.js";
 
@@ -34,6 +36,20 @@ test("the compiled ClojureScript extension registers and serves adam:status", as
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+  }
+
+  // Exercise Pi's own editor completion contract, not just callback return values.
+  // Resolve its host-provided TUI through the peer; Adam adds no TUI dependency.
+  const peerRequire = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"));
+  const { CombinedAutocompleteProvider } = await import(pathToFileURL(peerRequire.resolve("@earendil-works/pi-tui")).href);
+  const provider = new CombinedAutocompleteProvider([...commands].map(([name, definition]) => ({ name, ...definition })), process.cwd());
+  for (const command of ["adam:derive", "adam:derivations"]) {
+    const line = `/${command} preferences --depth ref`;
+    const suggestions = await provider.getSuggestions([line], 0, line.length, {});
+    assert.equal(suggestions.items.length, 1);
+    const applied = provider.applyCompletion([line], 0, line.length, suggestions.items[0], suggestions.prefix);
+    assert.equal(applied.lines[0], `/${command} preferences --depth reflections`);
+    assert.equal(applied.cursorCol, applied.lines[0].length);
   }
 
   const status = commands.get("adam:status");
