@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -102,9 +102,14 @@ test("compiled lifecycle callbacks expose no Pi event result for ephemeral sessi
   }
 });
 
-test("compiled derivation commands complete the checkout origin without Neo4j", () => {
+test("compiled derivation commands complete configured names and the checkout without Neo4j", () => {
   const root = mkdtempSync(path.join(tmpdir(), "adam-repository-completion-"));
   try {
+    const env = isolatedAdamEnvironment(root);
+    const configDirectory = path.join(env.XDG_CONFIG_HOME, "adam");
+    mkdirSync(configDirectory, { recursive: true });
+    writeFileSync(path.join(configDirectory, "derivations.yaml"),
+      "derivations:\n  architectural-preferences:\n    version: 1\n    guidance: Preserve scope.\n", { mode: 0o600 });
     execFileSync("git", ["init", "-q", root]);
     execFileSync("git", ["-C", root, "remote", "add", "origin", "https://alice:FAKE_SECRET@example.com/checkout.git"]);
     const program = `
@@ -113,12 +118,14 @@ test("compiled derivation commands complete the checkout origin without Neo4j", 
       const commands = new Map();
       await adam({ registerCommand(name, definition) { commands.set(name, definition); }, on() {} });
       for (const name of ["adam:derive", "adam:derivations"]) {
+        const recipes = await commands.get(name).getArgumentCompletions("arch");
+        assert.deepEqual(recipes.map(item => item.value), ["architectural-preferences"]);
         const items = await commands.get(name).getArgumentCompletions("preferences --repository ");
         assert.deepEqual(items.map(item => item.value), ["preferences --repository https://example.com/checkout"]);
       }
     `;
     execFileSync(process.execPath, ["--input-type=module", "-e", program],
-      { env: isolatedAdamEnvironment(root), cwd: root, encoding: "utf8", timeout: 15000 });
+      { env, cwd: root, encoding: "utf8", timeout: 15000 });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
