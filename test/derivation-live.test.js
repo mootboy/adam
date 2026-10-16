@@ -180,3 +180,49 @@ test("packaged Pi generation, restart reuse and Pi/MCP reads preserve saved hist
     }
   }
 });
+
+test("packaged Pi repository completion discovers authorized origins through its lazy read pool", async t => {
+  if (!process.env.ADAM_TEST_NEO4J_URI) return t.skip("opt-in disposable Neo4j only");
+  requireDisposableNeo4j();
+  const root = await mkdtemp(path.join(tmpdir(), "adam-repository-live-"));
+  const env = { ...isolatedAdamEnvironment(root),
+    ADAM_NEO4J_URI: process.env.ADAM_TEST_NEO4J_URI,
+    ADAM_NEO4J_USERNAME: process.env.ADAM_TEST_NEO4J_USERNAME,
+    ADAM_NEO4J_PASSWORD: process.env.ADAM_TEST_NEO4J_PASSWORD,
+    ADAM_NEO4J_DATABASE: process.env.ADAM_TEST_NEO4J_DATABASE ?? "neo4j",
+  };
+  const uuid = await seedTestIdentity(env);
+  const ids = [`urn:adam:user:${uuid}`, `urn:adam:session:${uuid}:pi:completion`,
+    `completion-repo:${uuid}`, `completion-memory:${uuid}`];
+  const origin = `example.com/authorized-${uuid}`;
+  const driver = neo4j.driver(env.ADAM_NEO4J_URI, neo4j.auth.basic(env.ADAM_NEO4J_USERNAME, env.ADAM_NEO4J_PASSWORD));
+  const session = driver.session({ database: env.ADAM_NEO4J_DATABASE });
+  try {
+    await session.run(`CREATE (u:AdamUser {id:$ids[0]}), (s:AdamSession {id:$ids[1]}),
+      (r:AdamRepository {id:$ids[2], normalizedOrigin:$origin}), (m:AdamObservation {id:$ids[3]}),
+      (u)-[:OWNS]->(s), (s)-[:HAS_MEMORY]->(m), (s)-[:WORKED_ON]->(r)`, { ids, origin });
+    const program = `
+      import assert from 'node:assert/strict';
+      import extension from './extension.js';
+      process.chdir(${JSON.stringify(root)});
+      const commands = new Map(), events = new Map();
+      extension({ registerCommand(n,c) { commands.set(n,c); }, registerTool() {}, on(n,h) { events.set(n,h); } });
+      for (const command of ['adam:derive', 'adam:derivations']) {
+        let found = false;
+        for (let attempt = 0; attempt < 30 && !found; attempt++) {
+          const items = await commands.get(command).getArgumentCompletions('--repository ');
+          found = (items ?? []).some(item => item.value === ${JSON.stringify('--repository https://' + origin)});
+          if (!found) await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        assert.ok(found, 'expected directly authorized repository value for ' + command);
+      }
+      await events.get('session_shutdown')({}, {});
+    `;
+    const result = await probe(program, env);
+    await assertTestIdentity(env, uuid);
+    assert.equal(result.code, 0, result.stderr);
+  } finally {
+    await session.run('MATCH (n) WHERE n.id IN $ids DETACH DELETE n', { ids });
+    await session.close(); await driver.close(); await rm(root, { recursive: true, force: true });
+  }
+});

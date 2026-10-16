@@ -1,7 +1,8 @@
 (ns adam.derivation.completion-test
-  (:require [adam.derivation.pi :as pi]
+  (:require [adam.derivation.completion :as completion]
+            [adam.derivation.pi :as pi]
             [adam.derivation.read :as read]
-            [cljs.test :refer [deftest is]]))
+            [cljs.test :refer [async deftest is]]))
 
 (deftest registered-command-completions-are-context-aware-and-side-effect-free
   (let [commands (atom {}) calls (atom 0)
@@ -40,3 +41,49 @@
               (is (nil? (complete "preferences --evidence ")))
               (is (not-any? #(= "--history" (aget % "label")) (complete "preferences --history --"))))))))
     (is (zero? @calls))))
+
+(deftest repository-values-share-a-local-first-cache-across-commands
+  (async done
+    (let [time (atom 0) cwd (atom "/checkout") calls (atom []) graph (js/Promise.withResolvers)
+          cache (completion/repository-cache
+                 {:now-ms #(deref time) :get-cwd #(deref cwd)
+                  :load-checkout! (fn [directory] (swap! calls conj [:git directory])
+                                    (js/Promise.resolve "git@EXAMPLE.com:current.git"))
+                  :load-authorized! (fn [_] (swap! calls conj :graph)
+                                      (if (zero? @time) (.-promise graph) (js/Promise.reject (js/Error. "offline"))))})
+          commands (atom {}) extension #js {:registerCommand (fn [name definition] (swap! commands assoc name definition))
+                                            :registerTool (fn [& _])}
+          _ (pi/register-command! extension {:complete-arguments! #((:complete! cache) false %)})
+          _ (read/register-pi! extension {:complete-arguments! #((:complete! cache) true %)} true)
+          complete (fn [name prefix] ((aget (get @commands name) "getArgumentCompletions") prefix))
+          values #(mapv (fn [item] (aget item "value")) %)]
+      (is (seq (complete "adam:derive" "--dep")))
+      (is (empty? @calls))
+      (-> (js/Promise.resolve (complete "adam:derive" "preferences --repository "))
+          (.then (fn [items]
+                   (is (= ["preferences --repository https://example.com/current"] (values items)))
+                   (is (= #{[:git "/checkout"] :graph} (set @calls)))
+                   ((.-resolve graph) ["https://alice:SECRET@example.com/granted.git" "example.com/current"
+                                      "git@example.com:bad\u202e" "git@example.com:bad space" "git@example.com:工程"])
+                   ((:warm! cache))))
+          (.then (fn [_] (complete "adam:derive" "preferences --repository git@")))
+          (.then (fn [items]
+                   (is (= ["preferences --repository git@example.com:工程"] (values items)))
+                   (complete "adam:derivations" "preferences --repository https://example.com/g")))
+          (.then (fn [items]
+                   (is (= ["preferences --repository https://example.com/granted"] (values items)))
+                   (is (= 2 (count @calls)))
+                   (reset! time 31000)
+                   (complete "adam:derive" "preferences --repository ")))
+          (.then (fn [items]
+                   (is (= ["preferences --repository https://example.com/current"] (values items))
+                       "expired authorized hints are not retained after a failed reload")
+                   (reset! cwd "/another")
+                   (complete "adam:derivations" "--repository ")))
+          (.then (fn [_]
+                   (is (= 2 (count (filter #{:graph} @calls))) "cwd changes do not refetch the same authorized list")
+                   (is (some #{[:git "/another"]} @calls))
+                   ((:close! cache))
+                   (is (nil? (complete "adam:derive" "--repository ")))))
+          (.catch (fn [error] (is false (.-stack error))))
+          (.finally done)))))

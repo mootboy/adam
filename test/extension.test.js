@@ -101,3 +101,25 @@ test("compiled lifecycle callbacks expose no Pi event result for ephemeral sessi
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("compiled derivation commands complete the checkout origin without Neo4j", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "adam-repository-completion-"));
+  try {
+    execFileSync("git", ["init", "-q", root]);
+    execFileSync("git", ["-C", root, "remote", "add", "origin", "https://alice:FAKE_SECRET@example.com/checkout.git"]);
+    const program = `
+      import assert from "node:assert/strict";
+      import adam from ${JSON.stringify(new URL("../extension.js", import.meta.url).href)};
+      const commands = new Map();
+      await adam({ registerCommand(name, definition) { commands.set(name, definition); }, on() {} });
+      for (const name of ["adam:derive", "adam:derivations"]) {
+        const items = await commands.get(name).getArgumentCompletions("preferences --repository ");
+        assert.deepEqual(items.map(item => item.value), ["preferences --repository https://example.com/checkout"]);
+      }
+    `;
+    execFileSync(process.execPath, ["--input-type=module", "-e", program],
+      { env: isolatedAdamEnvironment(root), cwd: root, encoding: "utf8", timeout: 15000 });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

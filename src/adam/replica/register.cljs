@@ -1,5 +1,6 @@
 (ns adam.replica.register
-  (:require [adam.derivation.config :as derivation-config]
+  (:require [adam.derivation.completion :as derivation-completion]
+            [adam.derivation.config :as derivation-config]
             [adam.derivation.pi :as derivation-pi]
             [adam.derivation.read :as derivation-read]
             [adam.knowledge.runtime :as query-runtime]
@@ -149,6 +150,7 @@
          initialized-identities (atom #{})
          file-evidence-schema-promise (atom nil)
          derivation-schema-promise (atom nil)
+         completion-cwd (atom (or (:cwd options) (.cwd js/process)))
          warned-unavailable? (atom false)
          create-replica (or (:create-replica options)
                             #(neo4j/create-replica resolved-config))
@@ -563,10 +565,26 @@
          saved-read-deps
          (or (:derivation-read-dependencies options)
              (derivation-read/from-query-runtime (:dependencies saved-query-runtime)))
-         saved-reads (derivation-read/register-pi! pi saved-read-deps (:enabled? resolved-config))
+         repository-completions
+         (derivation-completion/repository-cache
+          {:get-cwd #(deref completion-cwd)
+           :load-checkout! (or (:completion-checkout! options)
+                               (fn [cwd]
+                                 (-> (query-runtime/node-exec! "git" #js ["config" "--get" "remote.origin.url"]
+                                                              #js {:cwd cwd :timeout 2000})
+                                     (.then (fn [result] (when (zero? (aget result "code")) (aget result "stdout")))))))
+           :load-authorized! (fn [signal]
+                               (if (and (:enabled? resolved-config) (:load-repository-origins! saved-read-deps))
+                                 ((:load-repository-origins! saved-read-deps)
+                                  (js/AbortSignal.any #js [signal (js/AbortSignal.timeout 3000)]))
+                                 (js/Promise.resolve [])))})
+         saved-reads (derivation-read/register-pi! pi
+                       (assoc saved-read-deps :complete-arguments! #((:complete! repository-completions) true %))
+                       (:enabled? resolved-config))
          derivations
          (derivation-pi/register-command!
            pi {:configured? (:enabled? resolved-config)
+               :complete-arguments! #((:complete! repository-completions) false %)
                :load-config! (or (:load-derivation-config! options) derivation-pi/read-configuration)
                :operations (:derivation-operations options)
                :provider-fn (or (:derivation-provider options) derivation-pi/provider)
@@ -607,6 +625,7 @@
                                                (.then ready (fn [_] db)))))))))})
          shutdown!
          (fn []
+           ((:close! repository-completions))
            (-> ((:shutdown! derivations))
                (.then (fn [_] ((:shutdown! saved-reads))))
                (.then (fn [_] ((:close! saved-query-runtime))))
@@ -655,10 +674,14 @@
                  "on"
                  event
                  (fn [_event ctx]
+                   (when-let [cwd (aget ctx "cwd")] (reset! completion-cwd cwd))
                    ;; Pi interprets turn_end results as boundary drafts. Internal
                    ;; ClojureScript maps have an entries() method, not draft data.
                    (-> (synchronize! ctx (keyword (string/replace event "_" "-")))
-                       (.then (fn [_] js/undefined))))))
+                       (.then (fn [_]
+                                (when (and (= event "session_start") (:connected? @runtime-state))
+                                  ((:warm! repository-completions)))
+                                js/undefined))))))
        (invoke pi "on" "session_shutdown" (fn [_event _ctx] (shutdown!))))
      {:status (fn [] @runtime-state)
       :synchronize! synchronize!

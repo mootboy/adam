@@ -13,6 +13,12 @@
 
 (defn dependencies [get-db!]
   {:load-configuration! config/read-configuration
+   :load-repository-origins! (fn [signal]
+                               (-> (js/Promise.resolve)
+                                   (.then (fn []
+                                            (when (and signal (.-aborted signal)) (config/reject! :cancelled "completion closed"))
+                                            (get-db!)))
+                                   (.then #(store/repository-origins! % signal))))
    :load-snapshot! (fn [request signal]
                      (-> (js/Promise.resolve)
                          (.then (fn [_] (get-db!)))
@@ -227,7 +233,7 @@
                  work))]
     (.registerCommand extension "adam:derivations"
       #js {:description "Read saved derivations: [name] [--history] [--evidence conclusion-ID] [--cursor continuation] [--limit 1..20] [--depth full|active|observations|reflections] [one repository/session/language selector]"
-           :getArgumentCompletions #(completion/arguments true %)
+           :getArgumentCompletions (or (:complete-arguments! deps) #(completion/arguments true %))
            :handler (fn [arguments ^js ctx]
                       (-> (run! #(parse-command arguments) nil)
                           (.then (fn [result] (.notify (.-ui ctx) (:content result) "info") js/undefined))
