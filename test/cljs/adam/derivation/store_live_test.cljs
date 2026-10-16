@@ -554,3 +554,46 @@
           (.finally (fn [] (-> (.run session "MATCH (n) WHERE n.id IN $ids DETACH DELETE n" params)
                               (.finally #(.close session)) (.finally #(.close driver)))))
           (.finally done)))))
+
+(deftest live-repository-completion-is-directly-authorized-and-unambiguous
+  (async done
+    (let [uuid (randomUUID) env js/process.env
+          users (mapv #(str "urn:adam:user:" uuid "-" %) ["self" "grant" "third"])
+          rows (mapv (fn [i owner origin memory?]
+                       {:owner owner :sid (str "urn:adam:session:" uuid ":pi:completion-" i)
+                        :repo (str "completion-repo:" uuid ":" i)
+                        :origin origin :memory memory?})
+                     (range) [(users 0) (users 1) (users 2) (users 0)]
+                     ["example.com/self" "example.com/granted" "example.com/transitive" "example.com/empty"]
+                     [true true true false])
+          rows (mapv #(assoc % :mid (str "completion-memory:" uuid ":" (:sid %))) rows)
+          ids (into users (mapcat #(vector (:sid %) (:repo %) (:mid %)) rows))
+          driver ((.-driver neo4j) (aget env "ADAM_TEST_NEO4J_URI")
+                  (.basic (.-auth neo4j) (aget env "ADAM_TEST_NEO4J_USERNAME") (aget env "ADAM_TEST_NEO4J_PASSWORD")))
+          session (.session driver #js {:database (or (aget env "ADAM_TEST_NEO4J_DATABASE") "neo4j")})
+          db (store/with-driver driver (or (aget env "ADAM_TEST_NEO4J_DATABASE") "neo4j") (users 0))
+          params #js {:users (clj->js users) :rows (clj->js rows) :ids (clj->js ids)}
+          check! (fn [expected] (-> (store/repository-origins! db nil) (.then #(is (= expected %)))))]
+      (-> (.run session
+            "UNWIND $users AS id CREATE (:AdamUser {id:id})
+             WITH count(*) AS ignored UNWIND $rows AS row MATCH (owner:AdamUser {id:row.owner})
+             CREATE (s:AdamSession {id:row.sid}), (repo:AdamRepository {id:row.repo, normalizedOrigin:row.origin}),
+                    (owner)-[:OWNS]->(s), (s)-[:WORKED_ON]->(repo)
+             FOREACH (_ IN CASE WHEN row.memory THEN [1] ELSE [] END |
+               CREATE (m:AdamObservation {id:row.mid}), (s)-[:HAS_MEMORY]->(m))
+             WITH count(*) AS ignored
+             MATCH (r:AdamUser {id:$users[0]}), (g:AdamUser {id:$users[1]}), (t:AdamUser {id:$users[2]})
+             CREATE (g)-[:GRANTS_MEMORY_ACCESS {permission:'read'}]->(r),
+                    (t)-[:GRANTS_MEMORY_ACCESS {permission:'read'}]->(g)" params)
+          (.then (fn [_] (check! ["example.com/granted" "example.com/self"])))
+          (.then (fn [_] (.run session "MATCH (:AdamUser {id:$users[1]})-[g:GRANTS_MEMORY_ACCESS]->(:AdamUser {id:$users[0]}) DELETE g" params)))
+          (.then (fn [_] (check! ["example.com/self"])))
+          (.then (fn [_] (.run session
+                           "MATCH (r:AdamUser {id:$users[0]}), (g:AdamUser {id:$users[1]}), (t:AdamUser {id:$users[2]}),
+                                  (g)-[:OWNS]->(s:AdamSession)
+                            CREATE (g)-[:GRANTS_MEMORY_ACCESS {permission:'read'}]->(r), (t)-[:OWNS]->(s)" params)))
+          (.then (fn [_] (check! ["example.com/self"])))
+          (.catch (fn [error] (is false (.-stack error))))
+          (.finally (fn [] (-> (.run session "MATCH (n) WHERE n.id IN $ids DETACH DELETE n" params)
+                               (.finally #(.close session)) (.finally #(.close driver)))))
+          (.finally done)))))

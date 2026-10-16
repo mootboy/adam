@@ -1026,6 +1026,34 @@
                       ;; close wind down; a second close can be an immediate no-op.
                       (when @closing (js/Promise.allSettled #js [@closing work-promise]))))))))
 
+(defn repository-origins!
+  "Origin hints only, from self/direct-grant memory ownership; no source content or DDL."
+  [db signal]
+  (with-session! db
+    (fn [^js session]
+      (abortable-read! session signal
+        #(-> (.executeRead session
+                (fn [^js tx]
+                  (.run tx
+                    "MATCH (reader:AdamUser {id: $readerId})
+                     CALL { WITH reader RETURN reader AS owner
+                            UNION
+                            WITH reader MATCH (owner:AdamUser)-[:GRANTS_MEMORY_ACCESS {permission: 'read'}]->(reader)
+                            RETURN owner }
+                     WITH DISTINCT owner
+                     MATCH (owner)-[:OWNS]->(s:AdamSession)-[:WORKED_ON]->(repo:AdamRepository)
+                     WHERE repo.normalizedOrigin IS NOT NULL
+                       AND NOT EXISTS { MATCH (other:AdamUser)-[:OWNS]->(s) WHERE other <> owner }
+                       AND EXISTS {
+                         MATCH (s)-[:HAS_MEMORY]->(m)
+                         WHERE ((m:AdamObservation AND NOT m:AdamReflection) OR (m:AdamReflection AND NOT m:AdamObservation))
+                           AND NOT EXISTS { MATCH (other:AdamSession)-[:HAS_MEMORY]->(m) WHERE other <> s }
+                       }
+                     RETURN DISTINCT repo.normalizedOrigin AS origin ORDER BY origin"
+                    #js {:readerId (:principal db)}))
+                #js {:timeout 2000})
+             (.then (fn [result] (mapv (fn [row] (field row "origin")) (rows result)))))))))
+
 (defn read-snapshot!
   "Read-only full freshness: complete authorized generation rows/anchors; no DDL/repair."
   ([db request] (read-snapshot! db request nil))

@@ -12,7 +12,7 @@ Use Pi's existing `getArgumentCompletions` integration for `/adam:derive` and `/
 - [x] Complete applicable flags and known depth/language values; saved reads additionally complete limits 1–20.
 - [x] Preserve preceding arguments/whitespace; replace only the current token through Pi's full-argument replacement contract.
 - [x] Suppress used flags, mutually exclusive selectors, unsupported/repeated flags and invalid known values.
-- [x] Free-form names/locators/tokens remain manually supplied. Tab performs no configuration reads, Neo4j work, source scans or model calls; registration remains inert.
+- [x] The initial static completion increment leaves free-form names/locators/tokens manually supplied and performs no IO; registration remains inert. Repository-value completion is extended separately by issue 033 with a lazy authorized metadata cache.
 - [x] Parameterized registered-command tests and compiled-extension acceptance through Pi's actual autocomplete provider/applyCompletion.
 - [x] Final clean CI and generated-runtime drift checks: 262 ClojureScript tests/1,682 assertions and 39 Node tests (34 pass/five expected opt-in skips), including Pi-native completion application against compiled Adam. No local live database was required.
 

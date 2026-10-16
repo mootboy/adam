@@ -6,7 +6,8 @@ All notable changes to adam are documented here.
 
 ### Added
 
-- Native Pi argument completion for `/adam:derive` and `/adam:derivations`: flags, evidence-depth and language values, plus saved-read limits. Preserves preceding arguments and omits used/incompatible flags without configuration, graph or model work.
+- Native Pi argument completion for `/adam:derive` and `/adam:derivations`: flags, evidence-depth and language values, plus saved-read limits. Preserves preceding arguments and omits used/incompatible flags.
+- Repository-value completion includes the current checkout and directly authorized memory-session origins through a shared 30-second metadata cache. Static options stay IO-free; repository lookup reads no source content, invokes no model and performs no schema initialization. Actual commands reauthorize independently of cached hints.
 
 ## [0.5.0] - 2026-10-15
 

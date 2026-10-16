@@ -224,12 +224,12 @@
 
 (def read-configuration config/read-configuration)
 
-(defn register-command! [^js extension {:keys [get-db! load-config! configured? operations provider-fn]
+(defn register-command! [^js extension {:keys [get-db! load-config! configured? operations provider-fn complete-arguments!]
                                       :or {load-config! read-configuration provider-fn provider}}]
   (let [active (atom #{}) closed? (atom false)]
     (.registerCommand extension "adam:derive"
       #js {:description "Explicitly refresh configured derivations: [name] [--depth full|active|observations|reflections] [--repository origin|--session urn|--language language]"
-           :getArgumentCompletions #(completion/arguments false %)
+           :getArgumentCompletions (or complete-arguments! #(completion/arguments false %))
            :handler
            (fn [arguments ^js ctx]
              (let [controller (js/AbortController.)
