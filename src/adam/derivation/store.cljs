@@ -560,9 +560,40 @@
       (assoc :supporting-memory-ids
              (input-supports value source-kind (first sessions) (vec (field row "supportRecords")))))))
 
+;; A linked file with missing repository provenance stays unknown; it must not
+;; fall back to session context. Unlinked supports inherit context individually.
+(def ^:private memory-repositories-query
+  "CALL { WITH m, s
+     OPTIONAL MATCH (m:AdamReflection)-[:SUPPORTED_BY]->(support:AdamObservation)
+     WHERE NOT support:AdamReflection
+       AND EXISTS { MATCH (s)-[:HAS_MEMORY]->(support) }
+       AND NOT EXISTS { MATCH (other:AdamSession)-[:HAS_MEMORY]->(support) WHERE other <> s }
+       AND support.memoryId IN coalesce(m.supportingObservationIds, [])
+       AND CASE WHEN s.sourceKind = 'pi' AND trim(coalesce(support.producer, '')) = ''
+                THEN 'pi-observational-memory' ELSE support.producer END
+         = CASE WHEN s.sourceKind = 'pi' AND trim(coalesce(m.producer, '')) = ''
+                THEN 'pi-observational-memory' ELSE m.producer END
+     WITH m, s, collect(DISTINCT support) AS supports
+     WITH s, CASE WHEN m:AdamObservation THEN [m] ELSE supports END AS subjects
+     OPTIONAL MATCH (s)-[:WORKED_ON]->(context:AdamRepository)
+     WITH subjects, collect(DISTINCT context) AS contexts
+     CALL { WITH subjects, contexts
+            UNWIND subjects AS subject
+            OPTIONAL MATCH (subject)-[:ABOUT]->(file:AdamCodeFile)
+            WITH contexts, subject, collect(DISTINCT file) AS files
+            CALL { WITH files UNWIND files AS file
+                   MATCH (repo:AdamRepository)-[:CONTAINS]->(file)
+                   RETURN collect(DISTINCT repo) AS evidenced }
+            WITH CASE WHEN size(files) > 0 THEN evidenced
+                      WHEN size(contexts) = 1 THEN contexts ELSE [] END AS selected
+            UNWIND selected AS repo
+            RETURN collect(DISTINCT repo) AS repositories }
+     RETURN [r IN repositories WHERE r.normalizedOrigin IS NOT NULL | r.normalizedOrigin] AS repositoryOrigins,
+            [r IN repositories | r.id] AS repositoryIds }")
+
 (defn- input-memories! [^js tx principal]
   (-> (.run tx
-        "MATCH (reader:AdamUser {id: $readerId})
+        (str "MATCH (reader:AdamUser {id: $readerId})
          CALL { WITH reader RETURN reader AS owner
                 UNION
                 WITH reader MATCH (owner:AdamUser)-[:GRANTS_MEMORY_ACCESS {permission: 'read'}]->(reader)
@@ -585,9 +616,7 @@
          CALL { WITH m OPTIONAL MATCH (m)-[:SUPPORTED_BY]->(support:AdamObservation)
                 RETURN collect(DISTINCT support {.id, .memoryId, .producer,
                   sessionIds: [(support)<-[:HAS_MEMORY]-(supportSession:AdamSession) | supportSession.id]}) AS supportRecords }
-         CALL { WITH s OPTIONAL MATCH (s)-[:WORKED_ON]->(repo:AdamRepository)
-                RETURN collect(DISTINCT repo.normalizedOrigin) AS repositoryOrigins,
-                       collect(DISTINCT repo.id) AS repositoryIds }
+         " memory-repositories-query "
          RETURN ownerIds, sessionIds, s.sourceKind AS sourceKind,
                 coalesce(s.sourceSessionId, s.piSessionId) AS sourceSessionId,
                 CASE WHEN size(ownerIds) = 1 AND size(sessionIds) = 1
@@ -597,7 +626,7 @@
                 CASE WHEN m:AdamObservation AND NOT m:AdamReflection THEN 'observation'
                      WHEN m:AdamReflection AND NOT m:AdamObservation THEN 'reflection' END AS kind,
                 sourceEntries, linkedPaths, repositoryOrigins, repositoryIds, supportRecords
-         ORDER BY m.id"
+         ORDER BY m.id")
         #js {:readerId principal})
       (.then (fn [result]
                (let [decoded
@@ -1027,7 +1056,9 @@
                       (when @closing (js/Promise.allSettled #js [@closing work-promise]))))))))
 
 (defn repository-origins!
-  "Origin hints only, from self/direct-grant memory ownership; no source content or DDL."
+  "Origin hints only, from self/direct-grant memory ownership; no source content or DDL.
+  Session-level union of observation scopes: valid reflection supports are already
+  owned observations, so repeating their walks adds no origins. Context is read once."
   [db signal]
   (with-session! db
     (fn [^js session]
@@ -1035,21 +1066,31 @@
         #(-> (.executeRead session
                 (fn [^js tx]
                   (.run tx
-                    "MATCH (reader:AdamUser {id: $readerId})
+                    (str "MATCH (reader:AdamUser {id: $readerId})
                      CALL { WITH reader RETURN reader AS owner
                             UNION
                             WITH reader MATCH (owner:AdamUser)-[:GRANTS_MEMORY_ACCESS {permission: 'read'}]->(reader)
                             RETURN owner }
                      WITH DISTINCT owner
-                     MATCH (owner)-[:OWNS]->(s:AdamSession)-[:WORKED_ON]->(repo:AdamRepository)
-                     WHERE repo.normalizedOrigin IS NOT NULL
-                       AND NOT EXISTS { MATCH (other:AdamUser)-[:OWNS]->(s) WHERE other <> owner }
-                       AND EXISTS {
-                         MATCH (s)-[:HAS_MEMORY]->(m)
-                         WHERE ((m:AdamObservation AND NOT m:AdamReflection) OR (m:AdamReflection AND NOT m:AdamObservation))
-                           AND NOT EXISTS { MATCH (other:AdamSession)-[:HAS_MEMORY]->(m) WHERE other <> s }
-                       }
-                     RETURN DISTINCT repo.normalizedOrigin AS origin ORDER BY origin"
+                     MATCH (owner)-[:OWNS]->(s:AdamSession)
+                     WHERE NOT EXISTS { MATCH (other:AdamUser)-[:OWNS]->(s) WHERE other <> owner }
+                     WITH DISTINCT s
+                     OPTIONAL MATCH (s)-[:WORKED_ON]->(context:AdamRepository)
+                     WITH s, collect(DISTINCT context) AS contexts
+                     CALL { WITH s
+                            MATCH (s)-[:HAS_MEMORY]->(o:AdamObservation)
+                            WHERE NOT o:AdamReflection
+                              AND NOT EXISTS { MATCH (other:AdamSession)-[:HAS_MEMORY]->(o) WHERE other <> s }
+                            OPTIONAL MATCH (o)-[:ABOUT]->(file:AdamCodeFile)
+                            RETURN collect(DISTINCT file) AS files,
+                                   count(DISTINCT CASE WHEN file IS NULL THEN o END) > 0 AS unlinked }
+                     CALL { WITH files UNWIND files AS file
+                            MATCH (repo:AdamRepository)-[:CONTAINS]->(file)
+                            RETURN collect(DISTINCT repo) AS evidenced }
+                     WITH evidenced + CASE WHEN unlinked AND size(contexts) = 1 THEN contexts ELSE [] END AS repositories
+                     UNWIND repositories AS repo
+                     WITH repo.normalizedOrigin AS origin WHERE origin IS NOT NULL
+                     RETURN DISTINCT origin ORDER BY origin")
                     #js {:readerId (:principal db)}))
                 #js {:timeout 2000})
              (.then (fn [result] (mapv (fn [row] (field row "origin")) (rows result)))))))))

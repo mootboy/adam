@@ -209,7 +209,9 @@ Relationships:
 (AdamObservation)-[:ABOUT]->(AdamCodeFile)
 ```
 
-`WORKED_ON` and `TOUCHES` retain checkout-specific root, commit, optional branch, and dirty state rather than placing mutable checkout state on canonical repository/file nodes. `TOUCHES` also records evidence basis and extractor version.
+A source session can have multiple WORKED_ON repositories, discovered from its cwd and selected native file-tool paths. Pi paths resolve against session cwd; Claude paths use each call's cwd. Projection clears session file relationships once, then writes every repository/file/evidence contribution in one transaction, never a replacing call per repository. `WORKED_ON` and `TOUCHES` retain checkout-specific root, commit, optional branch, and dirty state rather than placing mutable checkout state on canonical repository/file nodes. `TOUCHES` also records evidence basis and extractor version.
+
+Repository-filtered memory uses observation ABOUT/CONTAINS evidence or, for unlinked observations only, an exactly-one-repository session context. Reflections union verified supports' scopes; unknown supports contribute no scope. Reference reads count as repository contexts and can exclude unlinked discussion from repository filters, not from unfiltered/session reads. This correction does not bump the rebuild version or perform bulk/startup repair; existing projections remain unchanged until normal reconciliation or separately approved repair.
 
 Queries enforce user isolation through `(AdamUser)-[:OWNS]->(AdamSession)-[:HAS_MEMORY]->(...)-[:ABOUT]->(AdamCodeFile)`, never through ownership of shared repository/file nodes.
 

@@ -48,8 +48,9 @@
              (string? (aget block "tool_use_id")))
     (aget block "tool_use_id")))
 
-(defn extract-projection [{:keys [user-uuid repository scan]}]
-  (let [selected (scanner/selected-entries scan)
+(defn extract-projection [{:keys [user-uuid repository repositories scan]}]
+  (let [repositories (or repositories (when repository [repository]) [])
+        selected (scanner/selected-entries scan)
         files (atom {})
         calls (atom {})
         evidence (atom {})
@@ -70,8 +71,8 @@
             block (message-blocks value)]
       (when-let [{:keys [call-id path] :as call} (file-tool-call entry block)]
         (when-let [resolved (and (:cwd entry)
-                                 (common-evidence/resolve-repository-file-with-worktree
-                                  repository (:cwd entry) path))]
+                                 (common-evidence/resolve-file-across-repositories
+                                  repositories (:cwd entry) path))]
           (swap! calls update call-id (fnil conj [])
                  (assoc call :entry entry :resolved resolved))
           (add-evidence! entry resolved))))
@@ -99,6 +100,7 @@
        :source-kind identity/claude-source-kind
        :source-session-id source-session-id
        :repository repository
+       :repositories repositories
        :files (->> (vals @files) (sort-by :relative-path) vec)
        :entry-file-evidence (->> (vals @evidence)
                                  (sort-by (juxt :entry-id :stream-id :file-id))

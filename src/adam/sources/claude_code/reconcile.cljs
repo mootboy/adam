@@ -62,17 +62,10 @@
                                 knowledge-store/ensure-file-evidence-schema!)
         index-file-evidence! (or index-file-evidence!
                                   knowledge-store/index-file-evidence!)
-        resolve-from-evidence!
+        resolve-repositories!
         (fn [projection-scan]
-          (reduce
-           (fn [promise {:keys [cwd path]}]
-             (.then promise
-                    (fn [resolved]
-                      (if resolved
-                        resolved
-                        (repository/resolve-from-file-path!
-                         #(resolve-repository! % user-uuid) cwd path)))))
-           (js/Promise.resolve nil)
+          (repository/resolve-file-repositories!
+           #(resolve-repository! % user-uuid) (:cwd locator) nil
            (evidence/explicit-file-locators projection-scan)))]
     (-> (sync! {:store store :user-uuid user-uuid :scan scan})
         (.then
@@ -82,13 +75,12 @@
              (-> (with-mirrored-missing-streams! read-stream-entries! store user-uuid scan)
                  (.then
                   (fn [projection-scan]
-                    (-> (resolve-repository! (:cwd locator) user-uuid)
-                        (.then (fn [resolved]
-                                 (if resolved resolved (resolve-from-evidence! projection-scan))))
-                        (.then (fn [repository] [projection-scan repository])))))
+                    (-> (resolve-repositories! projection-scan)
+                        (.then (fn [repositories] [projection-scan repositories])))))
                  (.then
-                  (fn [[projection-scan repository]]
-                    (let [session-id
+                  (fn [[projection-scan repositories]]
+                    (let [repository (first repositories)
+                          session-id
                           (identity/session-urn user-uuid identity/claude-source-kind
                                                 (:session-id locator))
                           base-projection
@@ -96,6 +88,7 @@
                             (evidence/extract-projection
                              {:user-uuid user-uuid
                               :repository repository
+                              :repositories repositories
                               :scan projection-scan})
                             {:extractor-version common-evidence/extractor-version
                              :adapter-version evidence/adapter-version
@@ -103,7 +96,7 @@
                              :session-id session-id
                              :source-kind identity/claude-source-kind
                              :source-session-id (:session-id locator)
-                             :repository nil :files [] :entry-file-evidence []
+                             :repository nil :repositories [] :files [] :entry-file-evidence []
                              :available-source-entries
                              (set (map (juxt :stream-id :entry-id)
                                        (:entries projection-scan)))})]
