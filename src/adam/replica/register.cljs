@@ -568,6 +568,10 @@
          repository-completions
          (derivation-completion/repository-cache
           {:get-cwd #(deref completion-cwd)
+           :load-names! (fn [_]
+                          (-> (js/Promise.resolve)
+                              (.then (or (:load-derivation-config! options) derivation-pi/read-configuration))
+                              (.then #(vec (keys %)))))
            :load-checkout! (or (:completion-checkout! options)
                                (fn [cwd]
                                  (-> (query-runtime/node-exec! "git" #js ["config" "--get" "remote.origin.url"]

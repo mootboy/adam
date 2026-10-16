@@ -42,6 +42,46 @@
               (is (not-any? #(= "--history" (aget % "label")) (complete "preferences --history --"))))))))
     (is (zero? @calls))))
 
+(deftest configured-names-share-a-cache-without-repository-or-model-work
+  (async done
+    (let [time (atom 0) loads (atom 0)
+          forbidden (fn [& _] (throw (js/Error. "name completion must not load repositories")))
+          cache (completion/repository-cache
+                 {:now-ms #(deref time) :get-cwd forbidden :load-checkout! forbidden :load-authorized! forbidden
+                  :load-names! (fn [_] (swap! loads inc)
+                                 (if (zero? @time) ["style" "architectural-preferences" "style" "BAD\nNAME"]
+                                     (throw (js/Error. "PRIVATE_CONFIG_ERROR"))))})
+          commands (atom {}) extension #js {:registerCommand (fn [name definition] (swap! commands assoc name definition))
+                                            :registerTool (fn [& _])}
+          _ (pi/register-command! extension {:complete-arguments! #((:complete! cache) false %)})
+          _ (read/register-pi! extension {:complete-arguments! #((:complete! cache) true %)} true)
+          complete (fn [command prefix] ((aget (get @commands command) "getArgumentCompletions") prefix))
+          values #(mapv (fn [item] (aget item "value")) %)]
+      (is (seq (complete "adam:derive" "--dep")))
+      (is (seq (complete "adam:derive" "-")))
+      (is (zero? @loads))
+      (-> (js/Promise.resolve (complete "adam:derive" "  arch"))
+          (.then (fn [items]
+                   (is (= ["  architectural-preferences"] (values items)))
+                   (complete "adam:derivations" "s")))
+          (.then (fn [items]
+                   (is (= ["style"] (values items)))
+                   (is (= 1 @loads))
+                   (complete "adam:derivations" "")))
+          (.then (fn [items]
+                   (is (some #{"architectural-preferences"} (values items)))
+                   (is (some #{"--history"} (values items)))
+                   (is (nil? (complete "adam:derive" "style other")))
+                   (reset! time 31000)
+                   (complete "adam:derive" "arch")))
+          (.then (fn [items]
+                   (is (nil? items) "invalid/missing configuration drops expired names without exposing errors")
+                   (is (= 2 @loads))
+                   ((:close! cache))
+                   (is (nil? (complete "adam:derive" "arch")))))
+          (.catch (fn [error] (is false (.-stack error))))
+          (.finally done)))))
+
 (deftest repository-values-share-a-local-first-cache-across-commands
   (async done
     (let [time (atom 0) cwd (atom "/checkout") calls (atom []) graph (js/Promise.withResolvers)
