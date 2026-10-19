@@ -41,7 +41,7 @@
     "@earendil-works/pi-coding-agent": "*"
   },
   "devDependencies": {
-    "shadow-cljs": "3.5.5"
+    "shadow-cljs": "3.5.7"
   },
   "pi": {
     "extensions": [
