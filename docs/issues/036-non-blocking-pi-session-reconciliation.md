@@ -107,6 +107,10 @@ Implementation is local to `replica/background.cljs` (coordinator, thread transp
 - No weakening JSONL authority, provenance, authorization or failure recovery to meet responsiveness targets.
 - No mandated new polling daemon, public spool, broker or persistent framework; justify added machinery against the existing queue and rebuildable source.
 
+### Release follow-up
+
+The reporter subsequently confirmed that the candidate appears to resolve the pauses in normal use. This is qualitative responsiveness evidence, not a production replication/recovery audit. The user authorized preparing 0.5.3 in the same PR; metadata preparation does not authorize merging or publication, and independent review remains pending.
+
 ### Validation so far
 
 - Dedicated deterministic checkpoint: 281 ClojureScript tests / 1,789 assertions pass, including seeded batch-partition equivalence, immutable captured selection, ordering barriers, post-boundary leaf capture, final quit drain, cancellation, partial-write replay, worker replacement, preserved scanner error metadata and concurrent-append retry.
