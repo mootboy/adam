@@ -717,6 +717,49 @@
           (.catch #(is false (.-stack %)))
           (.finally (fn [] (rmSync directory #js {:recursive true :force true}) (done)))))))
 
+(deftest hung-notification-child-cannot-suppress-later-lifecycle-wakes
+  (async done
+    (let [directory (mkdtempSync (join (tmpdir) "adam-hung-notification-wake-"))
+          options {:state-home directory :data-home directory}
+          clock (atom 0) children (atom [])
+          tick (fn [] (js/Promise. (fn [resolve _] (js/setImmediate resolve))))
+          {:keys [pi events]} (fake-pi)
+          runtime (register-runtime! pi
+                    {:config {:enabled? true} :now-ms #(deref clock)
+                     :worker-inbox-options {:config-home directory}
+                     :memory-inbox-options options
+                     :wake-notification-worker! (fn []
+                                                  (let [child (js/Promise.withResolvers)]
+                                                    (swap! children conj child)
+                                                    (.-promise child)))
+                     :create-replica (fn [] (throw (js/Error. "must not initialize here")))})
+          ctx #js {:sessionManager #js {:getSessionFile (fn [] nil)}
+                   :ui #js {:notify (fn [_ _] nil)}}]
+      (memory-inbox/enqueue! options {:source-kind "pi" :source-session-id "known-elsewhere" :producer-id "fixture"})
+      (-> (reduce
+            (fn [pending {:keys [at wakes old-exit?]}]
+              (.then pending
+                (fn [_]
+                  (reset! clock at)
+                  (when old-exit? ((.-resolve (first @children)) nil))
+                  (-> (tick)
+                      (.then (fn [_]
+                               (is (identical? js/undefined ((get @events "agent_settled") #js {} ctx)))
+                               ((:flush! runtime))))
+                      (.then (fn [_] (is (= wakes (count @children)) (str "clock " at))))))))
+            (js/Promise.resolve nil)
+            [{:at 0 :wakes 1} {:at 59999 :wakes 1} {:at 60000 :wakes 2}
+             {:at 60001 :wakes 2 :old-exit? true} {:at 120000 :wakes 3}])
+          (.then (fn [_]
+                   (is (= 1 (count (memory-inbox/pending options))) "wakes neither ack nor mutate durable work")
+                   ((:shutdown! runtime))))
+          (.then (fn [_]
+                   (doseq [child @children] ((.-resolve child) nil))
+                   (tick)))
+          (.then (fn [_] (is (= 3 (count @children)) "no follow-up wake after shutdown")))
+          (.catch #(is false (.-stack %)))
+          (.finally (fn [] (rmSync directory #js {:recursive true :force true}) (done)))))))
+
 (deftest code-memory-rebuild-skips-recorded-conflicts-and-completes-healthy-sessions
   (async done
     (let [directory (mkdtempSync (join (tmpdir) "adam-rebuild-conflict-"))

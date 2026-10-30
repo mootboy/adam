@@ -450,9 +450,13 @@
          notification-wake-again? (atom false)
          wake-notifications!
          (fn wake-notifications! []
-           (if @notification-wake
+           ;; Coalescing is advisory, not worker health. Expire it on the next
+           ;; trigger after 60 seconds even if the child never exits. No timer
+           ;; or automatic respawn is needed; the shared lease stays authoritative.
+           (if (let [current @notification-wake]
+                 (and current (< (now-ms) (aget current "expiresAt"))))
              (reset! notification-wake-again? true)
-             (let [token (js-obj)]
+             (let [token #js {:expiresAt (+ (now-ms) 60000)}]
                (reset! notification-wake token)
                (reset! notification-wake-again? false)
                (-> (js/Promise.resolve nil)
