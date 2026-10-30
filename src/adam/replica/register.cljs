@@ -5,7 +5,7 @@
             [adam.derivation.read :as derivation-read]
             [adam.knowledge.runtime :as query-runtime]
             [adam.derivation.store :as derivation-store]
-            [adam.knowledge.index :as knowledge-index]
+            [adam.replica.background :as background]
             [adam.knowledge.memory-migration :as memory-migration]
             [adam.knowledge.migration :as knowledge-migration]
             [adam.knowledge.repository :as knowledge-repository]
@@ -14,6 +14,8 @@
             [adam.memory.service :as memory-service]
             [adam.memory.inbox :as memory-inbox]
             [adam.sources.claude-code.inbox :as transcript-inbox]
+            [adam.sources.claude-code.hook :as claude-hook]
+            ["node:url" :refer [fileURLToPath]]
             [adam.sources.claude-code.worker :as notification-worker]
             [adam.sources.claude-code.reconcile :as claude-reconcile]
             [adam.replica.commands :as commands]
@@ -44,6 +46,11 @@
   (when-let [manager (aget ctx "sessionManager")]
     (when-let [get-leaf-id (aget manager "getLeafId")]
       (.call get-leaf-id manager))))
+
+(defn- capture-context [ctx queued-at]
+  (let [path (session-file ctx) leaf (current-leaf-id ctx)]
+    #js {:cwd (aget ctx "cwd") :ui (aget ctx "ui") :adamEnqueuedAt queued-at
+         :sessionManager #js {:getSessionFile (fn [] path) :getLeafId (fn [] leaf)}}))
 
 (defn- mask-email [email]
   (let [separator (string/index-of email "@")]
@@ -76,9 +83,16 @@
               (when user-uuid (str "User: " user-uuid))
               (when git-email (str "Git identity: " (mask-email git-email)))
               (when active-session-file (str "Session: " active-session-file))
+              (when-let [work (:background runtime-state)]
+                (str "Reconciliation: " (if (:running work) "running" "idle")
+                     "; " (:pending work) " pending"
+                     (when (:target work) (str "; target " (:target work)))))
               (when last-result (str "Last sync: " (name (:status last-result))))
               (when last-mirrored-at (str "Mirrored at: " last-mirrored-at))
+              (when-let [path (:last-synchronized-file runtime-state)]
+                (str "Last synchronized session: " path))
               (when last-error (str "Last error: " last-error))
+              (when-let [error (:background-error runtime-state)] (str "Reconciliation error: " error))
               (when memory-notifications
                 (str "Memory notifications: " (:acknowledged memory-notifications) " acknowledged, "
                      (:pending memory-notifications) " pending, " (:failed memory-notifications) " failed; "
@@ -92,6 +106,8 @@
                      (:unresolved-citations memory-notifications) " unresolved citations; "
                      (format-ms (:duration-ms memory-notifications))))
               (when memory-notifications-error (str "Memory reconciliation: " memory-notifications-error))
+              (when-let [state (:notification-worker-status runtime-state)]
+                (str "Notification worker: " state))
               (when derivation-schema-status (str "Derivation schema: " derivation-schema-status))
               (when last-timing
                 (str "Last timing: " (name (:event last-timing))
@@ -148,7 +164,10 @@
          user-promise (atom nil)
          queue (atom (js/Promise.resolve nil))
          initialized-identities (atom #{})
-         file-evidence-schema-promise (atom nil)
+         shutting-down? (atom false)
+         cancelling? (atom false)
+         shutdown-promise (atom nil)
+         replica-instance (atom nil)
          derivation-schema-promise (atom nil)
          completion-cwd (atom (or (:cwd options) (.cwd js/process)))
          warned-unavailable? (atom false)
@@ -199,6 +218,9 @@
                          (.then (fn [_] (create-replica)))
                          (.then
                           (fn [replica]
+                            (reset! replica-instance replica)
+                            (when @cancelling?
+                              (throw (js/Error. "adam runtime is shutting down")))
                             (-> (get-user!)
                                 (.then
                                  (fn [user]
@@ -255,95 +277,46 @@
                                             replica)))))))))
                          (.catch
                           (fn [error]
-                            (reset! replica-promise nil)
-                            (js/Promise.reject error))))]
+                            (let [failed @replica-instance]
+                              (reset! replica-instance nil)
+                              (reset! replica-promise nil)
+                              (-> (.then (js/Promise.resolve nil)
+                                    (fn [_] (when failed (store/close! failed))))
+                                  (.catch (fn [_] nil))
+                                  (.then (fn [_] (js/Promise.reject error))))))))]
                  (reset! replica-promise promise)
                  promise)))
-         project-file-evidence!
-         (fn [replica path user-uuid selected-leaf-id selection-known? timing]
-           (if-not (satisfies? knowledge-store/FileEvidenceStore replica)
-             (js/Promise.resolve nil)
-             (let [schema-started-at (now-ms)
-                   projection-input
-                   (cond-> {:store replica
-                            :path path
-                            :user-uuid user-uuid
-                            :resolve-repository #(resolve-repository! % user-uuid)
-                            :now-ms now-ms
-                            :on-timing
-                            (fn [index-timing]
-                              (swap! timing update :repository-discovery-ms +
-                                     (:repository-discovery-ms index-timing))
-                              (swap! timing update :evidence-extraction-ms +
-                                     (:evidence-extraction-ms index-timing))
-                              (swap! timing update :neo4j-projection-ms +
-                                     (:neo4j-projection-ms index-timing)))
-                            :on-memory-diagnostics
-                            (fn [diagnostics]
-                              (swap! runtime-state assoc
-                                     :memory-adapter-status
-                                     (when (seq diagnostics)
-                                       (str (count diagnostics)
-                                            " producer entr"
-                                            (if (= 1 (count diagnostics)) "y" "ies")
-                                            " ignored"))))}
-                     selection-known? (assoc :current-leaf-id selected-leaf-id))]
-               (-> (or @file-evidence-schema-promise
-                       (let [promise
-                             (-> (knowledge-store/ensure-file-evidence-schema! replica)
-                                 (.catch
-                                  (fn [error]
-                                    (reset! file-evidence-schema-promise nil)
-                                    (js/Promise.reject error))))]
-                         (reset! file-evidence-schema-promise promise)
-                         promise))
-                   (.finally
-                    (fn []
-                      (swap! timing update :neo4j-projection-ms +
-                             (max 0 (- (now-ms) schema-started-at)))))
-                   (.then
-                    (fn [_]
-                      (knowledge-index/index-session! projection-input)))
-                   (.then
-                    (fn [repository]
-                      (if repository
-                        (swap! runtime-state assoc
-                               :file-evidence-indexed-at (.toISOString (js/Date.))
-                               :file-evidence-repository (or (:normalized-remote repository)
-                                                             (:root repository))
-                               :file-evidence-status nil
-                               :file-evidence-error nil)
-                        (swap! runtime-state assoc
-                               :file-evidence-indexed-at nil
-                               :file-evidence-repository nil
-                               :file-evidence-status "waiting for a Git cwd or explicit file-tool path"
-                               :file-evidence-error nil))
-                      nil))
-                   ))))
-         isolate-projection-error!
-         (fn [error]
-           (swap! runtime-state assoc
-                  :file-evidence-status nil
-                  :file-evidence-error (error-message error))
-           nil)
+         pipeline (background/create-pipeline
+                    {:processor-url (:processor-url options)
+                     :create-processor (:create-processor options)
+                     :now-ms now-ms})
          synchronize-file!
-         (fn [replica user path selected-leaf-id selection-known? timing]
-           (let [sync-input (cond-> {:path path
-                                     :user-uuid (:user-uuid user)
-                                     :replica replica}
-                              selection-known? (assoc :current-leaf-id selected-leaf-id))
-                 replica-started-at (now-ms)]
-             (-> (js/Promise.resolve nil)
-                 (.then (fn [_] (sync/sync-session-file! sync-input)))
-                 (.finally
-                  (fn []
-                    (record-duration! timing :replica-sync-ms replica-started-at)))
-                 (.then
-                  (fn [result]
-                    (-> (project-file-evidence!
-                         replica path (:user-uuid user) selected-leaf-id selection-known? timing)
-                        (.catch isolate-projection-error!)
-                        (.then (fn [_] result))))))))
+         (fn synchronize-file!
+           ([replica user path selected-leaf-id selection-known? timing]
+            (synchronize-file! replica user path selected-leaf-id selection-known? timing false))
+           ([replica user path selected-leaf-id selection-known? timing strict?]
+           ((:sync-file! pipeline)
+             (cond-> {:replica replica :path path :user-uuid (:user-uuid user)
+                      :strict-projection? strict?
+                      :resolve-repository #(resolve-repository! % (:user-uuid user))
+                      :on-timing (fn [values] (swap! timing #(merge-with + % values)))
+                      :on-projection-error
+                      (fn [error]
+                        (swap! runtime-state assoc :file-evidence-status nil
+                               :file-evidence-error (error-message error)))
+                      :on-projection
+                      (fn [repository projection]
+                        (swap! runtime-state assoc
+                               :file-evidence-indexed-at (when repository (.toISOString (js/Date.)))
+                               :file-evidence-repository (when repository (or (:normalized-remote repository) (:root repository)))
+                               :file-evidence-status (when-not repository "waiting for a Git cwd or explicit file-tool path")
+                               :file-evidence-error nil
+                               :memory-adapter-status
+                               (when (seq (:memory-diagnostics projection))
+                                 (str (count (:memory-diagnostics projection)) " producer "
+                                      (if (= 1 (count (:memory-diagnostics projection))) "entry" "entries")
+                                      " ignored"))))}
+               selection-known? (assoc :current-leaf-id selected-leaf-id)))))
          code-memory-rebuild-promise (atom nil)
          rebuild-code-memory!
          (fn [replica user timing]
@@ -359,14 +332,7 @@
                                                 commands/all-session-files)
                              :rebuild-session!
                              (fn [path]
-                               (-> (sync/sync-session-file!
-                                    {:path path
-                                     :user-uuid (:user-uuid user)
-                                     :replica replica})
-                                   (.then
-                                    (fn [_]
-                                      (project-file-evidence!
-                                       replica path (:user-uuid user) nil false timing)))))})
+                               (synchronize-file! replica user path nil false timing true))})
                            (.then
                             (fn [result]
                               (swap! runtime-state assoc
@@ -386,7 +352,7 @@
          record-replication-error!
          (fn [ctx error]
            (swap! runtime-state assoc :connected? false :last-error (error-message error))
-           (when-not @warned-unavailable?
+           (when-not (or @shutting-down? @warned-unavailable?)
              (notify! ctx "adam session replication unavailable; local JSONL remains authoritative" "warning")
              (reset! warned-unavailable? true))
            {:status :replication-failed})
@@ -396,7 +362,6 @@
              (js/Promise.resolve nil)
              (if-let [path (session-file ctx)]
                (do
-                 (swap! runtime-state assoc :active-session-file path)
                  (let [initialization-started-at (now-ms)]
                    (-> (js/Promise.all #js [(get-replica!)
                                           (get-user!)
@@ -438,8 +403,10 @@
                                :reason nil
                                :last-result result
                                :last-mirrored-at (.toISOString (js/Date.))
+                               :last-synchronized-file path
+                               :background-error nil
                                :last-error nil)
-                        (when @warned-unavailable?
+                        (when (and (not @shutting-down?) @warned-unavailable?)
                           (notify! ctx "adam session replication recovered" "info")
                           (reset! warned-unavailable? false))
                         nil))
@@ -452,8 +419,7 @@
                (do
                  (swap! runtime-state assoc
                         :connected? false
-                        :reason "active session is ephemeral"
-                        :active-session-file nil)
+                        :reason "active session is ephemeral")
                  (js/Promise.resolve nil)))))
          drain-notifications!
          (fn [replica user recover-expired?]
@@ -471,14 +437,44 @@
                         :inbox-options (:memory-inbox-options options)
                         :recover-expired? recover-expired?})
                     (.then (fn [result]
-                             (swap! runtime-state assoc :memory-notifications result :memory-notifications-error nil)
+                             (swap! runtime-state assoc :memory-notifications result :memory-notifications-error nil
+                                    :notification-worker-status nil)
                              result))))
              (js/Promise.resolve {:processed 0 :pending 0})))
-         synchronize!
-         (fn synchronize!
-           ([ctx] (synchronize! ctx :manual))
+         reconcile-notifications!
+         (fn [ctx event pre-initialization-ms]
+           (let [work? (or (seq (memory-inbox/pending (:memory-inbox-options options)))
+                           (seq (memory-inbox/rejections (:memory-inbox-options options)))
+                           (seq (transcript-inbox/pending (:worker-inbox-options options))))
+                 explicit? (not (true? (aget ctx "adamAutomatic")))]
+             (when (and (:enabled? resolved-config)
+                        (or work? (and explicit? (or (= event :reconcile) (session-file ctx)))))
+               (if explicit?
+                 (let [started-at (now-ms)]
+                   (-> (get-replica!)
+                       (.finally #(reset! pre-initialization-ms (max 0 (- (now-ms) started-at))))
+                       (.then
+                         (fn [replica]
+                           (when (satisfies? knowledge-store/MemoryReconciliationStore replica)
+                             (notification-worker/with-lease!
+                               (:worker-inbox-options options)
+                               #(-> (get-user!)
+                                    (.then (fn [user] (drain-notifications! replica user (= event :reconcile)))))))))))
+                 (do
+                   ;; Other hosts' synchronous scanners must not run on Pi's
+                   ;; event loop. Reuse the existing durable-spool consumer.
+                   (if-let [wake! (:wake-notification-worker! options)]
+                     (wake!)
+                     (if-let [url (:notification-worker-url options)]
+                       (claude-hook/wake-worker! (fileURLToPath url))
+                       (throw (js/Error. "notification worker entry is not configured"))))
+                   (swap! runtime-state assoc :notification-worker-status
+                          "wake requested; displayed drain counts are last measured"))))))
+         synchronize-now!
+         (fn synchronize-now!
+           ([ctx] (synchronize-now! ctx :manual))
            ([ctx event]
-            (let [enqueued-at (now-ms)
+            (let [enqueued-at (or (aget ctx "adamEnqueuedAt") (now-ms))
                   timing (atom {:event event
                                 :queue-wait-ms 0
                                 :initialization-ms 0
@@ -503,24 +499,7 @@
                              (when-not (= :replication-failed (:status result))
                                (-> (.then (js/Promise.resolve nil)
                                      (fn [_]
-                                       (when (and (:enabled? resolved-config)
-                                                  (or (= event :reconcile)
-                                                      (session-file ctx)
-                                                      (seq (memory-inbox/pending (:memory-inbox-options options)))
-                                                      (seq (memory-inbox/rejections (:memory-inbox-options options)))
-                                                      (seq (transcript-inbox/pending (:worker-inbox-options options)))))
-                                         (let [started-at (now-ms)]
-                                           (-> (get-replica!)
-                                               (.finally #(reset! pre-initialization-ms
-                                                                  (max 0 (- (now-ms) started-at))))
-                                               (.then
-                                                 (fn [replica]
-                                                   (when (satisfies? knowledge-store/MemoryReconciliationStore replica)
-                                                     (notification-worker/with-lease!
-                                                       (:worker-inbox-options options)
-                                                       #(-> (get-user!)
-                                                            (.then (fn [user]
-                                                                     (drain-notifications! replica user (= event :reconcile))))))))))))))
+                                       (reconcile-notifications! ctx event pre-initialization-ms)))
                                    (.catch (fn [error]
                                              (swap! runtime-state assoc :memory-notifications-error
                                                     (if (= :worker-busy (:reason (ex-data error)))
@@ -536,7 +515,7 @@
                                           :completed-at (.toISOString (js/Date.)))))))))]
               (reset! queue next-run)
               next-run)))
-         import-file!
+         import-now!
          (fn [path ctx]
            (if-not (:enabled? resolved-config)
              (js/Promise.reject (js/Error. (:reason resolved-config)))
@@ -555,6 +534,30 @@
                                       :neo4j-projection-ms 0 :total-ms 0})))))))]
                (reset! queue (.then result (fn [_] nil) (fn [_] nil)))
                result)))
+         warm-completions! (atom (fn [] nil))
+         background-queue
+         (background/create-queue
+           {:run! (fn [{:keys [kind path ctx event]}]
+                    (-> (if (= kind :import) (import-now! path ctx) (synchronize-now! ctx event))
+                        (.then (fn [result]
+                                 (when (and (= event :session-start)
+                                            (:connected? @runtime-state) (not @shutting-down?))
+                                   (@warm-completions!))
+                                 result))))
+            :on-status #(swap! runtime-state assoc :background %)
+            :on-error (fn [_]
+                        (swap! runtime-state assoc :background-error "reconciliation request failed"))})
+         synchronize!
+         (fn synchronize!
+           ([ctx] (synchronize! ctx :manual))
+           ([ctx event]
+            (let [captured (capture-context ctx (now-ms))]
+              (swap! runtime-state assoc :active-session-file (session-file captured))
+              ((:enqueue! background-queue)
+               {:path (session-file captured) :ctx captured :event event} false))))
+         import-file!
+         (fn [path ctx]
+           ((:enqueue! background-queue) {:kind :import :path path :ctx ctx} false))
          query-dependencies
          {:get-store! get-replica!
           :get-user! get-user!
@@ -582,6 +585,7 @@
                                  ((:load-repository-origins! saved-read-deps)
                                   (js/AbortSignal.any #js [signal (js/AbortSignal.timeout 3000)]))
                                  (js/Promise.resolve [])))})
+         _ (reset! warm-completions! (:warm! repository-completions))
          saved-reads (derivation-read/register-pi! pi
                        (assoc saved-read-deps :complete-arguments! #((:complete! repository-completions) true %))
                        (:enabled? resolved-config))
@@ -628,23 +632,47 @@
                                                                pending))]
                                                (.then ready (fn [_] db)))))))))})
          shutdown!
-         (fn []
-           ((:close! repository-completions))
-           (-> ((:shutdown! derivations))
-               (.then (fn [_] ((:shutdown! saved-reads))))
-               (.then (fn [_] ((:close! saved-query-runtime))))
-               (.then (fn [_] @queue))
-               (.then
-                (fn [_]
-                  (if-let [promise @replica-promise]
-                    (-> promise
-                        (.then (fn [replica] (store/close! replica)))
-                        (.catch (fn [_] nil)))
-                    nil)))
-               (.then
-                (fn [_]
-                  (reset! replica-promise nil)
-                  nil))))]
+         (fn shutdown!
+           ([] (shutdown! false))
+           ([drain?]
+           (or @shutdown-promise
+               (let [deadline (js/Promise.withResolvers)
+                     timer (js/setTimeout (fn [] ((.-resolve deadline) :deadline))
+                                          (or (:shutdown-budget-ms options) 5000))
+                     close-resources!
+                     (fn []
+                       (reset! cancelling? true)
+                       (let [replica @replica-instance]
+                         (reset! replica-instance nil)
+                         (js/Promise.allSettled
+                           #js [(.then (js/Promise.resolve nil) (fn [_] ((:close! pipeline))))
+                                (.then (js/Promise.resolve nil)
+                                  (fn [_] (when replica (store/close! replica))))])))]
+                 (reset! shutting-down? true)
+                 ((:stop! background-queue))
+                 (when-not drain?
+                   (reset! cancelling? true)
+                   ((:cancel! background-queue)))
+                 ((:close! repository-completions))
+                 (let [closing
+                       (-> ((:shutdown! derivations))
+                           (.then (fn [_] ((:shutdown! saved-reads))))
+                           (.then (fn [_] ((:close! saved-query-runtime))))
+                           (.catch (fn [_] nil)))
+                       resources (when-not drain? (close-resources!))
+                       closing (-> (js/Promise.allSettled #js [closing resources ((:flush! background-queue))])
+                           (.then (fn [_] (when drain? (close-resources!))))
+                           (.catch (fn [_] nil)))
+                       result
+                       (-> (js/Promise.race #js [closing (.-promise deadline)])
+                           (.then (fn [outcome]
+                                    (when (= outcome :deadline)
+                                      ((:cancel! background-queue))
+                                      (close-resources!))
+                                    nil))
+                           (.finally (fn [] (js/clearTimeout timer))))]
+                   (reset! shutdown-promise result)
+                   result)))))]
      (invoke pi
              "registerCommand"
              "adam:status"
@@ -669,6 +697,7 @@
        (knowledge-surfaces/register-tool! pi query-dependencies)
        (doseq [event ["session_start"
                       "turn_end"
+                      "agent_settled"
                       "session_compact"
                       "session_tree"
                       "session_info_changed"
@@ -681,13 +710,19 @@
                    (when-let [cwd (aget ctx "cwd")] (reset! completion-cwd cwd))
                    ;; Pi interprets turn_end results as boundary drafts. Internal
                    ;; ClojureScript maps have an entries() method, not draft data.
-                   (-> (synchronize! ctx (keyword (string/replace event "_" "-")))
-                       (.then (fn [_]
-                                (when (and (= event "session_start") (:connected? @runtime-state))
-                                  ((:warm! repository-completions)))
-                                js/undefined))))))
-       (invoke pi "on" "session_shutdown" (fn [_event _ctx] (shutdown!))))
+                   (when-not @shutting-down?
+                     (let [captured (capture-context ctx (now-ms))]
+                       (aset captured "adamAutomatic" true)
+                       (swap! runtime-state assoc :active-session-file (session-file captured))
+                       (-> ((:enqueue! background-queue)
+                             {:path (session-file captured) :ctx captured
+                              :event (keyword (string/replace event "_" "-"))} true)
+                           (.catch (fn [_] nil)))))
+                   js/undefined)))
+       (invoke pi "on" "session_shutdown"
+               (fn [event _ctx] (shutdown! (= "quit" (aget event "reason"))))))
      {:status (fn [] @runtime-state)
       :synchronize! synchronize!
+      :flush! (:flush! background-queue)
       :import-file! import-file!
       :shutdown! shutdown!})))

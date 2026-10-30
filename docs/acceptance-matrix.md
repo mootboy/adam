@@ -351,6 +351,22 @@ The revised [0.4 plan](plan-0.4.0.md) scopes 0.4.0 to implemented infrastructure
 
 Synthetic/disposable proof does not complete semantic/provider or production gates. No authoritative logs, producer content or grants are changed by this audit.
 
+## Non-blocking Pi reconciliation (issue 036)
+
+| Scenario | Evidence / required behavior |
+| --- | --- |
+| Initialization or processing is blocked | Normal hooks return `undefined` immediately; preserve producer boundary drafts |
+| Repeated source events and an explicit command | Coalesce only unread automatic requests; retain branch snapshots and command ordering |
+| Long input with native file tools and sourced memories | Packaged processor/host heartbeat remains responsive during async reading, extraction and writes (**live**) |
+| Partial batch failure, replay, or prefix mutation | Only committed offsets advance; retry is idempotent; changed prefix conflicts |
+| Source/producer changes after input capture | Session-locked guard rejects stale replacement; memory content and incoming derivation dependencies survive (**live**) |
+| Projection fails during code-memory rebuild | Marker stays old; normal projection failure remains isolated; repair can retry |
+| Pending foreign notifications on an ephemeral turn | Wake the existing consumer without initializing Pi's replica or running foreign scanners inline |
+| Shutdown during extraction or session replacement | Cancel queued work on replacement; quit drains final work within the cleanup budget; close/terminate idempotently |
+| Process/worker restarts | Source/checkpoint replay and Pi's restored selected leaf recover work; no guessed branch, durable-queue claim or automatic respawn loop |
+
+Controlled fixture budgets: normal hook return under 100 ms and main-thread heartbeat gaps under 500 ms for 6,000 native file-tool entries plus 1,000 sourced observations. These are synthetic regression thresholds, not production timing guarantees. Independent review and user-authorized operational verification remain separate from isolated evidence.
+
 ## Side-by-side proof
 
 | Case | Expected result |

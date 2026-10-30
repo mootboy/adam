@@ -13,6 +13,16 @@
     {:entries [adam.extension]
      :exports {start adam.extension/start}}}}
 
+  :processor
+  {:compiler-options {:parallel-build false}
+   :target :esm
+   :output-dir "dist"
+   :js-options {:js-provider :import}
+   :modules
+   {:adam-processor
+    {:entries [adam.replica.background]
+     :exports {start adam.replica.background/start-worker}}}}
+
   :mcp
   {:compiler-options {:parallel-build false}
    :target :esm

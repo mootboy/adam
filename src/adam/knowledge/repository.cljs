@@ -1,7 +1,7 @@
 (ns adam.knowledge.repository
   (:require [adam.knowledge.evidence :as evidence]
             [clojure.string :as string]
-            ["node:fs" :refer [existsSync]]
+            ["node:fs/promises" :refer [access]]
             ["node:path" :as node-path]))
 
 (def ^:private git-timeout-ms 2000)
@@ -107,13 +107,23 @@
         boundaries (atom {})
         nested-boundary?
         (fn [root directory]
-          (loop [directory directory]
-            (cond
-              (= root directory) false
-              (contains? @boundaries [root directory]) (get @boundaries [root directory])
-              (existsSync (.join node-path directory ".git")) true
-              :else (let [parent (.dirname node-path directory)]
-                      (if (= parent directory) true (recur parent))))))
+          (letfn [(walk [directory]
+                    (cond
+                      (= root directory) (js/Promise.resolve false)
+                      (contains? @boundaries [root directory])
+                      (js/Promise.resolve (get @boundaries [root directory]))
+                      :else
+                      (let [pending
+                            (-> (access (.join node-path directory ".git"))
+                                (.then (fn [_] true) (fn [_] false))
+                                (.then (fn [exists?]
+                                         (if exists?
+                                           true
+                                           (let [parent (.dirname node-path directory)]
+                                             (if (= parent directory) true (walk parent)))))))]
+                        (swap! boundaries assoc [root directory] pending)
+                        pending)))]
+            (walk directory)))
         resolve! (fn [directory]
                    (or (get @lookups directory)
                        (let [pending (-> (js/Promise.resolve)
@@ -131,18 +141,19 @@
                      (fn [repositories]
                        (let [covered (evidence/resolve-file-across-repositories repositories cwd path)
                              directory (.dirname node-path (.resolve node-path cwd path))
-                             root (get-in covered [:worktree :root])
-                             nested? (when root (nested-boundary? root directory))]
-                         (when root (swap! boundaries assoc [root directory] nested?))
-                         ;; Reuse a captured root/worktree snapshot, but never let a
-                         ;; parent checkout conceal an explicitly nested Git root.
-                         (if (and covered (not nested?))
-                           repositories
-                           (-> (resolve-from-file-path! resolve! cwd path)
-                               (.then (fn [repository]
-                                        (if (or (nil? repository)
-                                                (some #(= (:id repository) (:id %)) repositories))
-                                          repositories
-                                          (conj repositories repository))))))))))
+                             root (get-in covered [:worktree :root])]
+                         ;; Metadata probes are async too: a slow checkout must
+                         ;; not block Pi while source processing runs off-thread.
+                         (-> (if root (nested-boundary? root directory) (js/Promise.resolve true))
+                             (.then
+                               (fn [nested?]
+                                 (if (and covered (not nested?))
+                                   repositories
+                                   (-> (resolve-from-file-path! resolve! cwd path)
+                                       (.then (fn [repository]
+                                                (if (or (nil? repository)
+                                                        (some #(= (:id repository) (:id %)) repositories))
+                                                  repositories
+                                                  (conj repositories repository)))))))))))))
             (js/Promise.resolve (if initial [initial] []))
             (if resolve-repository (distinct locators) [])))))))

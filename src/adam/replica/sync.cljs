@@ -125,84 +125,68 @@
                   :batches-written 0
                   :conflict detail})))))
 
+(defn apply-plan!
+  "Commit a precomputed plan. Payload batches are pulled with backpressure;
+   durable progress is owned by the store, never by the processor."
+  [{:keys [replica session summary source-file plan read-batch! check-active!]}]
+  (let [check! #(when check-active! (check-active!))
+        completion! (fn [checkpoint]
+                      (check!)
+                      (store/complete-session! replica (completion-request session summary checkpoint)))]
+    (-> (.then (js/Promise.resolve nil)
+          (fn [_]
+            (check!)
+            (case (:status plan)
+              :conflict (record-conflict! replica session source-file (dissoc plan :status :session))
+              :unchanged
+              (-> (completion! (:completion plan))
+                  (.then (fn [_] {:status :unchanged :entries-written 0 :batches-written 0})))
+              :pending
+              (let [written (atom 0)]
+                (-> (reduce
+                      (fn [chain index]
+                        (-> chain
+                            (.then (fn [_] (check!) (read-batch! index)))
+                            (.then (fn [batch]
+                                     (check!)
+                                     (-> (store/write-batch! replica (assoc batch :session session))
+                                         (.then (fn [_] (swap! written + (count (:entries batch))))))))))
+                      (js/Promise.resolve nil) (range (:batch-count plan)))
+                    (.then (fn [_] (completion! (:completion plan))))
+                    (.then (fn [_] {:status :mirrored :entries-written @written
+                                    :batches-written (:batch-count plan)})))))))
+        (.catch
+          (fn [error]
+            (cond
+              (store/immutable-entry-conflict? error)
+              (record-conflict! replica session source-file
+                                (assoc (ex-data error) :reason :payload-mismatch))
+              (store/checkpoint-conflict? error)
+              (record-conflict! replica session source-file
+                                (assoc (ex-data error) :reason :checkpoint-out-of-range))
+              :else (js/Promise.reject error)))))))
+
 (defn sync-scanned-session!
   [{:keys [summary entries user-uuid source-file current-leaf-id parent identity
            replica batch-bytes]
-    :or {batch-bytes default-batch-bytes}
-    :as options}]
-  (let [session-options (cond-> {:user-uuid user-uuid
-                                 :source-file source-file}
-                          (contains? options :current-leaf-id)
-                          (assoc :current-leaf-id current-leaf-id)
+    :or {batch-bytes default-batch-bytes} :as options}]
+  (let [session-options (cond-> {:user-uuid user-uuid :source-file source-file}
+                          (contains? options :current-leaf-id) (assoc :current-leaf-id current-leaf-id)
                           parent (assoc :parent parent)
                           identity (assoc :identity identity))
         session (model/session-from-summary summary session-options)]
     (-> (store/get-checkpoint! replica (:id session))
         (.then
-         (fn [checkpoint]
-           (let [plan (plan-sync summary entries checkpoint batch-bytes)]
-             (case (:status plan)
-               :unchanged
-               (-> (store/complete-session!
-                    replica
-                    (completion-request session summary checkpoint))
-                   (.then (fn [_]
-                            {:status :unchanged
-                             :entries-written 0
-                             :batches-written 0})))
-
-               :conflict
-               (record-conflict! replica session source-file (dissoc plan :status))
-
-               :pending
-               (let [batches (:batches plan)
-                     write-chain
-                     (reduce
-                      (fn [promise batch]
-                        (.then
-                         promise
-                         (fn [_]
-                           (store/write-batch!
-                            replica
-                            {:session session
-                             :entries (mapv #(model/entry-from-scan
-                                              user-uuid
-                                              (:pi-session-id summary)
-                                              %)
-                                            (:entries batch))
-                             :checkpoint (:checkpoint batch)}))))
-                      (js/Promise.resolve nil)
-                      batches)]
-                 (-> write-chain
-                     (.then
-                      (fn [_]
-                        (store/complete-session!
-                         replica
-                         (completion-request session summary (:completion plan)))))
-                     (.then
-                      (fn [_]
-                        {:status :mirrored
-                         :entries-written (reduce + 0 (map #(count (:entries %)) batches))
-                         :batches-written (count batches)}))))))))
-        (.catch
-         (fn [error]
-           (cond
-             (store/immutable-entry-conflict? error)
-             (record-conflict!
-              replica
-              session
-              source-file
-              (assoc (ex-data error) :reason :payload-mismatch))
-
-             (store/checkpoint-conflict? error)
-             (record-conflict!
-              replica
-              session
-              source-file
-              (assoc (ex-data error) :reason :checkpoint-out-of-range))
-
-             :else
-             (js/Promise.reject error)))))))
+          (fn [checkpoint]
+            (let [plan (plan-sync summary entries checkpoint batch-bytes)]
+              (apply-plan!
+                {:replica replica :session session :summary summary :source-file source-file
+                 :plan (assoc plan :batch-count (count (:batches plan))
+                              :completion (or (:completion plan) checkpoint))
+                 :read-batch! (fn [index]
+                                (update (get-in plan [:batches index]) :entries
+                                        #(mapv (partial model/entry-from-scan user-uuid
+                                                        (:pi-session-id summary)) %)))})))))))
 
 (defn- resolve-parent [summary user-uuid]
   (when-let [parent-path (:parent-session summary)]

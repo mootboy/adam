@@ -88,9 +88,19 @@ Each session checkpoint contains:
 - committed byte offset;
 - committed-prefix hash.
 
-Normal synchronization seeks to the committed offset and uploads only appended entries. File shrinkage, prefix mismatch, or checkpoint regression marks a conflict.
+Normal synchronization validates source history and uploads only entries beyond the committed offset. The current Pi implementation asynchronously streams a complete snapshot for prefix validation and selected-branch reconstruction; it does not claim suffix-only disk reads. File shrinkage, prefix mismatch, or checkpoint regression marks a conflict.
 
 Transactions are bounded by encoded payload bytes, initially targeting approximately 4 MiB. Checkpoints advance only after a batch commits. Completion metadata includes entry count, log hash, log bytes, and largest entry bytes. Interrupted work is resumable and idempotent, and an incomplete prefix is never exposed as restorable.
+
+## Pi lifecycle reconciliation
+
+Normal session/turn/mutation callbacks enqueue immutable path/cwd/selected-leaf requests and return `undefined` without waiting for reconciliation. `agent_settled` also captures the post-boundary leaf after producer drafts have persisted; it can coalesce with an unread turn-end request or schedule later catch-up, without guessing the last physical line. Pending unread automatic requests for the same file coalesce; explicit imports/repair are ordering barriers and remain awaitable. One lazy processing thread consumes backpressured raw-record events and explicit external inputs. It performs validation, extraction and planning without filesystem, Git, Neo4j or Pi calls; the asynchronous coordinator reads and commits writes. Read/processed offsets are not durable checkpoints. One validated snapshot serves replication and indexing, and a failed write retries from actual committed progress.
+
+Session-locked optimistic checks reject stale derived plans if the replica hash/committed offset/selected leaf or retained producer record counts/ordinals changed. Producer-record writes use the same graph session lock; this is separate from the notification filesystem lease. Stable retained memory nodes preserve incoming derivation dependencies. Rebuild migrations require projection success rather than silently advancing after an isolated normal-projection error.
+
+Ordinary hooks wake the existing detached consumer for pending durable notifications, rather than running foreign scanners on Pi's main thread. Parked-only archives remain excluded from automatic work. Explicit repair still performs one awaited source-before-memory attempt. Status distinguishes current targets and pending/running work from the last completed mirror and measured notification drain.
+
+Session replacement/reload cancels queued automatic work immediately and requests processing/connection closure. Quit permits pending final work to drain within a five-second cleanup budget, then cancels/closes if necessary; it does not promise that a long final scan completes before exit. The transient queue is not durable: interrupted work is recovered from authoritative logs/checkpoints on a later supported trigger, with Pi supplying restored branch selection. Worker failures remain observable and a later request can create a fresh processor, without an automatic respawn loop. No source files are modified, migration version bumped or bulk repair added by this scheduling change.
 
 ## Claude lifecycle reconciliation
 

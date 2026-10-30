@@ -53,6 +53,67 @@
                        "MATCH (u:AdamUser) WHERE u.id IN $userIds AND NOT (u)--() DELETE u"
                        parameters))))))
 
+(deftest live-projection-rejects-stale-source-or-producer-snapshots-without-losing-dependencies
+  (async done
+    (let [user (randomUUID) uid (identity/user-urn user)
+          sid (identity/session-urn user "snapshot")
+          mid (identity/observation-urn user "pi" "snapshot" "fixture" "memory")
+          rid (str "fixture-run-" user) stream (str "fixture-stream-" user)
+          record (str "fixture-record-" user)
+          ^js driver ((.-driver neo4j) (environment "ADAM_TEST_NEO4J_URI")
+                        (.basic (.-auth neo4j) (environment "ADAM_TEST_NEO4J_USERNAME") (environment "ADAM_TEST_NEO4J_PASSWORD")))
+          database (or (environment "ADAM_TEST_NEO4J_DATABASE") "neo4j")
+          replica (adam-neo4j/replica-with-driver driver database)
+          ^js query (.session driver #js {:database database})
+          params #js {:uid uid :sid sid :mid mid :rid rid :stream stream :record record}
+          source {:log-hash "initial" :log-bytes 1 :current-leaf-id nil}
+          projection {:user-id uid :session-id sid :pi-session-id "snapshot" :extractor-version 3
+                      :repositories [] :files [] :entry-file-evidence []
+                      :expected-source source :expected-memory-streams []
+                      :observations [{:id mid :producer "fixture" :memory-id "memory" :content "current"
+                                      :source-kind "pi" :source-session-id "snapshot"
+                                      :source-entries [] :file-ids [] :token-count 1}]
+                      :reflections []}
+          reject-stale! (fn [candidate]
+                          (-> (js/Promise.resolve nil)
+                              (.then (fn [_] (knowledge-store/index-file-evidence! replica candidate)))
+                              (.then (fn [_] (is false "stale snapshot must reject before replacement"))
+                                     (fn [error] (is (= :stale-projection (:reason (ex-data error))))))))
+          check-retained! (fn []
+                            (-> (.run query "MATCH (:AdamDerivationRun {id:$rid})-[:USED_MEMORY]->(m) RETURN m.content AS content" params)
+                                (.then (fn [^js rows]
+                                         (is (= 1 (count (.-records rows))))
+                                         (is (= "current" (.get (first (.-records rows)) "content")))))))]
+      (-> (js/Promise.resolve nil)
+          (.then (fn [_] (store/initialize! replica {:id uid})))
+          (.then (fn [_] (.run query
+                           "MATCH (u:AdamUser {id:$uid}) MERGE (u)-[:OWNS]->(s:AdamSession {id:$sid})
+                            SET s.logHash='initial', s.completeThroughByteOffset=1" params)))
+          (.then (fn [_] (knowledge-store/index-file-evidence! replica projection)))
+          (.then (fn [_] (.run query
+                           "MATCH (m:AdamObservation {id:$mid}) MERGE (r:AdamDerivationRun {id:$rid})
+                            MERGE (r)-[:USED_MEMORY]->(m)
+                            WITH r MATCH (s:AdamSession {id:$sid})
+                            SET s.logHash='new', s.completeThroughByteOffset=2" params)))
+          (.then (fn [_] (reject-stale! (assoc-in projection [:observations 0 :content] "stale"))))
+          (.then (fn [_] (check-retained!)))
+          (.then (fn [_] (.run query
+                           "MATCH (s:AdamSession {id:$sid})
+                            MERGE (s)-[:HAS_MEMORY_STREAM]->(stream:AdamMemoryStream {id:$stream})
+                            MERGE (stream)-[:HAS_RECORD]->(record:AdamMemoryRecord {id:$record})
+                            SET record.ordinal=0" params)))
+          (.then (fn [_] (reject-stale! (assoc projection :expected-source (assoc source :log-hash "new" :log-bytes 2)))))
+          (.then (fn [_] (check-retained!)))
+          (.then (fn [_] (knowledge-store/index-file-evidence! replica
+                           (assoc projection :expected-source (assoc source :log-hash "new" :log-bytes 2)
+                                             :expected-memory-streams [{:id stream :count 1 :ordinal 0}]))))
+          (.then (fn [_] (check-retained!)))
+          (.catch #(is false (.-stack %)))
+          (.finally (fn []
+                      (-> (cleanup-fixtures! query [user] [sid] [rid])
+                          (.finally (fn [] (.close query)))
+                          (.finally (fn [] (-> (store/close! replica) (.then (fn [_] (done)))))))))))))
+
 (deftest live-session-round-trip-and-child-first-lineage
   (async done
     (let [uri (environment "ADAM_TEST_NEO4J_URI")

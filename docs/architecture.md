@@ -60,7 +60,7 @@ The session replica and derived knowledge projection are separate failure domain
 
 ## ClojureScript boundary
 
-Application behavior is implemented in ClojureScript and compiled ahead of time to ESM JavaScript. `extension.js`, `mcp.js`, `hook.js`, and `worker.js` are minimal host boundaries. The committed extension, MCP, hook, and worker artifacts under `dist/` let Pi and Claude Code run without Java or a ClojureScript compiler.
+Application behavior is implemented in ClojureScript and compiled ahead of time to ESM JavaScript. `extension.js`, `processor.js`, `mcp.js`, `hook.js`, and `worker.js` are minimal host boundaries. The five committed artifacts under `dist/` let Pi and Claude Code run without Java or a ClojureScript compiler.
 
 Pi, MCP, and Node objects remain JavaScript values at their boundaries. Lifecycle handlers and tools return native promises for asynchronous work. Storage and domain logic expose narrow ClojureScript protocols rather than depend directly on a host API.
 
@@ -76,6 +76,16 @@ adam therefore:
 - catches entries missed by an earlier event on the next reconciliation;
 - offers explicit historical import/rebuild;
 - never promises visibility after every individual JSONL append.
+
+### Non-blocking Pi reconciliation
+
+Normal Pi hooks capture the session path, cwd and explicit selected leaf, enqueue catch-up and return `undefined` immediately. One process-local queue serializes work, coalescing unread automatic requests for the same file without crossing explicit-command barriers. Asynchronous, backpressured reads send complete raw record batches and byte ranges to one lazy processing thread. Its data-only calculation produces replica batches and an aggregate projection from explicit source, repository and retained-memory inputs; filesystem/Git/Neo4j access and writes remain in the coordinator. The thread inherits neither credentials/environment nor CLI/preload arguments. It starts only when needed, not at extension registration.
+
+The initial implementation validates a full source snapshot, reusing it for replication and indexing. It does not claim incremental disk reads or a persistent cross-job processing cache. Record delivery waits for each acknowledgement, so pending raw batches cannot accumulate; only unread catch-up requests coalesce. Blank lines, large records, checkpoints, prefix integrity and concurrent-change checks remain supported. A single large physical record must still fit memory.
+
+The writer advances durable checkpoints only after committed batches. Before replacing derived state, it locks the owning session and verifies the expected source hash/offset/leaf plus retained producer record counts/ordinals. Raw producer writes and retained repair share that session lock; a stale snapshot rolls back instead of deleting newer memory or saved derivation dependencies.
+
+Ordinary hooks wake the existing detached durable-notification consumer when those spools have work; they do not run Claude scanners on Pi's event loop. Explicit repair/import remains awaitable. Session replacement/reload cancels queued automatic work immediately, terminates processing and closes resources. Quit allows pending final work to drain within the same five-second cleanup budget, then cancels if needed; neither path waits indefinitely for a full rebuild. A later supported trigger reconstructs unfinished work from authoritative logs and committed checkpoints; selection comes from Pi's restored context, not a guessed final line. No new durable queue or daemon is introduced.
 
 ## Memory-source adapters
 
