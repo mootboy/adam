@@ -42,7 +42,7 @@
     "@earendil-works/pi-coding-agent": "*"
   },
   "devDependencies": {
-    "shadow-cljs": "3.5.5"
+    "shadow-cljs": "3.5.8"
   },
   "pi": {
     "extensions": [
@@ -50,7 +50,7 @@
     ]
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "js-tiktoken": "1.0.21",
     "neo4j-driver": "^6.2.0",
     "yaml": "^2.9.1",
