@@ -65,7 +65,7 @@ Normal/live gates compile then execute the ClojureScript Node runner explicitly;
 Install a stable GitHub release tag:
 
 ```bash
-pi install git:github.com/mootboy/adam@v0.5.2
+pi install git:github.com/mootboy/adam@v0.5.3
 ```
 
 The repository is public and releases are distributed through GitHub. For local development, build and load the checkout directly:
