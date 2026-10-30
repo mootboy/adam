@@ -2,11 +2,12 @@
   (:require [adam.derivation.config :as derivation-config]
             [adam.knowledge.store :as knowledge-store]
             [adam.replica.register :as register]
+            [adam.replica.processing :as processing]
             [adam.memory.inbox :as memory-inbox]
             [adam.replica.store :as store]
             [adam.sources.claude-code.worker :as notification-worker]
             [cljs.test :refer [async deftest is]]
-            ["node:fs" :refer [mkdtempSync rmSync writeFileSync]]
+            ["node:fs" :refer [appendFileSync mkdtempSync rmSync writeFileSync]]
             ["node:os" :refer [tmpdir]]
             ["node:path" :refer [join]]))
 
@@ -93,10 +94,22 @@
      :tools tools
      :events events}))
 
+(defn- register-runtime! [pi options]
+  (register/register! pi
+    (assoc options :create-processor
+      (fn []
+        (let [state (atom nil)]
+          {:call! (fn [event]
+                    (.then (js/Promise.resolve nil)
+                      (fn [_]
+                        (let [{next-state :state result :result} (processing/advance @state event)]
+                          (reset! state next-state) result))))
+           :close! (fn [] (reset! state nil) (js/Promise.resolve nil))})))))
+
 (deftest disabled-registration-keeps-status-available
   (let [{:keys [pi commands tools events]} (fake-pi)
         notifications (atom [])]
-    (register/register!
+    (register-runtime!
      pi
      {:config {:enabled? false :reason "configuration missing"}})
     (is (contains? @commands "adam:status"))
@@ -127,7 +140,7 @@
                                              (atom 2) (atom []) (atom 0) (atom []) (atom 3) (atom []) (atom 1) (atom []))
                          :driver driver :database "neo4j")
           {:keys [pi commands]} (fake-pi)
-          runtime (register/register! pi
+          runtime (register-runtime! pi
                     {:config {:enabled? true} :create-replica #(js/Promise.resolve replica)
                      :load-user (fn [] {:user-uuid "schema-test"})
                      :load-derivation-config! #(derivation-config/parse-config "derivations:\n  a:\n    version: 1\n    guidance: Keep scope.\n")
@@ -161,7 +174,7 @@
           attempts (atom 0)
           {:keys [pi]} (fake-pi)
           notifications (atom [])
-          runtime (register/register!
+          runtime (register-runtime!
                    pi
                    {:config {:enabled? true}
                     :worker-inbox-options {:config-home directory}
@@ -225,8 +238,9 @@
                                       memory-identity-version memory-identity-migrations)
           {:keys [pi commands tools events]} (fake-pi)
           notifications (atom [])
+          hook-result (atom :not-called)
           clock (atom -10)
-          runtime (register/register!
+          runtime (register-runtime!
                    pi
                    {:config {:enabled? true}
                     :worker-inbox-options {:config-home directory}
@@ -258,15 +272,18 @@
       (is (contains? @events "turn_end"))
       (is (contains? @tools "adam_file_context"))
       (-> (js/Promise.resolve nil)
-          (.then (fn [_] ((get @events "turn_end") #js {} ctx)))
+          (.then (fn [_]
+                   (reset! hook-result ((get @events "turn_end") #js {} ctx))
+                   (is (identical? js/undefined @hook-result))
+                   ((:flush! runtime))))
           (.then
            (fn [result]
-             (is (identical? js/undefined result)
+             (is (identical? js/undefined @hook-result)
                  "side-effect lifecycle handlers must not expose internal maps as Pi boundary results")
              (let [drafts #js [#js {:type "custom" :customType "producer.memory" :data #js {}}]
                    select-entries (js/Function. "result" "entries"
                                     "return result?.entries === undefined ? entries : result.entries;")
-                   selected (select-entries result drafts)]
+                   selected (select-entries @hook-result drafts)]
                (is (identical? drafts selected)
                    "Pi's boundary chaining must preserve preceding producer drafts")
                (is (= 1 ((js/Function. "drafts" "return [...drafts].length;") selected))))
@@ -318,70 +335,46 @@
              (is false (.-stack error))
              (done)))))))
 
-(deftest lifecycle-callbacks-await-work-and-return-no-host-result
+(deftest lifecycle-callbacks-enqueue-work-and-preserve-boundary-drafts
   (async done
     (let [directory (mkdtempSync (join (tmpdir) "adam-register-return-"))
           path (join directory "session.jsonl")
           replica (->LifecycleReplica (atom nil) (atom []) (atom []) (atom []) (atom 0)
                                       (atom 2) (atom []) (atom 0) (atom []) (atom 3) (atom [])
                                       (atom 1) (atom []))
-          release (atom nil)
-          started (atom nil)
-          replica-ready (js/Promise. (fn [resolve _] (reset! release resolve)))
-          creation-started (js/Promise. (fn [resolve _] (reset! started resolve)))
-          settled? (atom false)
-          fail? (atom false)
+          ready (js/Promise.withResolvers) started (js/Promise.withResolvers)
           {:keys [pi events]} (fake-pi)
-          runtime (register/register!
-                    pi {:config {:enabled? true}
-                        :worker-inbox-options {:config-home directory}
-                        :memory-inbox-options {:state-home directory :data-home directory}
-                        :create-replica (fn [] (@started nil) replica-ready)
-                        :load-user (fn [] {:user-uuid "user-1"})
-                        :resolve-repository (fn [_ _] (js/Promise.resolve nil))
-                        :resolve-git-identity (fn [_]
-                                                (if @fail?
-                                                  (throw (js/Error. "identity unavailable"))
-                                                  (js/Promise.resolve nil)))})
-          ctx #js {:sessionManager #js {:getSessionFile (fn [] path)
-                                        :getLeafId (fn [] "entry-1")}
+          runtime (register-runtime! pi
+                    {:config {:enabled? true}
+                     :worker-inbox-options {:config-home directory}
+                     :memory-inbox-options {:state-home directory :data-home directory}
+                     :create-replica (fn [] ((.-resolve started) nil) (.-promise ready))
+                     :load-user (fn [] {:user-uuid "user-1"})
+                     :resolve-repository (fn [_ _] (js/Promise.resolve nil))
+                     :resolve-git-identity (fn [_] (js/Promise.resolve nil))})
+          leaf (atom "entry-1")
+          ctx #js {:sessionManager #js {:getSessionFile (fn [] path) :getLeafId #(deref leaf)}
                    :ui #js {:notify (fn [_ _] nil)}}]
       (writeFileSync path
         (str "{\"type\":\"session\",\"id\":\"session-1\",\"cwd\":\"/repo\"}\n"
              "{\"type\":\"message\",\"id\":\"entry-1\",\"parentId\":null}\n"))
-      (let [handler (get @events "turn_end")
-            work (-> (.call handler nil #js {} ctx)
-                     (.then (fn [result] (reset! settled? true) result)))]
-        (-> (js/Promise.race
-              #js [creation-started
-                   (.then work (fn [_]
-                                 (throw (js/Error. (str "callback settled before replica creation: "
-                                                       (:last-error ((:status runtime))))))))])
-            (.then (fn [_]
-                     (is (false? @settled?) "callback must await serialized replica work")
-                     (@release replica)
-                     work))
-            (.then (fn [result]
-                     (is (identical? js/undefined result))
-                     (is (true? (:connected? ((:status runtime)))))
-                     (reduce
-                       (fn [pending event]
-                         (-> pending
-                             (.then (fn [_] ((get @events event) #js {} ctx)))
-                             (.then (fn [result]
-                                      (is (identical? js/undefined result) event)))))
-                       (js/Promise.resolve nil)
-                       ["session_start" "turn_end" "session_compact" "session_tree"
-                        "session_info_changed" "model_select" "thinking_level_select"])))
-            (.then (fn [_]
-                     (reset! fail? true)
-                     ((get @events "turn_end") #js {} ctx)))
-            (.then (fn [result]
-                     (is (identical? js/undefined result) "isolated source failure is not a boundary result")
-                     (is (= "identity unavailable" (:last-error ((:status runtime)))))
-                     ((:shutdown! runtime))))
-            (.catch (fn [error] (is false (.-stack error))))
-            (.finally (fn [] (rmSync directory #js {:recursive true :force true}) (done))))))))
+      (doseq [event ["session_start" "turn_end" "agent_settled" "session_compact" "session_tree"
+                    "session_info_changed" "model_select" "thinking_level_select"]]
+        (is (identical? js/undefined ((get @events event) #js {} ctx)) event))
+      (is (empty? @(:writes replica)) "callbacks return before initialization/IO")
+      (reset! leaf nil) ; queued work must not reread a later branch selection
+      (-> (.-promise started)
+          (.then (fn [_]
+                   (is (empty? @(:writes replica)))
+                   ((.-resolve ready) replica)
+                   ((:flush! runtime))))
+          (.then (fn [_]
+                   (is (= 1 (count @(:writes replica))) "pending requests coalesce")
+                   (is (= "entry-1" (get-in (first @(:completions replica)) [:session :current-leaf-id])))
+                   (is (:connected? ((:status runtime))))
+                   ((:shutdown! runtime))))
+          (.catch #(is false (.-stack %)))
+          (.finally (fn [] (rmSync directory #js {:recursive true :force true}) (done)))))))
 
 (deftest lifecycle-indexes-file-evidence-after-the-lossless-mirror
   (async done
@@ -405,7 +398,7 @@
                       :dirty? false
                       :worktrees [{:root "/repo" :commit "abc123"
                                    :branch "main" :dirty? false}]}
-          runtime (register/register!
+          runtime (register-runtime!
                    pi
                    {:config {:enabled? true}
                     :create-replica (fn [] replica)
@@ -468,7 +461,7 @@
                                       (atom 1) (atom []))
           {:keys [pi]} (fake-pi)
           lease-options {:config-home directory}
-          runtime (register/register!
+          runtime (register-runtime!
                     pi {:config {:enabled? true}
                         :worker-inbox-options lease-options
                         :memory-inbox-options {:state-home directory :data-home directory}
@@ -515,7 +508,7 @@
                                       (atom 1) (atom []))
           created (atom 0)
           {:keys [pi commands]} (fake-pi)
-          runtime (register/register!
+          runtime (register-runtime!
                     pi {:config {:enabled? true} :worker-inbox-options lease-options
                         :memory-inbox-options inbox-options
                         :create-replica (fn [] (swap! created inc) replica)
@@ -556,7 +549,7 @@
                                       (atom 2) (atom []) (atom 0) (atom []) (atom 3) (atom [])
                                       (atom 1) (atom []))
           {:keys [pi]} (fake-pi)
-          runtime (register/register!
+          runtime (register-runtime!
                     pi {:config {:enabled? true}
                         :worker-inbox-options {:config-home directory}
                         :memory-inbox-options {:state-home directory :data-home directory}
@@ -593,7 +586,7 @@
                                       (atom 0) (atom :fail) (atom 3) (atom [])
                                       (atom 1) (atom []))
           {:keys [pi]} (fake-pi)
-          runtime (register/register!
+          runtime (register-runtime!
                    pi
                    {:config {:enabled? true}
                     :create-replica (fn [] replica)
@@ -630,3 +623,142 @@
              (rmSync directory #js {:recursive true :force true})
              (is false (.-stack error))
              (done)))))))
+
+(deftest post-boundary-leaf-coalesces-and-quit-drains-the-final-request
+  (async done
+    (let [directory (mkdtempSync (join (tmpdir) "adam-final-request-"))
+          path (join directory "s.jsonl") leaf (atom "a")
+          replica (->LifecycleReplica (atom nil) (atom []) (atom []) (atom []) (atom 0)
+                                      (atom 2) (atom []) (atom 0) (atom []) (atom 3) (atom [])
+                                      (atom 1) (atom []))
+          {:keys [pi events]} (fake-pi)
+          runtime (register-runtime! pi
+                    {:config {:enabled? true} :create-replica (fn [] replica)
+                     :load-user (fn [] {:user-uuid "user-1"})
+                     :resolve-git-identity (fn [_] (js/Promise.resolve nil))
+                     :resolve-repository (fn [_ _] (js/Promise.resolve nil))
+                     :worker-inbox-options {:config-home directory}
+                     :memory-inbox-options {:state-home directory :data-home directory}})
+          ctx #js {:sessionManager #js {:getSessionFile (fn [] path) :getLeafId #(deref leaf)}
+                   :ui #js {:notify (fn [_ _] nil)}}]
+      (writeFileSync path (str "{\"type\":\"session\",\"id\":\"s\",\"cwd\":\"/repo\"}\n"
+                              "{\"type\":\"message\",\"id\":\"a\",\"parentId\":null}\n"))
+      ((get @events "turn_end") #js {} ctx)
+      (appendFileSync path "{\"type\":\"custom\",\"id\":\"b\",\"parentId\":\"a\"}\n")
+      (reset! leaf "b")
+      ((get @events "agent_settled") #js {} ctx)
+      (-> (js/Promise.resolve nil)
+          (.then (fn [_] ((get @events "session_shutdown") #js {:reason "quit"} ctx)))
+          (.then (fn [_]
+                   (is (= 1 (count @(:writes replica))))
+                   (is (= ["a" "b"] (mapv :entry-id (:entries (first @(:writes replica))))))
+                   (is (= "b" (get-in (first @(:completions replica)) [:session :current-leaf-id])))
+                   (is (= :agent-settled (get-in ((:status runtime)) [:last-timing :event])))
+                   (is (= 1 @(:closes replica)))))
+          (.catch #(is false (.-stack %)))
+          (.finally (fn [] (rmSync directory #js {:recursive true :force true}) (done)))))))
+
+(deftest automatic-notification-work-wakes-the-existing-consumer-without-running-foreign-scanners
+  (async done
+    (let [directory (mkdtempSync (join (tmpdir) "adam-auto-notifications-"))
+          options {:state-home directory :data-home directory}
+          wakes (atom 0) created (atom 0)
+          {:keys [pi events]} (fake-pi)
+          runtime (register-runtime! pi
+                    {:config {:enabled? true}
+                     :worker-inbox-options {:config-home directory}
+                     :memory-inbox-options options
+                     :wake-notification-worker! #(swap! wakes inc)
+                     :create-replica (fn [] (swap! created inc) (throw (js/Error. "must not initialize here")))})
+          ctx #js {:sessionManager #js {:getSessionFile (fn [] nil)}
+                   :ui #js {:notify (fn [_ _] nil)}}]
+      (memory-inbox/enqueue! options {:source-kind "pi" :source-session-id "known-elsewhere" :producer-id "fixture"})
+      (is (identical? js/undefined ((get @events "turn_end") #js {} ctx)))
+      (-> (js/Promise.resolve nil)
+          (.then (fn [_] ((:flush! runtime))))
+          (.then (fn [_]
+                   (is (= 1 @wakes))
+                   (is (zero? @created))
+                   (is (= 1 (count (memory-inbox/pending options))) "only the detached consumer acknowledges")
+                   (is (re-find #"wake requested" (:notification-worker-status ((:status runtime)))))
+                   ((:shutdown! runtime))))
+          (.catch #(is false (.-stack %)))
+          (.finally (fn [] (rmSync directory #js {:recursive true :force true}) (done)))))))
+
+(deftest code-memory-rebuild-cannot-publish-success-after-an-isolated-projection-failure
+  (async done
+    (let [directory (mkdtempSync (join (tmpdir) "adam-rebuild-failure-"))
+          path (join directory "s.jsonl")
+          projections (atom :fail) version (atom 2) completed (atom [])
+          replica (->LifecycleReplica (atom nil) (atom []) (atom []) (atom []) (atom 0)
+                                      (atom 2) (atom []) (atom 0) projections version completed
+                                      (atom 1) (atom []))
+          {:keys [pi]} (fake-pi)
+          runtime (register-runtime! pi
+                    {:config {:enabled? true} :create-replica (fn [] replica)
+                     :load-user (fn [] {:user-uuid "user-1"})
+                     :resolve-git-identity (fn [_] (js/Promise.resolve nil))
+                     :resolve-repository (fn [_ _] (js/Promise.resolve nil))
+                     :list-code-memory-session-files (fn [] [path])
+                     :worker-inbox-options {:config-home directory}
+                     :memory-inbox-options {:state-home directory :data-home directory}})
+          ctx #js {:sessionManager #js {:getSessionFile (fn [] path) :getLeafId (fn [] nil)}
+                   :ui #js {:notify (fn [_ _] nil)}}]
+      (writeFileSync path "{\"type\":\"session\",\"id\":\"s\",\"cwd\":\"/repo\"}\n")
+      (-> (js/Promise.resolve nil)
+          (.then (fn [_] ((:synchronize! runtime) ctx)))
+          (.then (fn [_]
+                   (is (= 2 @version))
+                   (is (empty? @completed))
+                   (is (= "waiting to retry" (:code-memory-rebuild-status ((:status runtime)))))
+                   (reset! projections [])
+                   ((:synchronize! runtime) ctx)))
+          (.then (fn [_]
+                   (is (= 3 @version))
+                   (is (= 1 (count @completed)))
+                   (is (:connected? ((:status runtime))))
+                   ((:shutdown! runtime))))
+          (.catch #(is false (.-stack %)))
+          (.finally (fn [] (rmSync directory #js {:recursive true :force true}) (done)))))))
+
+(deftest shutdown-cancels-a-processing-job-without-waiting-for-extraction
+  (async done
+    (let [directory (mkdtempSync (join (tmpdir) "adam-shutdown-"))
+          path (join directory "session.jsonl")
+          replica (->LifecycleReplica (atom nil) (atom []) (atom []) (atom []) (atom 0)
+                                      (atom 2) (atom []) (atom 0) (atom []) (atom 3) (atom [])
+                                      (atom 1) (atom []))
+          started (js/Promise.withResolvers) blocked (js/Promise.withResolvers)
+          {:keys [pi events]} (fake-pi)
+          state (atom nil)
+          runtime (register/register! pi
+                    {:config {:enabled? true} :shutdown-budget-ms 100
+                     :worker-inbox-options {:config-home directory}
+                     :memory-inbox-options {:state-home directory :data-home directory}
+                     :create-replica (fn [] replica) :load-user (fn [] {:user-uuid "user-1"})
+                     :resolve-git-identity (fn [_] (js/Promise.resolve nil))
+                     :create-processor
+                     (fn []
+                       {:call! (fn [event]
+                                 (if (= :records (:op event))
+                                   (do ((.-resolve started) nil) (.-promise blocked))
+                                   (.then (js/Promise.resolve nil)
+                                     (fn [_]
+                                       (let [{next-state :state result :result} (processing/advance @state event)]
+                                         (reset! state next-state) result)))))
+                        :close! (fn [] ((.-reject blocked) (js/Error. "cancelled"))
+                                  (js/Promise.resolve nil))})})
+          ctx #js {:sessionManager #js {:getSessionFile (fn [] path) :getLeafId (fn [] "entry")}
+                   :ui #js {:notify (fn [_ _] nil)}}]
+      (writeFileSync path (str "{\"type\":\"session\",\"id\":\"s\",\"cwd\":\"/repo\"}\n"
+                              "{\"type\":\"message\",\"id\":\"entry\",\"parentId\":null}\n"))
+      ((get @events "turn_end") #js {} ctx)
+      (-> (.-promise started)
+          (.then (fn [_] ((:shutdown! runtime))))
+          (.then (fn [_]
+                   (is (empty? @(:writes replica)) "uncommitted processing never advances the replica")
+                   (is (= 1 @(:closes replica)))
+                   ((:shutdown! runtime))))
+          (.then (fn [_] (is (= 1 @(:closes replica)) "shutdown is idempotent")))
+          (.catch #(is false (.-stack %)))
+          (.finally (fn [] (rmSync directory #js {:recursive true :force true}) (done)))))))

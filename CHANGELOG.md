@@ -4,6 +4,11 @@ All notable changes to adam are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep Pi session startup and turn completion responsive while reconciliation runs: coalesce unread requests, asynchronously send raw record batches to a data-only processing thread, and commit writes/checkpoints outside it. A single validated snapshot serves replication and projection; explicit import/repair remains awaitable.
+- Cancel queued processing during shutdown with bounded cleanup, preserve malformed-session diagnostics across the thread boundary, reject stale source/producer projection plans before replacement, and keep failed rebuilds retryable without advancing their version marker. Automatic notification work wakes the existing detached consumer rather than running foreign scanners on Pi's event loop.
+
 ## [0.5.2] - 2026-10-16
 
 ### Fixed

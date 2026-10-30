@@ -1,8 +1,8 @@
 (ns adam.replica.jsonl-test
   (:require [adam.replica.jsonl :as jsonl]
-            [cljs.test :refer [deftest is]]
+            [cljs.test :refer [async deftest is]]
             ["node:crypto" :refer [createHash]]
-            ["node:fs" :refer [mkdtempSync rmSync writeFileSync]]
+            ["node:fs" :refer [appendFileSync mkdtempSync rmSync writeFileSync]]
             ["node:os" :refer [tmpdir]]
             ["node:path" :refer [join]]))
 
@@ -107,3 +107,49 @@
                 :cwd "/repo"
                 :parent-session "/older.jsonl"}
                (jsonl/read-session-header path)))))))
+
+(deftest async-reader-rejects-a-concurrent-append-and-can-retry
+  (async done
+    (let [dir (mkdtempSync (join (tmpdir) "adam-reader-change-"))
+          path (join dir "s.jsonl") appended? (atom false) state (atom nil)]
+      (writeFileSync path (str "{\"type\":\"session\",\"id\":\"s\"}\n"
+                              "{\"type\":\"message\",\"id\":\"a\",\"parentId\":null}\n"))
+      (-> (js/Promise.resolve nil)
+          (.then (fn [_]
+                   (jsonl/read-records! path
+                     (fn [_]
+                       (when (compare-and-set! appended? false true)
+                         (appendFileSync path "{\"type\":\"message\",\"id\":\"b\",\"parentId\":\"a\"}\n"))
+                       (js/Promise.resolve nil)))))
+          (.then (fn [_] (is false "concurrent source change must not become a completed snapshot")))
+          (.catch (fn [error]
+                    (is (re-find #"file changed" (.-message error)))
+                    (jsonl/read-records! path
+                      (fn [records]
+                        (swap! state #(reduce (partial jsonl/scan-record path) % records))
+                        (js/Promise.resolve nil)))))
+          (.then (fn [_] (is (= 2 (:entry-count (jsonl/scan-summary path @state))))))
+          (.catch #(is false (.-stack %)))
+          (.finally (fn [] (rmSync dir #js {:recursive true :force true}) (done)))))))
+
+(deftest asynchronous-record-reading-agrees-with-the-streaming-scanner
+  (async done
+    (let [dir (mkdtempSync (join (tmpdir) "adam-reader-"))
+          path (join dir "input.jsonl")
+          contents (str "\n{\"type\":\"session\",\"id\":\"s\",\"cwd\":\"/r\"}\n"
+                        "{\"type\":\"message\",\"id\":\"a\",\"parentId\":null,\"data\":\""
+                        (apply str (repeat 100000 "界")) "\"}\n\n"
+                        "{\"type\":\"message\",\"id\":\"b\",\"parentId\":\"a\"}")
+          folded (atom nil)]
+      (writeFileSync path contents)
+      (-> (jsonl/read-records! path
+            (fn [records]
+              (swap! folded #(reduce (partial jsonl/scan-record path) % records))
+              (js/Promise.resolve nil)))
+          (.then (fn [_]
+                   (let [entries (atom [])
+                         expected (jsonl/scan-file path {:on-entry #(swap! entries conj %)})]
+                     (is (= expected (jsonl/scan-summary path @folded)))
+                     (is (= @entries (:entries @folded))))))
+          (.catch #(is false (.-stack %)))
+          (.finally (fn [] (rmSync dir #js {:recursive true :force true}) (done)))))))

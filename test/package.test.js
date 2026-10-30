@@ -7,6 +7,8 @@ import path from "node:path";
 import readline from "node:readline";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
+import { Worker } from "node:worker_threads";
+import { once } from "node:events";
 
 const neo4jEnvironment = [
   "ADAM_NEO4J_URI",
@@ -134,6 +136,8 @@ test("the release tarball is complete and runs without source compilation", asyn
       "dist/adam-mcp.js",
       "dist/adam-hook.js",
       "dist/adam-worker.js",
+      "dist/adam-processor.js",
+      "processor.js",
       "README.md",
       "CHANGELOG.md",
       "LICENSE",
@@ -187,6 +191,22 @@ test("the release tarball is complete and runs without source compilation", asyn
     await access(path.join(packageRoot, "mcp.js"), constants.X_OK);
     await access(path.join(packageRoot, "hook.js"), constants.X_OK);
     await access(path.join(packageRoot, "worker.js"), constants.X_OK);
+
+    const processor = new Worker(pathToFileURL(path.join(packageRoot, "processor.js")), { execArgv: [], env: {} });
+    try {
+      for (const [id, event] of [
+        [1, { op: "start", path: "/nonexistent/packaged.jsonl" }],
+        [2, { op: "records", records: [{ bytes: Buffer.from('{"type":"session","id":"packaged"}'), "newline?": true }] }],
+        [3, { op: "finish" }],
+      ]) {
+        const response = once(processor, "message", { signal: AbortSignal.timeout(5000) });
+        processor.postMessage({ id, event });
+        const [packet] = await response;
+        assert.equal(packet.id, id);
+        assert.equal(packet.error, undefined);
+        if (id === 3) assert.equal(packet.value.summary["pi-session-id"], "packaged");
+      }
+    } finally { await processor.terminate(); }
 
     const savedEnvironment = new Map(neo4jEnvironment.map((key) => [key, process.env[key]]));
     try {

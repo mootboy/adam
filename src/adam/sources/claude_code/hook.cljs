@@ -26,7 +26,7 @@
 
 (declare handle!)
 
-(defn- spawn-worker! [worker-path]
+(defn wake-worker! [worker-path]
   ;; The detached worker has no terminal, so its stderr diagnostics go to an
   ;; owner-only append log next to the inbox.
   (let [log-path (inbox/worker-log-path {})
@@ -44,7 +44,7 @@
 
 (defn start [raw-input worker-path]
   (handle! {:inbox-options {}
-            :spawn-worker! #(spawn-worker! worker-path)}
+            :spawn-worker! #(wake-worker! worker-path)}
            raw-input))
 
 (defn handle!

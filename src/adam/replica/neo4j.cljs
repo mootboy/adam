@@ -568,6 +568,8 @@
 (defn- merge-memory-stream! [^js tx stream]
   (-> (.run tx
             "MATCH (:AdamUser {id: $userId})-[:OWNS]->(session:AdamSession {id: $sessionId})
+             SET session.memoryReconciliationRevision = coalesce(session.memoryReconciliationRevision, 0) + 1
+             WITH session
              MERGE (stream:AdamMemoryStream {id: $streamId})
              SET stream += $stream
              MERGE (session)-[:HAS_MEMORY_STREAM]->(stream)
@@ -944,8 +946,42 @@
                                            (:entry-file-evidence projection)))
                  :extractorVersion (:extractor-version projection)}))))))
 
+(defn- guard-projection-snapshot! [^js tx projection]
+  (if-not (:expected-source projection)
+    (js/Promise.resolve nil)
+    ;; Reuse the retained-repair session lock. Raw memory writes acquire it too,
+    ;; so validation and replacement cannot race a newer producer suffix.
+    (-> (.run tx
+          "MATCH (:AdamUser {id: $userId})-[:OWNS]->(s:AdamSession {id: $sessionId})
+           SET s.memoryReconciliationRevision = coalesce(s.memoryReconciliationRevision, 0) + 1
+           WITH s
+           OPTIONAL MATCH (s)-[:HAS_MEMORY_STREAM]->(stream:AdamMemoryStream)
+           OPTIONAL MATCH (stream)-[:HAS_RECORD]->(record:AdamMemoryRecord)
+           WITH s, stream, count(record) AS recordCount, max(record.ordinal) AS lastOrdinal
+           RETURN s.logHash AS logHash, s.completeThroughByteOffset AS bytes, s.currentLeafId AS leaf,
+             collect(CASE WHEN stream IS NULL THEN null
+               ELSE {id:stream.id, count:recordCount, ordinal:lastOrdinal} END) AS streams"
+          #js {:userId (:user-id projection) :sessionId (:session-id projection)})
+        (.then
+          (fn [result]
+            (let [row (first (records result))
+                  source (when row {:log-hash (record-get row "logHash")
+                                    :log-bytes (neo-integer (record-get row "bytes"))
+                                    :current-leaf-id (record-get row "leaf")})
+                  streams (when row
+                            (mapv (fn [value] {:id (aget value "id")
+                                              :count (neo-integer (aget value "count"))
+                                              :ordinal (neo-integer (aget value "ordinal"))})
+                                  (array-seq (record-get row "streams"))))]
+              (when-not (and (= (:expected-source projection) source)
+                             (= (sort-by :id (:expected-memory-streams projection))
+                                (sort-by :id streams)))
+                (throw (ex-info "source changed before projection; a later reconciliation will retry"
+                                {:reason :stale-projection})))))))))
+
 (defn- index-file-evidence-transaction! [^js tx projection]
-  (-> (clear-file-evidence-transaction! tx projection)
+  (-> (guard-projection-snapshot! tx projection)
+      (.then (fn [_] (clear-file-evidence-transaction! tx projection)))
       (.then
        (fn [_]
          (if (or (seq (:repositories projection)) (:repository projection))

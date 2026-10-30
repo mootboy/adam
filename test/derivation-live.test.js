@@ -77,7 +77,9 @@ test("packaged Pi generation, restart reuse and Pi/MCP reads preserve saved hist
             'supporting-memory-ids': [data.memories[0].id], 'conflicting-memory-ids': [] }], links: [] };
           return { result: async () => ({ stopReason: truncated ? 'length' : 'stop', content: [{ type: 'text', text: JSON.stringify(output) }] }) };
         } } };
-      await events.get('session_start')({}, ctx); assert.equal(count, 0, 'lifecycle must not generate');
+      assert.equal(events.get('session_start')({}, ctx), undefined);
+      await commands.get('adam:reconcile').handler('', ctx);
+      assert.equal(count, 0, 'lifecycle must not generate');
       await commands.get('adam:derive').handler('preferences', ctx);
       assert.equal(notices.at(-1), 'preferences: generated');
       await commands.get('adam:derive').handler('preferences', ctx);
