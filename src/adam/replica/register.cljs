@@ -441,11 +441,41 @@
                                     :notification-worker-status nil)
                              result))))
              (js/Promise.resolve {:processed 0 :pending 0})))
+         notification-work?
+         (fn []
+           (or (seq (memory-inbox/pending (:memory-inbox-options options)))
+               (seq (memory-inbox/rejections (:memory-inbox-options options)))
+               (seq (transcript-inbox/pending (:worker-inbox-options options)))))
+         notification-wake (atom nil)
+         notification-wake-again? (atom false)
+         wake-notifications!
+         (fn wake-notifications! []
+           (if @notification-wake
+             (reset! notification-wake-again? true)
+             (let [token (js-obj)]
+               (reset! notification-wake token)
+               (reset! notification-wake-again? false)
+               (-> (js/Promise.resolve nil)
+                   (.then (fn [_]
+                            (when-not @shutting-down?
+                              (if-let [wake! (:wake-notification-worker! options)]
+                                (wake!)
+                                (if-let [url (:notification-worker-url options)]
+                                  (claude-hook/wake-worker! (fileURLToPath url))
+                                  (throw (js/Error. "notification worker entry is not configured")))))))
+                   (.finally (fn []
+                               (when (compare-and-set! notification-wake token nil)
+                                 ;; A request can arrive after the child's final inbox
+                                 ;; check. Retry that wake only if work is still present.
+                                 (when (and @notification-wake-again? (not @shutting-down?)
+                                            (notification-work?))
+                                   (wake-notifications!)))))
+                   (.catch (fn [_]
+                             (swap! runtime-state assoc :notification-worker-status
+                                    "wake unavailable; a later trigger may retry")))))))
          reconcile-notifications!
          (fn [ctx event pre-initialization-ms]
-           (let [work? (or (seq (memory-inbox/pending (:memory-inbox-options options)))
-                           (seq (memory-inbox/rejections (:memory-inbox-options options)))
-                           (seq (transcript-inbox/pending (:worker-inbox-options options))))
+           (let [work? (notification-work?)
                  explicit? (not (true? (aget ctx "adamAutomatic")))]
              (when (and (:enabled? resolved-config)
                         (or work? (and explicit? (or (= event :reconcile) (session-file ctx)))))
@@ -463,11 +493,7 @@
                  (do
                    ;; Other hosts' synchronous scanners must not run on Pi's
                    ;; event loop. Reuse the existing durable-spool consumer.
-                   (if-let [wake! (:wake-notification-worker! options)]
-                     (wake!)
-                     (if-let [url (:notification-worker-url options)]
-                       (claude-hook/wake-worker! (fileURLToPath url))
-                       (throw (js/Error. "notification worker entry is not configured"))))
+                   (wake-notifications!)
                    (swap! runtime-state assoc :notification-worker-status
                           "wake requested; displayed drain counts are last measured"))))))
          synchronize-now!
@@ -659,7 +685,9 @@
                            (.then (fn [_] ((:shutdown! saved-reads))))
                            (.then (fn [_] ((:close! saved-query-runtime))))
                            (.catch (fn [_] nil)))
-                       resources (when-not drain? (close-resources!))
+                       ;; Cancellation/failure status writes share the replica.
+                       ;; Give active commands their cleanup window before closing it.
+                       resources (when-not drain? (.then closing (fn [_] (close-resources!))))
                        closing (-> (js/Promise.allSettled #js [closing resources ((:flush! background-queue))])
                            (.then (fn [_] (when drain? (close-resources!))))
                            (.catch (fn [_] nil)))

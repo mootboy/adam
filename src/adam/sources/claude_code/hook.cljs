@@ -29,7 +29,8 @@
 (defn wake-worker! [worker-path]
   ;; The detached worker has no terminal, so its stderr diagnostics go to an
   ;; owner-only append log next to the inbox.
-  (let [log-path (inbox/worker-log-path {})
+  (let [finished (js/Promise.withResolvers)
+        log-path (inbox/worker-log-path {})
         log-fd (try
                  (mkdirSync (.dirname node-path log-path) #js {:recursive true :mode 448})
                  (openSync log-path "a" 384)
@@ -39,8 +40,12 @@
                           :stdio #js ["ignore" "ignore" (or log-fd "ignore")]
                           :env js/process.env})]
     (when log-fd (closeSync log-fd))
-    (.once child "error" (fn [_] nil))
-    (.unref child)))
+    ;; Callers may coalesce wakes until this child exits. The hook itself does
+    ;; not await it; neither this promise nor the unrefed child keeps Pi alive.
+    (.once child "error" (fn [_] ((.-resolve finished) nil)))
+    (.once child "exit" (fn [& _] ((.-resolve finished) nil)))
+    (.unref child)
+    (.-promise finished)))
 
 (defn start [raw-input worker-path]
   (handle! {:inbox-options {}

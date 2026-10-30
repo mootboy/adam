@@ -33,7 +33,7 @@ This directory is adam's repository-local issue tracker. Use one Markdown file p
 
 - [`024`](024-derivation-graph-storage-and-authorization.md) — Persist derivations with authorization and fenced refreshes (`done`, enhancement; 0.5.0 stage 2)
 
-- [`036`](036-non-blocking-pi-session-reconciliation.md) — Keep Pi responsive while long sessions reconcile in the background (`in-progress`, bug; background record processing and final isolated acceptance pass, independent review pending)
+- [`036`](036-non-blocking-pi-session-reconciliation.md) — Keep Pi responsive while long sessions reconcile in the background (`done`, bug; non-blocking record processing, isolated acceptance and review corrections)
 
 ## Naming
 

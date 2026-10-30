@@ -137,7 +137,7 @@
           (fn [_]
             (check!)
             (case (:status plan)
-              :conflict (record-conflict! replica session source-file (dissoc plan :status :session))
+              :conflict (record-conflict! replica session source-file (dissoc plan :status :session :batch-count :completion))
               :unchanged
               (-> (completion! (:completion plan))
                   (.then (fn [_] {:status :unchanged :entries-written 0 :batches-written 0})))
