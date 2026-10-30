@@ -9,7 +9,7 @@
             [adam.replica.sync :as sync]
             [adam.sources.pi-observational-memory.adapter :as adapter]))
 
-(defn advance [state {:keys [op records path user-uuid checkpoint parent index repositories streams]
+(defn advance [state {:keys [op records path user-uuid checkpoint index repositories streams]
                       :as event}]
   (case op
     :start {:state {:path path :scan nil} :result nil}
@@ -44,15 +44,14 @@
       {:state (assoc state :embedded embedded)
        :result {:summary summary :file-locators locators}})
     :plan
-    (let [parent (or parent
-                     (when-let [bytes (:parent-header event)]
-                       (try
-                         (let [scan (jsonl/scan-record "parent header" nil {:bytes bytes :newline? false})
-                               header (:header scan)
-                               id (aget header "id")]
-                           (when (not= id (get-in state [:summary :pi-session-id]))
-                             {:pi-session-id id :session-id (identity/session-urn user-uuid id)}))
-                         (catch :default _ nil))))
+    (let [parent (when-let [bytes (:parent-header event)]
+                   (try
+                     (let [scan (jsonl/scan-record "parent header" nil {:bytes bytes :newline? false})
+                           header (:header scan)
+                           id (aget header "id")]
+                       (when (not= id (get-in state [:summary :pi-session-id]))
+                         {:pi-session-id id :session-id (identity/session-urn user-uuid id)}))
+                     (catch :default _ nil)))
           options (cond-> {:user-uuid user-uuid :source-file (:path state)}
                     (contains? event :current-leaf-id) (assoc :current-leaf-id (:current-leaf-id event))
                     parent (assoc :parent parent))

@@ -1666,6 +1666,7 @@
              "MATCH (u:AdamUser {id: $userId})
               OPTIONAL MATCH (u)-[:OWNS]->(s:AdamSession)
               WHERE coalesce(s.sourceKind, 'pi') = 'pi'
+                AND coalesce(s.conflicted, false) = false
               OPTIONAL MATCH (s)-[worked:WORKED_ON]->(:AdamRepository)
               WITH u, s,
                    CASE

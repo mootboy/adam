@@ -361,6 +361,8 @@ Synthetic/disposable proof does not complete semantic/provider or production gat
 | Partial batch failure, replay, or prefix mutation | Only committed offsets advance; retry is idempotent; changed prefix conflicts |
 | Source/producer changes after input capture | Session-locked guard rejects stale replacement; memory content and incoming derivation dependencies survive (**live**) |
 | Projection fails during code-memory rebuild | Marker stays old; normal projection failure remains isolated; repair can retry |
+| Recorded source conflict during rebuild | Skip projection for that session, preserve its conflict, rebuild healthy sessions and exclude terminal conflicts from effective-version staleness |
+| Shutdown during derivation cancellation | Finish terminal status/release before replica closure; deadline still forces bounded cleanup |
 | Pending foreign notifications on an ephemeral turn | Wake the existing consumer without initializing Pi's replica or running foreign scanners inline |
 | Shutdown during extraction or session replacement | Cancel queued work on replacement; quit drains final work within the cleanup budget; close/terminate idempotently |
 | Process/worker restarts | Source/checkpoint replay and Pi's restored selected leaf recover work; no guessed branch, durable-queue claim or automatic respawn loop |

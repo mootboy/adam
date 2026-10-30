@@ -53,6 +53,38 @@
                        "MATCH (u:AdamUser) WHERE u.id IN $userIds AND NOT (u)--() DELETE u"
                        parameters))))))
 
+(deftest recorded-source-conflicts-do-not-perpetually-stale-completed-rebuilds
+  (async done
+    (let [user (randomUUID) uid (identity/user-urn user)
+          bad (identity/session-urn user "bad") good (identity/session-urn user "good")
+          ^js driver ((.-driver neo4j) (environment "ADAM_TEST_NEO4J_URI")
+                       (.basic (.-auth neo4j) (environment "ADAM_TEST_NEO4J_USERNAME") (environment "ADAM_TEST_NEO4J_PASSWORD")))
+          database (or (environment "ADAM_TEST_NEO4J_DATABASE") "neo4j")
+          replica (adam-neo4j/replica-with-driver driver database)
+          ^js session (.session driver #js {:database database})]
+      (-> (.run session
+            "CREATE (u:AdamUser {id: $uid, codeMemoryVersion: 3}),
+                    (bad:AdamSession {id: $bad, sourceKind: 'pi', codeMemoryVersion: 2, conflicted: true}),
+                    (good:AdamSession {id: $good, sourceKind: 'pi', codeMemoryVersion: 3}),
+                    (u)-[:OWNS]->(bad), (u)-[:OWNS]->(good)"
+            #js {:uid uid :bad bad :good good})
+          (.then (fn [_] (knowledge-store/code-memory-version! replica uid)))
+          (.then (fn [version]
+                   (is (= 3 version) "a recorded conflict does not stale healthy projections")
+                   (.run session "MATCH (s:AdamSession {id: $good}) SET s.conflicted = true" #js {:good good})))
+          (.then (fn [_] (knowledge-store/code-memory-version! replica uid)))
+          (.then (fn [version]
+                   (is (= 3 version) "all-conflicted sessions use the completed user marker")
+                   (.run session "MATCH (s:AdamSession {id: $bad}) SET s.conflicted = false" #js {:bad bad})))
+          (.then (fn [_] (knowledge-store/code-memory-version! replica uid)))
+          (.then (fn [version]
+                   (is (= 2 version) "clearing a conflict exposes its still-stale projection")))
+          (.catch #(is false (.-stack %)))
+          (.finally (fn [] (-> (cleanup-fixtures! session [user] [bad good])
+                              (.then (fn [_] (.close session)))
+                              (.then (fn [_] (store/close! replica)))
+                              (.finally done))))))))
+
 (deftest live-projection-rejects-stale-source-or-producer-snapshots-without-losing-dependencies
   (async done
     (let [user (randomUUID) uid (identity/user-urn user)

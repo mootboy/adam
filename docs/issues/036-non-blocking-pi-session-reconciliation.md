@@ -2,7 +2,7 @@
 
 # Keep Pi responsive while Adam reconciles long sessions
 
-- Status: in-progress
+- Status: done
 - Category: bug
 - Created: 2026-10-28
 - Owner: unassigned
@@ -50,7 +50,7 @@ Both reports show connected replication, `mirrored`, current session/memory/code
 
 This follows [issue 001](001-long-working-pause-after-turns.md), whose original delay was dominated by a missing graph lookup index and was fixed. The new measurements have a different distribution, dominated by scan/extraction; do not assume the old index defect has returned.
 
-### Implemented architecture (independent review pending)
+### Implemented architecture
 
 The approved record-carrying queue separates asynchronous reads, pure processing and committed writes. The processor does **not** encapsulate the entire I/O pipeline.
 
@@ -98,7 +98,7 @@ Implementation is local to `replica/background.cljs` (coordinator, thread transp
 - [x] Verify database outage/recovery and worker errors do not block interaction or lose recoverable work; status never claims completion while work is pending.
 - [x] Verify bounded shutdown, idempotent cleanup and restart catch-up without leaving a stuck worker/lease or permanently stranding the final requested state.
 - [x] Run `npm test` and packaged Pi interface acceptance; use explicitly acknowledged disposable Neo4j (port 7688) for opt-in integration, with isolated Pi/XDG identities and exact-resource cleanup.
-- [ ] Obtain review of scheduling, lifecycle, cancellation and ordering before declaring the fix complete. Report controlled acceptance separately from any separately authorized real-session verification.
+- [x] Obtain review of scheduling, lifecycle, cancellation and ordering before declaring the fix complete. Report controlled acceptance separately from any separately authorized real-session verification.
 
 ### Excluded / authorization boundaries
 
@@ -117,4 +117,12 @@ The reporter subsequently confirmed that the candidate appears to resolve the pa
 - Disposable Neo4j on port 7688: 18 tests / 283 assertions and five packaged cases pass. Coverage includes stale source/producer rejection preserving incoming saved-run dependencies, unchanged restart reuse, cross-host retrieval, scoped cleanup and long-session responsiveness.
 - Packaged long-session fixture: 6,000 native file-tool entries plus 1,000 sourced observations. Final full-suite run returned the startup hook in 0.5 ms; longest main-thread heartbeat gap was 66.3 ms while reconciliation continued. Controlled gates are <100 ms hook return and <500 ms heartbeat gaps. All 6,001 entries and 1,000 file-linked observations were committed. This is synthetic/disposable evidence, not a measurement of the reporter's production session.
 - Final cache-cleared `npm run ci` passes: 281 ClojureScript tests / 1,789 assertions, 44 Node cases (37 pass, seven expected opt-in skips), exact-tarball runtime checks including the packaged processor, and all five generated-runtime drift checks. The final disposable rerun passes 18 tests / 283 assertions plus five packaged cases. No production runtime reload, repair, model call or release action has been performed.
-- Self-review corrected CLI flag inheritance in workers, lost scanner error classification, shutdown cleanup/wait policy, migration false-success after isolated projection failure, main-thread foreign scanning and stale derived replacement. An independent reviewer tool is unavailable in this session; independent PR review remains required before declaring completion.
+- Self-review corrected CLI flag inheritance in workers, lost scanner error classification, migration false-success after isolated projection failure, main-thread foreign scanning and stale derived replacement. Independent Claude Code review was subsequently supplied by the user; its two main findings were reproduced and corrected with registered-interface regressions.
+
+### Independent review corrections
+
+- A recorded source conflict skips projection, but no longer prevents the healthy sessions' rebuild from completing. A disposable graph regression also exposed effective-version accounting re-triggering completed rebuilds; conflicted sessions are excluded without altering their old projection or conflict. Clearing the flag exposes stale versions again.
+- Reload/new/resume/fork now wait for derivation cancellation/release status writes before closing the shared replica, matching quit ordering. Parameterized command/lifecycle tests reproduced the driver-close race on all four non-drain paths and retain forced closure after the cleanup deadline.
+- Worker wakes coalesce for an active child, recheck work after an exit race, and do not create an automatic respawn loop. Removed unused parent input and plan-only conflict-detail fields.
+- Final follow-up validation: clean CI passes 283 ClojureScript tests / 1,820 assertions and 44 Node cases (37 pass, seven opt-in skips), exact-tarball/package and five runtime drift gates. Disposable port-7688 Neo4j passes 19 tests / 286 assertions plus five packaged cases. No production repair or model calls occurred.
+- The review checkbox records receipt of the external review and resolution of its findings; it does not authorize merging or publication. PR #41 requests re-review of the follow-up before the user-controlled merge.

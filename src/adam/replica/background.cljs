@@ -248,9 +248,9 @@
              (.then
                (fn [result]
                  (if (= :conflict (:status result))
-                   (if (:strict-projection? input)
-                     (throw (js/Error. "source conflict prevents code-memory rebuild"))
-                     result)
+                   ;; Recorded source conflicts are terminal for this snapshot,
+                   ;; not retryable projection failures that block every rebuild.
+                   result
                    (-> (.then (js/Promise.resolve nil) (fn [_] (projection!)))
                        (.catch (fn [error]
                                  (when on-projection-error (on-projection-error error))
