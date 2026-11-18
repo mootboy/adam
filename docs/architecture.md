@@ -155,6 +155,7 @@ Both are explicit and read-only. Local mode retains Git/worktree discovery and r
 Commands:
 
 - `/adam:status`
+- `/adam:configure` (Pi terminal UI only; private connection setup, restart to apply)
 - `/adam:import`
 - `/adam:resume`
 - `/adam:context <path>`
@@ -172,4 +173,4 @@ Environment:
 - `ADAM_NEO4J_PASSWORD`
 - optional `ADAM_NEO4J_DATABASE`, default `neo4j`
 
-Non-secret global state lives at `${XDG_CONFIG_HOME:-~/.config}/adam/config.json`. When canonical state is absent, Adam atomically adopts the existing UUID from `${PI_CODING_AGENT_DIR:-~/.pi/agent}/adam/config.json`; differing dual identities are a visible error. Credentials remain environment-only.
+Non-secret global state lives at `${XDG_CONFIG_HOME:-~/.config}/adam/config.json`. When canonical state is absent, Adam atomically adopts the existing UUID from `${PI_CODING_AGENT_DIR:-~/.pi/agent}/adam/config.json`; differing dual identities are a visible error. Connection settings may be persisted separately in owner-only `connection.json` in the same user-wide directory (0.5.4). One host-neutral loader serves Pi, Claude MCP and detached workers. Any explicit `ADAM_NEO4J_*` variable selects the environment as a complete connection without file fallback. Setup is a terminal-only Pi command; its masked password stays out of session messages and derivation inputs. Explicit testing uses a separate bounded read-only connection, never replica initialization. Saving is atomic and requires restart to apply; secret-manager commands and hot reconnect are not included.

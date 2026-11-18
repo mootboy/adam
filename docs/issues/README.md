@@ -35,6 +35,8 @@ This directory is adam's repository-local issue tracker. Use one Markdown file p
 
 - [`036`](036-non-blocking-pi-session-reconciliation.md) — Keep Pi responsive while long sessions reconcile in the background (`done`, bug; non-blocking record processing, isolated acceptance and review corrections)
 
+- [`037`](037-persistent-connection-settings-and-pi-setup.md) — Remember connection settings and configure them inside Pi (`in-progress`, enhancement; target 0.5.4)
+
 ## Naming
 
 Use `<number>-<short-kebab-case-title>.md`, for example:

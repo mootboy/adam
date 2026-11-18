@@ -714,6 +714,7 @@
      (commands/register!
       pi
       {:config resolved-config
+       :configure-module-url (:processor-url options)
        :import-file! import-file!
        :get-replica! get-replica!
        :get-user! get-user!

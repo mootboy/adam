@@ -4,6 +4,13 @@ All notable changes to adam are documented here.
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-11-18
+
+### Added
+
+- Load a private user-wide `connection.json` automatically in Pi, Claude MCP and detached workers, with whole-connection environment overrides and fail-closed private file validation.
+- `/adam:configure` collects connection settings with a masked terminal-only password prompt, offers an explicit cancellable read-only connection test, and saves atomically with owner-only permissions. Restart hosts to apply; credentials never enter derivation recipes or session messages.
+
 ## [0.5.3] - 2026-10-30
 
 ### Fixed
