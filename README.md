@@ -65,7 +65,7 @@ Normal/live gates compile then execute the ClojureScript Node runner explicitly;
 Install a stable GitHub release tag:
 
 ```bash
-pi install git:github.com/mootboy/adam@v0.5.3
+pi install git:github.com/mootboy/adam@v0.5.4
 ```
 
 The repository is public and releases are distributed through GitHub. For local development, build and load the checkout directly:
@@ -75,7 +75,23 @@ npm run build
 pi install /absolute/path/to/adam
 ```
 
-Configure Neo4j before restarting Pi:
+Configure Neo4j once with `/adam:configure` in Pi's terminal UI. Enter URI, username, database and a new masked password; choose **Test connection** (optional), then explicitly **Save**. Escape cancels. Restart Pi and any running Claude MCP/detached worker processes to apply; saving does not change the current connection. Password entry uses Pi's text-input component for typing/paste and editing, with only an entered/empty indicator rendered—never plaintext or a text cursor.
+
+Settings are stored as private plaintext in `${XDG_CONFIG_HOME:-~/.config}/adam/connection.json`, independently of identity and derivation recipes. Pi, Claude MCP and detached workers load the same file automatically at startup. Other hosts can create it manually:
+
+```json
+{
+  "version": 1,
+  "uri": "bolt://127.0.0.1:7687",
+  "username": "neo4j",
+  "password": "your-password",
+  "database": "neo4j"
+}
+```
+
+Keep the Adam directory owned by you with mode `0700` and the file `0600` (Linux/macOS). The XDG root must be owned by you and not writable by others. Symlinked roots/directories/files, multiply linked files, unsafe permissions, unknown fields and invalid settings fail closed with sanitized diagnostics. Missing configuration simply disables Neo4j functionality. Repair invalid/unsafe files manually before setup can overwrite them. Do not commit, share, or ask an agent to read the credential file; owner-only permissions do not protect against trusted extensions or other programs running as you. No secret-manager commands or repository-local overrides are supported.
+
+Alternatively, configure through the environment before launching a host:
 
 ```bash
 export ADAM_NEO4J_URI=bolt://127.0.0.1:7687
@@ -83,6 +99,8 @@ export ADAM_NEO4J_USERNAME=neo4j
 export ADAM_NEO4J_PASSWORD='your-password'
 # export ADAM_NEO4J_DATABASE=neo4j
 ```
+
+If **any** of the four `ADAM_NEO4J_*` variables is set—even empty—the entire connection comes from the environment. Missing required values disable it; file settings are never mixed in. Unset all four to use the saved file. Tests/automation should also use an isolated `XDG_CONFIG_HOME`. Recipe errors never prevent connection loading. The connection test runs only a bounded `RETURN 1` in a read-only session against the candidate database; it performs no schema setup, migrations, synchronization or model calls. Escape cancels the test; failed/cancelled tests save nothing.
 
 Then run:
 
@@ -101,7 +119,7 @@ Origin-backed repository and file identities are canonical across users, session
 
 ## Use from Claude Code
 
-Install an Adam release with its dependencies, export the same `ADAM_NEO4J_*` variables, and load the installed directory as a plugin from any trusted workspace. The Pi checkout is such a directory:
+Install an Adam release with its dependencies, use the shared private connection file (or the same `ADAM_NEO4J_*` variables), and load the installed directory as a plugin from any trusted workspace. The Pi checkout is such a directory:
 
 ```bash
 claude --plugin-dir "$HOME/.pi/agent/git/github.com/mootboy/adam"

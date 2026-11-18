@@ -208,9 +208,10 @@ test("the release tarball is complete and runs without source compilation", asyn
       }
     } finally { await processor.terminate(); }
 
-    const savedEnvironment = new Map(neo4jEnvironment.map((key) => [key, process.env[key]]));
+    const savedEnvironment = new Map([...neo4jEnvironment, "XDG_CONFIG_HOME"].map((key) => [key, process.env[key]]));
     try {
       for (const key of neo4jEnvironment) delete process.env[key];
+      process.env.XDG_CONFIG_HOME = path.join(temporaryDirectory, "empty-config");
       const { default: adam } = await import(pathToFileURL(path.join(packageRoot, "extension.js")));
       const mcpModule = await import(pathToFileURL(path.join(packageRoot, "dist", "adam-mcp.js")));
       const hookModule = await import(pathToFileURL(path.join(packageRoot, "dist", "adam-hook.js")));

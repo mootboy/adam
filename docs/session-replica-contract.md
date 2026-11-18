@@ -25,7 +25,11 @@ Local deletion is not propagated. Explicit deletion tooling is deferred.
 
 ## Configuration and transport
 
-Required:
+As of 0.5.4, Pi, Claude MCP and detached workers load `${XDG_CONFIG_HOME:-~/.config}/adam/connection.json` at initialization. The closed JSON object has `version: 1`, required nonblank `uri`, `username`, `password`, and optional `database` (default `neo4j`). This secret file is separate from identity and recipes. Reads are bounded to 64 KiB with strict UTF-8, regular-file/no-follow checks, single hard-link count, effective-user ownership and owner-only file/Adam-directory permissions (Linux/macOS); the XDG root must be absolute, owned and not writable by others. Unsafe or invalid files disable Neo4j behavior with sanitized diagnostics. Missing files disable it without preventing host loading. No repository-local override or command execution is supported.
+
+If any of the following environment variables is present, including an empty value, only that environment supplies the connection; the file is not read and partial values are never filled from it.
+
+Required environment values:
 
 - `ADAM_NEO4J_URI`
 - `ADAM_NEO4J_USERNAME`
@@ -37,7 +41,11 @@ Optional:
 
 Missing or incomplete configuration disables replication and retrieval while Pi continues normally.
 
-Unencrypted Neo4j schemes are accepted only for loopback hosts. Non-loopback endpoints require encrypted transport. Credentials must never be written to config files, session logs, diagnostics, or graph properties.
+Unencrypted Neo4j schemes are accepted only for loopback hosts. Non-loopback endpoints require encrypted transport. URI userinfo is rejected; use separate username/password fields. Credentials may be written only to the explicitly saved private connection file, never session logs, diagnostics, graph properties or derivation data. Passwords are plaintext at rest: the OS account and trusted extensions remain inside the trust boundary.
+
+`/adam:configure` is registered even when the subsystem is disabled and accepts no arguments. It requires Pi's terminal UI (not RPC/print/JSON), collects non-secret fields and a newly entered masked password, and offers explicit Test connection/Save/Cancel actions. No prompt answer is appended as a message or custom session entry. Existing settings must pass safe validation before replacement. A cancelled prompt, failed/cancelled connection test or failed pre-publication save leaves the destination unchanged. Writes use an exclusive owner-only temporary file, flush and atomic rename. Saved settings apply to subsequent host initializations; the current connection is not mutated. Environment overrides are visibly explained by setup.
+
+Connection testing uses a separate driver/session with bounded connection acquisition and query timeouts, read access mode and only `RETURN 1`. Escape, UI disposal or a 15-second deadline requests cancellation and closes the probe resources; cleanup can wait for driver timeouts. No identity setup, DDL, synchronization, repair or model call runs from setup/testing. A successful test returns to the action menu without saving. Failed/cancelled tests exit setup without saving.
 
 ## Identity
 

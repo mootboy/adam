@@ -1,12 +1,16 @@
 (ns adam.replica.commands
-  (:require [adam.replica.identity :as identity]
+  (:require [adam.replica.config :as config]
+            [adam.replica.identity :as identity]
             [adam.replica.jsonl :as jsonl]
             [adam.replica.restore :as restore]
             [adam.replica.store :as store]
             [clojure.string :as string]
+            ["node:buffer" :refer [Buffer]]
             ["node:fs" :refer [readdirSync]]
+            ["node:module" :refer [createRequire findPackageJSON]]
             ["node:os" :refer [homedir]]
-            ["node:path" :as node-path :refer [join]]))
+            ["node:path" :as node-path :refer [join]]
+            ["neo4j-driver" :as neo4j-driver]))
 
 (defn- invoke [object method & arguments]
   (.apply (aget object method) object (to-array arguments)))
@@ -308,6 +312,159 @@
                (fn [error]
                  (notify! ctx (str "adam resume failed: " (.-message error)) "error")))))}))
 
+(defn- password-prompt! [ctx module-url]
+  ;; Resolve Pi's existing TUI through its peer package, only for interactive
+  ;; setup. Neither MCP nor startup depends on a loaded TUI or a new dependency.
+  (let [host-require (createRequire (findPackageJSON "@earendil-works/pi-coding-agent"
+                                                    (or module-url (join (.cwd js/process) "extension.js"))))
+        module (host-require "@earendil-works/pi-tui")]
+    ;; Node >=22.19 supports require(ESM); no dynamic-import transpilation or
+    ;; extra compiled TUI copy is needed.
+    (-> (js/Promise.resolve module)
+        (.then
+         (fn [module]
+           (invoke (aget ctx "ui") "custom"
+                   (fn [tui _theme keybindings done]
+                     ;; Use the host Input for text editing, paste and terminal
+                     ;; protocols, but NEVER call its plaintext renderer. Our
+                     ;; component shows no text cursor, only an entered indicator.
+                     (let [input (js/Reflect.construct (aget module "Input") #js [])
+                           finish! (fn [result] (invoke input "setValue" "") (done result))]
+                       (aset input "onSubmit" finish!)
+                       (aset input "onEscape" #(finish! nil))
+                       #js {:render (fn [width]
+                                      (clj->js (map #(subs % 0 (min (max 0 width) (count %)))
+                                                    ["Adam password (hidden)"
+                                                     (str "Password: " (if (seq (invoke input "getValue")) "[entered]" "[empty]"))
+                                                     "Enter submits; Esc cancels; Backspace edits; Ctrl+U clears"])))
+                            :invalidate (fn [])
+                            :dispose (fn [] (invoke input "setValue" ""))
+                            :handleInput
+                            (fn [data]
+                              (if (or (invoke keybindings "matches" data "tui.select.cancel") (= data "\u0003"))
+                                (finish! nil)
+                                (invoke input "handleInput" data))
+                              (when (> (.byteLength Buffer (invoke input "getValue") "utf8") 8192)
+                                (notify! ctx "Password exceeds 8192 UTF-8 bytes; setup cancelled." "error")
+                                (finish! nil))
+                              (invoke tui "requestRender"))}))))))))
+
+(defn- test-connection! [settings signal create-driver]
+  ;; A dedicated bounded read-only probe, never the replica initializer.
+  (let [auth-api (.-auth neo4j-driver)
+        factory (or create-driver #(.driver neo4j-driver %1 %2 %3))
+        driver (factory (:uri settings)
+                        (.basic auth-api (:username settings) (:password settings))
+                        #js {:connectionTimeout 5000 :connectionAcquisitionTimeout 5000
+                             :maxTransactionRetryTime 0 :logging #js {:level "error" :logger (fn [])}})
+        session (atom nil)
+        closing (atom nil)
+        close! (fn []
+                 (or @closing
+                     (let [work (-> (js/Promise.resolve nil)
+                                    (.then (fn [_] (when-let [active @session] (.close active))))
+                                    (.finally (fn [] (.close driver))))]
+                       (reset! closing work) work)))
+        abort! (fn [] (-> (close!) (.catch (fn [_] nil))))]
+    (.addEventListener signal "abort" abort! #js {:once true})
+    (-> (js/Promise.resolve nil)
+        (.then (fn [_]
+                 (when (.-aborted signal) (throw (js/Error. "cancelled")))
+                 (let [active (.session driver #js {:database (:database settings) :defaultAccessMode "READ"})]
+                   (reset! session active)
+                   (.run active "RETURN 1 AS ok" #js {} #js {:timeout 5000}))))
+        (.then (fn [_] true))
+        (.finally (fn [] (.removeEventListener signal "abort" abort!) (close!))))))
+
+(defn- probe-prompt! [ctx probe! settings]
+  (invoke (aget ctx "ui") "custom"
+          (fn [tui _theme keybindings done]
+            (let [controller (js/AbortController.)
+                  timer (js/setTimeout #(.abort controller) 15000)
+                  work (-> (js/Promise.resolve nil)
+                           (.then (fn [_] (probe! settings (.-signal controller))))
+                           (.then (fn [_] (if (.-aborted (.-signal controller)) :cancelled :success)))
+                           (.catch (fn [_] (if (.-aborted (.-signal controller)) :cancelled :failed))))]
+              (-> work (.then done) (.finally (fn [] (js/clearTimeout timer))))
+              #js {:render (fn [width]
+                             (let [label "Testing Adam connection (read-only); Esc cancels"]
+                               #js [(subs label 0 (min (max 0 width) (count label)))]))
+                   :invalidate (fn [])
+                   :dispose (fn [] (js/clearTimeout timer) (.abort controller))
+                   :handleInput (fn [data]
+                                  (when (or (invoke keybindings "matches" data "tui.select.cancel")
+                                            (= data "\u0003"))
+                                    (.abort controller)
+                                    (invoke tui "requestRender")))}))))
+
+(defn- configure! [ctx {:keys [configure-read! configure-save! configure-test! configure-driver! configure-module-url]}]
+  (let [ui (aget ctx "ui")
+        read! (or configure-read! config/read-connection!)
+        save! (or configure-save! config/save-connection!)
+        probe! (or configure-test! #(test-connection! %1 %2 configure-driver!))]
+    (-> (js/Promise.resolve nil)
+        (.then (fn [_]
+                 (when (config/environment-configured? (config/process-environment))
+                   (notify! ctx "ADAM_NEO4J_* overrides the saved connection. Unset all four variables to use the file after restart." "warning"))
+                 (read!)))
+        (.then
+         (fn [saved]
+           (reduce
+            (fn [promise [key label fallback]]
+              (.then promise
+                     (fn [settings]
+                       (when settings
+                         (-> (invoke ui "input" label (get saved key fallback))
+                             (.then (fn [answer]
+                                      (when (some? answer)
+                                        (assoc settings key (if (string/blank? answer)
+                                                              (get saved key fallback) answer))))))))))
+            (js/Promise.resolve {:version 1})
+            [[:uri "Neo4j URI (Enter keeps default)" "bolt://127.0.0.1:7687"]
+             [:username "Neo4j username (Enter keeps default)" "neo4j"]
+             [:database "Neo4j database (Enter keeps default)" "neo4j"]])))
+        (.then (fn [settings]
+                 (when settings
+                   (-> (password-prompt! ctx configure-module-url)
+                       (.then (fn [password]
+                                (when (some? password)
+                                  (config/normalize-connection (assoc settings :password password)))))))))
+        (.then
+         (fn [settings]
+           (when settings
+             (letfn [(choose! []
+                       (-> (invoke ui "select" "Adam connection — password stored as private plaintext (0600)"
+                                   #js ["Test connection" "Save" "Cancel"])
+                           (.then
+                            (fn [action]
+                              (case action
+                                "Save" (do (save! settings)
+                                           (notify! ctx "Adam connection saved privately. Restart Pi, Claude MCP and detached workers to apply; the current connection is unchanged." "info"))
+                                "Test connection"
+                                (-> (probe-prompt! ctx probe! settings)
+                                    (.then (fn [result]
+                                             (case result
+                                               :success (do (notify! ctx "Adam connection test succeeded; nothing saved yet." "info")
+                                                            (choose!))
+                                               :failed (notify! ctx "Adam connection test failed; no settings saved." "error")
+                                               (notify! ctx "Adam connection test cancelled; no settings saved." "info")))))
+                                nil)))))]
+               (choose!)))))
+        (.catch (fn [_]
+                  (notify! ctx "Adam configuration failed; no settings saved. Check private file permissions and connection settings. Connection tests never run migrations." "error"))))))
+
+(defn- register-configure! [pi dependencies]
+  (invoke pi "registerCommand" "adam:configure"
+          #js {:description "Save a private Adam connection for subsequent host launches"
+               :handler (fn [arguments ctx]
+                          (cond
+                            (not (string/blank? arguments))
+                            (notify! ctx "Usage: /adam:configure (no arguments; never put credentials in commands)" "error")
+                            (not (and (true? (aget ctx "hasUI")) (= "tui" (aget ctx "mode"))))
+                            (notify! ctx "Adam configuration requires Pi terminal UI; use a private connection.json in other hosts." "error")
+                            :else (configure! ctx dependencies)))}))
+
 (defn register! [pi dependencies]
+  (register-configure! pi dependencies)
   (register-import! pi dependencies)
   (register-resume! pi dependencies))

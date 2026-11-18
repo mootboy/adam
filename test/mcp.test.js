@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 import test from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { isolatedAdamEnvironment } from "./support/adam-environment.js";
@@ -31,13 +31,21 @@ function nextResponse(responses, id) {
   });
 }
 
-test("the compiled MCP server advertises the read-only file-context tool", async (t) => {
+for (const source of ["environment", "saved file"]) {
+test(`the compiled MCP server advertises the read-only file-context tool with ${source}`, async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "adam-mcp-isolated-"));
   t.after(() => rm(root, { recursive: true, force: true }));
+  const env = isolatedAdamEnvironment(root);
+  if (source === "environment") Object.assign(env, neo4jEnvironment);
+  else {
+    await mkdir(path.join(root, "adam"), { mode: 0o700 });
+    await writeFile(path.join(root, "adam", "connection.json"), JSON.stringify({
+      version: 1, uri: neo4jEnvironment.ADAM_NEO4J_URI, username: "neo4j",
+      password: "synthetic-file-password", database: "neo4j",
+    }), { mode: 0o600 });
+  }
   const child = spawn(process.execPath, ["mcp.js"], {
-    cwd: process.cwd(),
-    env: { ...isolatedAdamEnvironment(root), ...neo4jEnvironment },
-    stdio: ["pipe", "pipe", "pipe"],
+    cwd: process.cwd(), env, stdio: ["pipe", "pipe", "pipe"],
   });
   const { EventEmitter } = await import("node:events");
   const responses = new EventEmitter();
@@ -77,6 +85,8 @@ test("the compiled MCP server advertises the read-only file-context tool", async
     await new Promise((resolve) => child.once("exit", resolve));
   }
 });
+
+}
 
 test("the MCP process drains buffered requests before exiting on closed standard input", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "adam-mcp-isolated-"));

@@ -2,6 +2,7 @@
   (:require [adam.replica.commands :as commands]
             [adam.replica.store :as store]
             [cljs.test :refer [async deftest is]]
+            [clojure.string :as string]
             ["node:crypto" :refer [createHash]]
             ["node:fs" :refer [mkdtempSync readFileSync rmSync writeFileSync]]
             ["node:os" :refer [tmpdir]]
@@ -26,6 +27,111 @@
 
 (defn- command-handler [registered name]
   (aget (get @registered name) "handler"))
+
+(defn- configuration-case! [{:keys [inputs actions fail-save? fail-probe? cancel-probe? mode use-driver? fail-session? arguments cancel-field?]
+                             :or {inputs ["synthetic-password" "\r"] actions ["Save"] mode "tui"}}]
+  (let [{:keys [pi registered]} (fake-pi)
+        saved (atom []) probes (atom []) notifications (atom []) closed (atom 0)
+        choices (atom actions) custom-count (atom 0)
+        keys #js {:matches (fn [data action]
+                             (= data (get {"tui.select.cancel" "\u001b"
+                                           "tui.input.submit" "\r"
+                                           "tui.editor.deleteCharBackward" "\u007f"
+                                           "tui.editor.deleteToLineStart" "\u0015"} action)))}
+        ctx #js {:hasUI true :mode mode
+                 :ui #js {:notify (fn [message _level] (swap! notifications conj message))
+                          :input (fn [_title _placeholder] (js/Promise.resolve (when-not cancel-field? "")))
+                          :select (fn [_title _choices]
+                                    (let [choice (first @choices)] (swap! choices rest)
+                                         (js/Promise.resolve choice)))
+                          :custom
+                          (fn [factory]
+                            (js/Promise.
+                             (fn [resolve _reject]
+                               (let [component (factory #js {:requestRender (fn [])} nil keys resolve)
+                                     number (swap! custom-count inc)]
+                                 (when (= number 1)
+                                   (doseq [data inputs]
+                                     ((aget component "handleInput") data)
+                                     (doseq [width [0 8 80]]
+                                       (let [lines ((aget component "render") width)]
+                                         (is (not (string/includes? (str lines) "synthetic-password")))
+                                         (is (every? #(<= (count %) width) (array-seq lines)))))))
+                                 (when (and (> number 1) cancel-probe?)
+                                   ((aget component "handleInput") "\u001b"))))))}}]
+    (commands/register! pi {:configure-read! (fn [] nil)
+                            :configure-save! (fn [settings]
+                                               (when fail-save? (throw (js/Error. "synthetic-password")))
+                                               (swap! saved conj settings))
+                            :configure-driver!
+                            (fn [_uri _auth options]
+                              (is (= 5000 (aget options "connectionTimeout")))
+                              (is (= 5000 (aget options "connectionAcquisitionTimeout")))
+                              (is (= 0 (aget options "maxTransactionRetryTime")))
+                              (swap! probes conj :driver)
+                              #js {:session (fn [options]
+                                              (is (= "READ" (aget options "defaultAccessMode")))
+                                              (is (= "neo4j" (aget options "database")))
+                                              (when fail-session? (throw (js/Error. "synthetic-password")))
+                                              #js {:run (fn [query parameters options]
+                                                          (is (= "RETURN 1 AS ok" query))
+                                                          (is (= 0 (count (js/Object.keys parameters))))
+                                                          (is (= 5000 (aget options "timeout")))
+                                                          (if fail-probe?
+                                                            (js/Promise.reject (js/Error. "synthetic-password"))
+                                                            (js/Promise.resolve #js {})))
+                                                   :close (fn [] (js/Promise.resolve nil))})
+                                   :close (fn [] (swap! closed inc) (js/Promise.resolve nil))})
+                            :configure-test! (when-not use-driver?
+                                               (fn [settings signal]
+                                                 (swap! probes conj settings)
+                                                 (cond
+                                                   fail-probe? (js/Promise.reject (js/Error. "synthetic-password"))
+                                                   (.-aborted signal) (js/Promise.reject (js/Error. "cancelled"))
+                                                   :else (js/Promise.resolve true))))})
+    (-> (js/Promise.resolve ((command-handler registered "adam:configure") (or arguments "") ctx))
+        (.then (fn [_]
+                 (is (not (string/includes? (str @notifications) "synthetic-password")))
+                 (when (and use-driver? (seq @probes)) (is (= 1 @closed)))
+                 {:saved @saved :probes @probes :notifications @notifications})))))
+
+(deftest configure-command-requires-explicit-save-and-keeps-secrets-off-ui-output
+  (async done
+    (-> (reduce
+         (fn [work [options saves probes password]]
+           (.then work
+                  (fn [_]
+                    (-> (configuration-case! options)
+                        (.then (fn [result]
+                                 (is (= saves (count (:saved result))))
+                                 (is (= probes (count (:probes result))))
+                                 (when password (is (= password (:password (first (:saved result))))))
+                                 (when (pos? saves)
+                                   (is (some #(string/includes? % "Restart") (:notifications result))))))))))
+         (js/Promise.resolve nil)
+         [[{} 1 0 "synthetic-password"]
+          [{:actions ["Test connection" "Save"]} 1 1 "synthetic-password"]
+          [{:actions ["Cancel"]} 0 0 nil]
+          [{:inputs ["synthetic-password" "\u001b"]} 0 0 nil]
+          [{:actions ["Save"] :fail-save? true} 0 0 nil]
+          [{:actions ["Test connection" "Save"] :fail-probe? true} 0 1 nil]
+          [{:actions ["Test connection" "Save"] :cancel-probe? true} 0 1 nil]
+          [{:mode "rpc"} 0 0 nil]
+          [{:mode "print"} 0 0 nil]
+          [{:mode "json"} 0 0 nil]
+          [{:arguments "synthetic-password"} 0 0 nil]
+          [{:cancel-field? true} 0 0 nil]
+          [{:inputs ["\r"]} 0 0 nil]
+          [{:inputs [(apply str (repeat 8193 "x"))]} 0 0 nil]
+          [{:actions ["Test connection" "Save"] :use-driver? true} 1 1 "synthetic-password"]
+          [{:actions ["Test connection"] :use-driver? true :fail-probe? true} 0 1 nil]
+          [{:actions ["Test connection"] :use-driver? true :fail-session? true} 0 1 nil]
+          [{:actions ["Test connection"] :use-driver? true :cancel-probe? true} 0 1 nil]
+          [{:inputs ["oops" "\u0015" "\u001b[200~synthetic-" "password\u001b[201~" "\r"]} 1 0 "synthetic-password"]
+          [{:inputs ["synthetic-passwordX" "\u007f" "\r"]} 1 0 "synthetic-password"]
+          [{:inputs ["\u001b[97u" "\u001b[98;2u" "\r"]} 1 0 "ab"]])
+        (.then (fn [_] (done)))
+        (.catch (fn [error] (is false (.-message error)) (done))))))
 
 (defn- base-context [notifications]
   #js {:cwd "/repo"
