@@ -7,7 +7,7 @@
             ["yaml" :as yaml]
             ["node:fs" :as fs]
             ["node:os" :refer [tmpdir]]
-            ["node:path" :refer [join]]))
+            ["node:path" :refer [dirname join]]))
 
 (def settings {:version 1 :uri "bolt://localhost:7687" :username "neo4j"
                :password "synthetic-password" :database "neo4j"})
@@ -81,11 +81,12 @@
                                 (swap! descriptors dissoc fd))
                   fs/fsyncSync (fn [fd]
                                 (let [directory? (.isDirectory (.fstatSync fs fd))
-                                      target (if directory? (get @descriptors fd) :file)]
+                                      target (if directory? (.realpathSync fs (get @descriptors fd)) :file)
+                                      canonical-directory (.realpathSync fs directory)]
                                   (swap! events conj [:sync target])
                                   (when (or (and (= failure :file) (not directory?))
-                                            (and (= failure :directory) (= target directory))
-                                            (and (= failure :ancestor) directory? (not= target directory)))
+                                            (and (= failure :directory) (= target canonical-directory))
+                                            (and (= failure :ancestor) directory? (not= target canonical-directory)))
                                     (throw (js/Error. "synthetic-password fsync failed")))
                                   (sync! fd)))
                   fs/renameSync (fn [source destination]
@@ -98,20 +99,24 @@
     (when @error (is (not (.includes (.-message @error) "synthetic-password"))))
     {:events @events :error @error}))
 
-(deftest successful-save-syncs-the-renamed-entry-and-new-directory-ancestors
+(defn- expected-save-events [root]
+  (loop [target (.realpathSync fs (join root "adam"))
+         events [[:sync :file] :rename]]
+    (let [events (conj events [:sync target])
+          parent (dirname target)]
+      (if (= target parent) events (recur parent events)))))
+
+(deftest successful-save-syncs-all-ancestor-entries-on-first-and-subsequent-saves
   (doseq [nested? [false true]]
     (let [sandbox (.mkdtempSync fs (join (tmpdir) "adam-save-sync-"))
-          root (if nested? (join sandbox "nested" "xdg") sandbox)
-          directory (join root "adam")]
+          root (if nested? (join sandbox "nested" "xdg") sandbox)]
       (try
-        (let [result (observed-save! root settings nil)
-              parents (if nested? [root (join sandbox "nested") sandbox] [root])]
+        (let [result (observed-save! root settings nil)]
           (is (nil? (:error result)))
-          (is (= (into [[:sync :file] :rename [:sync directory]] (map #(vector :sync %) parents))
-                 (:events result))))
+          (is (= (expected-save-events root) (:events result))))
         (let [result (observed-save! root (assoc settings :password "synthetic-updated") nil)]
           (is (nil? (:error result)))
-          (is (= [[:sync :file] :rename [:sync directory]] (:events result))))
+          (is (= (expected-save-events root) (:events result))))
         (finally (.rmSync fs sandbox #js {:recursive true :force true}))))))
 
 (deftest save-sync-failures-distinguish-pre-and-post-publication
@@ -120,8 +125,7 @@
           published? (contains? #{:directory :ancestor} failure)
           updated (assoc settings :password "synthetic-updated")]
       (try
-        ;; Ancestor sync only occurs when a directory entry was newly created.
-        (when-not (= failure :ancestor) (config/save-connection! settings root))
+        (config/save-connection! settings root)
         (let [result (observed-save! root updated failure)
               error (:error result)]
           (is (some? error) (str failure))
@@ -129,6 +133,17 @@
           (is (= (if published? updated settings) (config/read-connection! root)))
           (is (= ["connection.yaml"] (vec (.readdirSync fs (join root "adam"))))))
         (finally (.rmSync fs root #js {:recursive true :force true}))))))
+
+(deftest retries-sync-retained-ancestors-after-failed-saves
+  (doseq [failure [:file :rename :directory :ancestor]]
+    (let [sandbox (.mkdtempSync fs (join (tmpdir) "adam-sync-retry-"))
+          root (join sandbox "nested" "xdg")]
+      (try
+        (is (some? (:error (observed-save! root settings failure))))
+        (let [retry (observed-save! root settings nil)]
+          (is (nil? (:error retry)))
+          (is (= (expected-save-events root) (:events retry))))
+        (finally (.rmSync fs sandbox #js {:recursive true :force true}))))))
 
 (deftest private-yaml-roundtrips-preserve-passwords-and-defaults
   (let [root (.mkdtempSync fs (join (tmpdir) "adam-config-property-"))]

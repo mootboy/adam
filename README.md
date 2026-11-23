@@ -77,7 +77,7 @@ pi install /absolute/path/to/adam
 
 Configure Neo4j once with `/adam:configure` in Pi's terminal UI. Enter URI, username, database and a new masked password; choose **Test connection** (optional), then explicitly **Save**. Escape cancels. Restart Pi and any running Claude MCP/detached worker processes to apply; saving does not change the current connection. Password entry uses Pi's text-input component for typing/paste and editing, with only an entered/empty indicator rendered—never plaintext or a text cursor.
 
-Save syncs the file and its containing directory; first save also syncs newly created directory entries. If syncing fails after replacement, setup reports that the file changed but crash durability is unconfirmed—check `connection.yaml` before retrying rather than assuming nothing was saved.
+Every Save syncs the file, then the complete physical directory chain from its containing directory to the filesystem root. This also persists directories retained by failed saves, including retries in a new process. Any ancestor open/sync failure is reported, not silently skipped. If syncing fails after replacement, setup reports that the file changed but crash durability is unconfirmed—check `connection.yaml` before retrying rather than assuming nothing was saved.
 
 Settings are stored as private plaintext in `${XDG_CONFIG_HOME:-~/.config}/adam/connection.yaml`, independently of identity and derivation recipes. Pi, Claude MCP and detached workers load the same file automatically at startup. Other hosts can create it manually:
 

@@ -173,7 +173,8 @@
          temporary (.join path directory (str ".connection-" (randomUUID) ".tmp"))
          published? (atom false)]
      (try
-       (let [created (.mkdirSync fs directory #js {:recursive true :mode 448})]
+       (do
+         (.mkdirSync fs directory #js {:recursive true :mode 448})
          (check-directories! root)
          ;; Validate any existing destination before replacing it. Invalid or unsafe
          ;; files need explicit operator repair, not implicit credential overwrite.
@@ -185,12 +186,15 @@
              (finally (.closeSync fs fd))))
          (.renameSync fs temporary filename)
          (reset! published? true)
-         ;; File fsync alone does not persist rename. On first save, also sync
-         ;; each newly created directory's entry, bottom-up to its existing parent.
-         (loop [target directory]
+         ;; Existence is not evidence of durability: a previous process may have
+         ;; left unsynced directories behind. Sync the complete physical chain on
+         ;; every save, including retries, without relying on mkdir's return value.
+         ;; Resolve ancestor symlinks (e.g. macOS /tmp) before no-follow opens.
+         (loop [target (.realpathSync fs directory)]
            (sync-directory! target)
-           (when (and created (not= target (.dirname path created)))
-             (recur (.dirname path target)))))
+           (let [parent (.dirname path target)]
+             (when (not= target parent)
+               (recur parent)))))
        nil
        (catch :default _
          (if @published?

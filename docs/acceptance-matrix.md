@@ -39,7 +39,7 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 | Masked password is typed/pasted/deleted/cleared or setup is cancelled | No plaintext render or session entries; cancellation saves nothing |
 | Explicit connection test succeeds, fails or is cancelled | Separate bounded read-only probe; no migrations/model calls; success still needs explicit Save, failure/cancellation leaves the file unchanged |
 | Explicit Save succeeds or fails before publication | Flush owner-only temporary file, atomically replace and sync the directory; pre-publication failures retain the previous destination; current runtime stays unchanged with restart guidance |
-| First Save creates Adam/XDG directories | Sync new directory entries bottom-up through the first existing parent before reporting success |
+| First/subsequent Save, including fresh-process retry after file/directory/ancestor sync failure | Sync the complete physical ancestor chain bottom-up through the filesystem root, regardless of mkdir return value; errors are not silently skipped |
 | Directory sync fails after rename | Report replaced file with unconfirmed crash durability, never “no settings saved”; preserve published bytes, close descriptors and remove temporary leftovers |
 | Invalid derivation recipes exist | Connection initialization remains independent |
 | Normal tests run with user credentials configured | Isolated XDG roots prevent production file fallback |
