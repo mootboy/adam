@@ -34,7 +34,7 @@ Add a separate connection configuration file under `${XDG_CONFIG_HOME:-~/.config
 - URI, username, password and optional database settings.
 - Explicit environment configuration overrides the saved connection as a unit. Any present key selects environment-only settings; incomplete values disable connectivity rather than combine credentials from different connections.
 - A proposed `/adam:configure` command with masked password entry and explicit Test connection and Save actions.
-- Private, atomic persistence and sanitized errors.
+- Private, atomic persistence with file/directory sync and sanitized pre-/post-publication errors.
 - Consistent loading across Pi, Claude MCP, and detached workers, including clear restart guidance.
 
 ### Scope — excluded
@@ -62,7 +62,7 @@ Add a separate connection configuration file under `${XDG_CONFIG_HOME:-~/.config
 - [x] Explicit environment configuration selects a coherent connection; partial settings follow a documented fail-safe rule rather than mixing sources.
 - [x] Missing settings leave Adam visibly unconfigured without preventing Pi from loading; invalid/unreadable settings produce sanitized, actionable diagnostics.
 - [x] Pi setup supports editing connection settings, masked password entry, explicit connection testing and explicit saving; secrets are absent from session history and ordinary output.
-- [x] Cancelling setup/testing or a failed save preserves the previous file; successful persistence is atomic and owner-only.
+- [x] Cancelling setup/testing or a pre-publication save failure preserves the previous file; successful persistence is atomic, owner-only and file/directory-synced. Post-rename failures explicitly report publication with unconfirmed durability instead of claiming nothing was saved.
 - [x] Saving clearly states that restart is required and does not disrupt the current connection or active work.
 - [x] Invalid derivation recipes do not prevent connection loading, and connection secrets never enter the derivation data pipeline.
 - [x] Automated tests use isolated configuration roots and synthetic credentials; normal tests require neither Neo4j nor a secret manager.
@@ -74,9 +74,11 @@ Implementation is prepared on `feat/0.5.4-connection-settings`; issue status rem
 
 Initial implementation validation passed: clean `npm test` and a second clean `npm run ci`, including all five generated-artifact drift checks and the exact packaged-tarball smoke test; 287 ClojureScript tests / 2,186 assertions (including 80 seeded persistence round trips), and 46 Node tests (39 passing / seven opt-in skips). The seven compiled Pi/MCP interface checks also pass under Node 22.19.0 as well as the local Node 24.15.0 runtime. `git diff --check` passes. Package, lockfile, plugin, changelog and install documentation target 0.5.4.
 
-Review corrections reproduce the original hangs and insecure URI acceptance before fixing them (14 source-test failures). Clean `npm test` now passes: 288 ClojureScript tests / 2,340 assertions and 47 Node tests (40 passing / seven opt-in skips). Source interface tests cover pending RUN, hung session/driver close, cancellation and deadline. The compiled interface also uses a synthetic Bolt 5.1 TCP peer that authenticates but never answers RUN/RESET; cancellation returns, the active socket closes and no file is saved. This check passed five consecutive runs. The peer is not a Neo4j service and uses only synthetic credentials. YAML interface coverage includes literal/ambiguous password strings, duplicate keys, aliases and sanitized parser errors.
+Review corrections reproduce the original hangs and insecure URI acceptance before fixing them (14 source-test failures). Review correction validation passed: clean `npm test` with 288 ClojureScript tests / 2,340 assertions and 47 Node tests (40 passing / seven opt-in skips). Source interface tests cover pending RUN, hung session/driver close, cancellation and deadline. The compiled interface also uses a synthetic Bolt 5.1 TCP peer that authenticates but never answers RUN/RESET; cancellation returns, the active socket closes and no file is saved. This check passed five consecutive runs. The peer is not a Neo4j service and uses only synthetic credentials. YAML interface coverage includes literal/ambiguous password strings, duplicate keys, aliases and sanitized parser errors.
 
 [PR #44](https://github.com/mootboy/adam/pull/44) was opened and pushed with explicit user approval. No live Neo4j connection, model call, production configuration write, install, merge or tag was performed. Interactive operational acceptance and release review remain user-controlled; any live acceptance must be separately approved and use a disposable database.
+
+Directory-durability review: regression-first syscall observation reproduced missing post-rename directory sync and misleading UI errors (11 failures). Saving now syncs the destination directory and newly created ancestor entries bottom-up, closes descriptors even on sync failure, and marks post-publication failures explicitly. Source interface tests inject file/rename/directory/ancestor failures; compiled setup injects real builtin fsync failures to verify both preserved and published file bytes with sanitized UI feedback. Updated validation passes: 290 ClojureScript tests / 2,396 assertions, 40 passing Node tests / seven opt-in skips, clean `npm run ci` including packaged-tarball and generated-artifact checks, and eight compiled Pi/MCP checks under Node 22.19.0. No real Neo4j connection or user configuration is used.
 
 ### Notes
 

@@ -67,6 +67,69 @@
       (is (thrown? js/Error (config/save-connection! settings root)))
       (finally (.rmSync fs root #js {:recursive true :force true})))))
 
+(defn- observed-save! [root value failure]
+  (let [open! (.-openSync fs) close! (.-closeSync fs)
+        sync! (.-fsyncSync fs) rename! (.-renameSync fs)
+        descriptors (atom {}) events (atom []) error (atom nil)
+        directory (join root "adam")]
+    (with-redefs [fs/openSync (fn [& args]
+                               (let [fd (apply open! args)]
+                                 (swap! descriptors assoc fd (first args))
+                                 fd))
+                  fs/closeSync (fn [fd]
+                                (close! fd)
+                                (swap! descriptors dissoc fd))
+                  fs/fsyncSync (fn [fd]
+                                (let [directory? (.isDirectory (.fstatSync fs fd))
+                                      target (if directory? (get @descriptors fd) :file)]
+                                  (swap! events conj [:sync target])
+                                  (when (or (and (= failure :file) (not directory?))
+                                            (and (= failure :directory) (= target directory))
+                                            (and (= failure :ancestor) directory? (not= target directory)))
+                                    (throw (js/Error. "synthetic-password fsync failed")))
+                                  (sync! fd)))
+                  fs/renameSync (fn [source destination]
+                                 (swap! events conj :rename)
+                                 (when (= failure :rename) (throw (js/Error. "synthetic-password rename failed")))
+                                 (rename! source destination))]
+      (try (config/save-connection! value root)
+           (catch :default e (reset! error e))))
+    (is (empty? @descriptors) "all file and directory descriptors must close, including on failure")
+    (when @error (is (not (.includes (.-message @error) "synthetic-password"))))
+    {:events @events :error @error}))
+
+(deftest successful-save-syncs-the-renamed-entry-and-new-directory-ancestors
+  (doseq [nested? [false true]]
+    (let [sandbox (.mkdtempSync fs (join (tmpdir) "adam-save-sync-"))
+          root (if nested? (join sandbox "nested" "xdg") sandbox)
+          directory (join root "adam")]
+      (try
+        (let [result (observed-save! root settings nil)
+              parents (if nested? [root (join sandbox "nested") sandbox] [root])]
+          (is (nil? (:error result)))
+          (is (= (into [[:sync :file] :rename [:sync directory]] (map #(vector :sync %) parents))
+                 (:events result))))
+        (let [result (observed-save! root (assoc settings :password "synthetic-updated") nil)]
+          (is (nil? (:error result)))
+          (is (= [[:sync :file] :rename [:sync directory]] (:events result))))
+        (finally (.rmSync fs sandbox #js {:recursive true :force true}))))))
+
+(deftest save-sync-failures-distinguish-pre-and-post-publication
+  (doseq [failure [:file :rename :directory :ancestor]]
+    (let [root (.mkdtempSync fs (join (tmpdir) "adam-save-failure-"))
+          published? (contains? #{:directory :ancestor} failure)
+          updated (assoc settings :password "synthetic-updated")]
+      (try
+        ;; Ancestor sync only occurs when a directory entry was newly created.
+        (when-not (= failure :ancestor) (config/save-connection! settings root))
+        (let [result (observed-save! root updated failure)
+              error (:error result)]
+          (is (some? error) (str failure))
+          (is (= published? (true? (::config/published? (ex-data error)))) (str failure))
+          (is (= (if published? updated settings) (config/read-connection! root)))
+          (is (= ["connection.yaml"] (vec (.readdirSync fs (join root "adam"))))))
+        (finally (.rmSync fs root #js {:recursive true :force true}))))))
+
 (deftest private-yaml-roundtrips-preserve-passwords-and-defaults
   (let [root (.mkdtempSync fs (join (tmpdir) "adam-config-property-"))]
     (try

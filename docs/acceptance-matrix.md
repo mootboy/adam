@@ -38,7 +38,9 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 | `/adam:configure` is invoked in terminal versus RPC/print/JSON mode | Only terminal mode collects credentials; command arguments are never a credential channel |
 | Masked password is typed/pasted/deleted/cleared or setup is cancelled | No plaintext render or session entries; cancellation saves nothing |
 | Explicit connection test succeeds, fails or is cancelled | Separate bounded read-only probe; no migrations/model calls; success still needs explicit Save, failure/cancellation leaves the file unchanged |
-| Explicit Save succeeds or fails before publication | Flush owner-only temporary file and atomically replace; failures retain the previous destination; current runtime stays unchanged with restart guidance |
+| Explicit Save succeeds or fails before publication | Flush owner-only temporary file, atomically replace and sync the directory; pre-publication failures retain the previous destination; current runtime stays unchanged with restart guidance |
+| First Save creates Adam/XDG directories | Sync new directory entries bottom-up through the first existing parent before reporting success |
+| Directory sync fails after rename | Report replaced file with unconfirmed crash durability, never “no settings saved”; preserve published bytes, close descriptors and remove temporary leftovers |
 | Invalid derivation recipes exist | Connection initialization remains independent |
 | Normal tests run with user credentials configured | Isolated XDG roots prevent production file fallback |
 | Direct Bolt URI names a literal loopback IP or localhost and is unencrypted | Configuration is accepted |

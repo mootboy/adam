@@ -467,8 +467,12 @@
                                                (notify! ctx "Adam connection test cancelled; no settings saved." "info")))))
                                 nil)))))]
                (choose!)))))
-        (.catch (fn [_]
-                  (notify! ctx "Adam configuration failed; no settings saved. Check private file permissions and connection settings. Connection tests never run migrations." "error"))))))
+        (.catch (fn [error]
+                  (notify! ctx
+                           (if (true? (::config/published? (ex-data error)))
+                             "Adam connection file was replaced, but crash durability could not be confirmed. Check connection.yaml before retrying. Restart hosts to apply any saved settings; the current connection is unchanged."
+                             "Adam configuration failed; no settings saved. Check private file permissions and connection settings. Connection tests never run migrations.")
+                           "error"))))))
 
 (defn- register-configure! [pi dependencies]
   (invoke pi "registerCommand" "adam:configure"

@@ -1,5 +1,6 @@
 (ns adam.replica.commands-test
   (:require [adam.replica.commands :as commands]
+            [adam.replica.config :as config]
             [adam.replica.store :as store]
             [cljs.test :refer [async deftest is]]
             [clojure.string :as string]
@@ -28,7 +29,7 @@
 (defn- command-handler [registered name]
   (aget (get @registered name) "handler"))
 
-(defn- configuration-case! [{:keys [inputs actions fail-save? fail-probe? cancel-probe? mode use-driver? fail-session? arguments cancel-field? hang-run? hang-session-close? hang-driver-close? cancel-after-run? probe-timeout-ms]
+(defn- configuration-case! [{:keys [inputs actions fail-save? published-save? fail-probe? cancel-probe? mode use-driver? fail-session? arguments cancel-field? hang-run? hang-session-close? hang-driver-close? cancel-after-run? probe-timeout-ms]
                              :or {inputs ["synthetic-password" "\r"] actions ["Save"] mode "tui"}}]
   (let [{:keys [pi registered]} (fake-pi)
         saved (atom []) probes (atom []) notifications (atom []) closed (atom 0)
@@ -64,7 +65,9 @@
                             :configure-read! (fn [] nil)
                             :configure-save! (fn [settings]
                                                (when fail-save? (throw (js/Error. "synthetic-password")))
-                                               (swap! saved conj settings))
+                                               (swap! saved conj settings)
+                                               (when published-save?
+                                                 (throw (ex-info "synthetic-password" {::config/published? true}))))
                             :configure-driver!
                             (fn [_uri _auth options]
                               (is (= 5000 (aget options "connectionTimeout")))
@@ -109,6 +112,9 @@
                  (is (not= :timed-out result) "configuration must settle independently of a pending query/cleanup")
                  (is (not (string/includes? (str @notifications) "synthetic-password")))
                  (when (and use-driver? (seq @probes)) (is (= 1 @closed)))
+                 (when published-save?
+                   (is (some #(string/includes? % "durability") @notifications))
+                   (is (not-any? #(string/includes? % "no settings saved") @notifications)))
                  (when (or cancel-after-run? probe-timeout-ms)
                    (is (some #(string/includes? % "cancelled") @notifications)))
                  {:saved @saved :probes @probes :notifications @notifications}))))))
@@ -132,6 +138,7 @@
           [{:actions ["Cancel"]} 0 0 nil]
           [{:inputs ["synthetic-password" "\u001b"]} 0 0 nil]
           [{:actions ["Save"] :fail-save? true} 0 0 nil]
+          [{:actions ["Save"] :published-save? true} 1 0 "synthetic-password"]
           [{:actions ["Test connection" "Save"] :fail-probe? true} 0 1 nil]
           [{:actions ["Test connection" "Save"] :cancel-probe? true} 0 0 nil]
           [{:mode "rpc"} 0 0 nil]
