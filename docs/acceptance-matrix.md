@@ -34,14 +34,17 @@ Normal tests must be deterministic and independent of Neo4j. Cases marked **live
 | No environment connection or saved file exists | adam remains loaded; Neo4j functionality is disabled with setup guidance |
 | Private connection file exists without environment variables | Pi, MCP and worker startup select the same user-wide settings |
 | Any environment connection variable is present (including empty/partial) | Environment selects the whole connection; incomplete values disable functionality without reading/filling from the file |
-| Connection file is malformed, oversized, invalid UTF-8, unknown-schema, linked or has unsafe ownership/permissions | Fail closed with content-free configuration diagnostics; no connection or secret disclosure |
+| Connection YAML is malformed, duplicated/aliased, oversized, invalid UTF-8, unknown-schema, linked or has unsafe ownership/permissions | Fail closed with content-free configuration diagnostics; no connection or secret disclosure |
 | `/adam:configure` is invoked in terminal versus RPC/print/JSON mode | Only terminal mode collects credentials; command arguments are never a credential channel |
 | Masked password is typed/pasted/deleted/cleared or setup is cancelled | No plaintext render or session entries; cancellation saves nothing |
 | Explicit connection test succeeds, fails or is cancelled | Separate bounded read-only probe; no migrations/model calls; success still needs explicit Save, failure/cancellation leaves the file unchanged |
 | Explicit Save succeeds or fails before publication | Flush owner-only temporary file and atomically replace; failures retain the previous destination; current runtime stays unchanged with restart guidance |
 | Invalid derivation recipes exist | Connection initialization remains independent |
 | Normal tests run with user credentials configured | Isolated XDG roots prevent production file fallback |
-| Loopback URI is unencrypted | Configuration is accepted |
+| Direct Bolt URI names a literal loopback IP or localhost and is unencrypted | Configuration is accepted |
+| Routed neo4j URI is unencrypted, including a loopback seed | Rejected for both file and environment settings; require TLS or direct loopback Bolt |
+| Probe RUN/RESET or both cleanup promises never settle | Escape/disposal/deadline settles cancellation without saving; driver shutdown is attempted without waiting for session closure |
+| Synthetic Bolt peer authenticates but ignores RUN and RESET | Compiled setup returns on cancel and closes the active socket, without a real Neo4j service |
 | Non-loopback URI is unencrypted | Configuration is rejected without interrupting Pi |
 | Equivalent Git email spellings differ only by case/whitespace | One deterministic hashed identity; latest observed spelling may be displayed |
 | No Git email is configured | Mirroring continues under the generated user UUID |

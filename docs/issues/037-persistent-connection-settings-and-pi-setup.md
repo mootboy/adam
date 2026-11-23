@@ -47,13 +47,14 @@ Add a separate connection configuration file under `${XDG_CONFIG_HOME:-~/.config
 
 ### Security and configuration decisions
 
-- Use a closed version-1 JSON schema in `connection.json`, separate from `config.json` identity and `derivations.yaml` recipes.
+- Use a closed version-1 YAML 1.2 mapping in `connection.yaml`, separate from `config.json` identity and `derivations.yaml` recipes. Reject duplicate keys, aliases and parser warnings; keep passwords as literal strings. Core identity conversion is a separate [issue 038](038-use-yaml-for-core-identity-configuration.md).
 - Initial storage uses an explicitly saved private plaintext password; no secret-manager references or command execution in 0.5.4.
 - Linux/macOS only for saved credentials: owned private Adam directory/file, non-writable-by-others XDG root, no-follow regular-file reads and a single hard link. Existing invalid/unsafe files require manual repair before replacement. Reads are bounded to 64 KiB and strict UTF-8.
 - Any present `ADAM_NEO4J_*` key, including empty, selects the whole environment connection without file fallback. Partial required values disable Neo4j. Normal test processes isolate XDG roots; source tests selecting environment settings cannot inherit missing values from the file.
 - Terminal-only custom UI uses Pi's existing peer TUI Input for editing, without ever calling its plaintext renderer. Only an entered/empty indicator is rendered. Command arguments, ordinary chat prompts and session-entry APIs are not used for credentials.
 - Keep credentials out of tool arguments/results, prompts, logs, diagnostics, recipe fingerprints and saved derivation metadata. Masked UI does not protect against other trusted code running with the same OS permissions.
-- An explicit connection test must not perform schema initialization, migrations, synchronization, repair or model calls. Cancellation or failure leaves existing saved settings untouched.
+- An explicit connection test must not perform schema initialization, migrations, synchronization, repair or model calls. Cancellation or failure leaves existing saved settings untouched. Cancellation settles independently of query/cleanup; request driver close without awaiting session RESET so active sockets are closed even if the peer stalls.
+- Require TLS for routed Neo4j URIs, including loopback seeds. Unencrypted direct Bolt is restricted to actual loopback IPs or localhost, not DNS names beginning with `127.`.
 
 ### Acceptance criteria
 
@@ -71,9 +72,11 @@ Add a separate connection configuration file under `${XDG_CONFIG_HOME:-~/.config
 
 Implementation is prepared on `feat/0.5.4-connection-settings`; issue status remains in progress pending release review. Interface coverage includes private persistence and unsafe-file rejection; complete-environment selection; Pi setup cancellation, explicit save/test failures and secret non-disclosure; compiled Pi restart and MCP file configuration; and worker startup selecting the file before a deliberately invalid retry policy stops any DB initialization. A compiled regression caught Closure renaming the filesystem hard-link count property; string-key access now preserves it. Connection-probe interface tests use a fake driver to verify a bounded read-only `RETURN 1` and driver closure on success, query failure, session-creation failure and cancellation.
 
-Validation passed: clean `npm test` and a second clean `npm run ci`, including all five generated-artifact drift checks and the exact packaged-tarball smoke test; 287 ClojureScript tests / 2,186 assertions (including 80 seeded persistence round trips), and 46 Node tests (39 passing / seven opt-in skips). The seven compiled Pi/MCP interface checks also pass under Node 22.19.0 as well as the local Node 24.15.0 runtime. `git diff --check` passes. Package, lockfile, plugin, changelog and install documentation target 0.5.4.
+Initial implementation validation passed: clean `npm test` and a second clean `npm run ci`, including all five generated-artifact drift checks and the exact packaged-tarball smoke test; 287 ClojureScript tests / 2,186 assertions (including 80 seeded persistence round trips), and 46 Node tests (39 passing / seven opt-in skips). The seven compiled Pi/MCP interface checks also pass under Node 22.19.0 as well as the local Node 24.15.0 runtime. `git diff --check` passes. Package, lockfile, plugin, changelog and install documentation target 0.5.4.
 
-No live Neo4j connection, model call, production configuration write, install, push, merge or tag was performed. Interactive operational acceptance and release review remain user-controlled; any live acceptance must be separately approved and use a disposable database.
+Review corrections reproduce the original hangs and insecure URI acceptance before fixing them (14 source-test failures). Clean `npm test` now passes: 288 ClojureScript tests / 2,340 assertions and 47 Node tests (40 passing / seven opt-in skips). Source interface tests cover pending RUN, hung session/driver close, cancellation and deadline. The compiled interface also uses a synthetic Bolt 5.1 TCP peer that authenticates but never answers RUN/RESET; cancellation returns, the active socket closes and no file is saved. This check passed five consecutive runs. The peer is not a Neo4j service and uses only synthetic credentials. YAML interface coverage includes literal/ambiguous password strings, duplicate keys, aliases and sanitized parser errors.
+
+[PR #44](https://github.com/mootboy/adam/pull/44) was opened and pushed with explicit user approval. No live Neo4j connection, model call, production configuration write, install, merge or tag was performed. Interactive operational acceptance and release review remain user-controlled; any live acceptance must be separately approved and use a disposable database.
 
 ### Notes
 

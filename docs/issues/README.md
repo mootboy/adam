@@ -37,6 +37,8 @@ This directory is adam's repository-local issue tracker. Use one Markdown file p
 
 - [`037`](037-persistent-connection-settings-and-pi-setup.md) — Remember connection settings and configure them inside Pi (`in-progress`, enhancement; target 0.5.4)
 
+- [`038`](038-use-yaml-for-core-identity-configuration.md) — Use YAML for core identity configuration (`proposed`, enhancement; separate follow-up to 0.5.4)
+
 ## Naming
 
 Use `<number>-<short-kebab-case-title>.md`, for example:

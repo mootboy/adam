@@ -115,6 +115,7 @@ test("compiled connection setup saves privately and enables the next host withou
     import { spawnSync } from "node:child_process";
     import adam from ${JSON.stringify(new URL("../extension.js", import.meta.url).href)};
     import { getKeybindings } from ${JSON.stringify(tuiUrl)};
+    import { parse } from ${JSON.stringify(import.meta.resolve("yaml"))};
     const commands = new Map(), events = new Map(), tools = new Map();
     const pi = { registerCommand(n,c) { commands.set(n,c); }, registerTool(t) { tools.set(t.name,t); }, on(n,h) { events.set(n,h); } };
     await adam(pi);
@@ -138,12 +139,12 @@ test("compiled connection setup saves privately and enables the next host withou
         component.dispose?.();
       })
     }};
-    const filename = process.env.XDG_CONFIG_HOME + "/adam/connection.json";
+    const filename = process.env.XDG_CONFIG_HOME + "/adam/connection.yaml";
     await commands.get("adam:configure").handler("", ctx);
     assert.throws(() => readFileSync(filename), { code: "ENOENT" });
     action = "Save";
     await commands.get("adam:configure").handler("", ctx);
-    const saved = JSON.parse(readFileSync(filename, "utf8"));
+    const saved = parse(readFileSync(filename, "utf8"));
     assert.equal(saved.password, "synthetic-only-secret");
     assert.equal(statSync(filename).mode & 0o777, 0o600);
     assert.equal(statSync(process.env.XDG_CONFIG_HOME + "/adam").mode & 0o777, 0o700);
@@ -177,6 +178,92 @@ test("compiled connection setup saves privately and enables the next host withou
   try {
     execFileSync(process.execPath, ["--input-type=module", "-e", program],
       { env: isolatedAdamEnvironment(root), cwd: root, encoding: "utf8", timeout: 20000 });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("compiled connection-test cancellation closes a stalled Bolt socket without awaiting RESET", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "adam-stalled-probe-"));
+  const peerRequire = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"));
+  const tuiUrl = pathToFileURL(peerRequire.resolve("@earendil-works/pi-tui")).href;
+  const program = `
+    import assert from "node:assert/strict";
+    import net from "node:net";
+    import { existsSync } from "node:fs";
+    import adam from ${JSON.stringify(new URL("../extension.js", import.meta.url).href)};
+    import { getKeybindings } from ${JSON.stringify(tuiUrl)};
+    const sockets = new Set(), commands = new Map(), notices = [];
+    let component, sawRun = false, sawReset = false, resolveClosed;
+    const closed = new Promise(resolve => { resolveClosed = resolve; });
+    // Minimal synthetic Bolt 5.1 peer: authenticate, then never reply to RUN
+    // or RESET. There is no receive-timeout hint and no actual Neo4j database.
+    const server = net.createServer(socket => {
+      sockets.add(socket);
+      socket.on("error", () => {});
+      socket.on("close", () => { sockets.delete(socket); resolveClosed(); });
+      let incoming = Buffer.alloc(0), handshake = false, chunks = [];
+      const success = hello => {
+        const agent = Buffer.from("Neo4j/5.1.0");
+        const payload = hello
+          ? Buffer.concat([Buffer.from([0xb1, 0x70, 0xa1, 0x86]), Buffer.from("server"), Buffer.from([0x80 + agent.length]), agent])
+          : Buffer.from([0xb1, 0x70, 0xa0]);
+        const size = Buffer.alloc(2); size.writeUInt16BE(payload.length);
+        socket.write(Buffer.concat([size, payload, Buffer.alloc(2)]));
+      };
+      socket.on("data", data => {
+        incoming = Buffer.concat([incoming, data]);
+        if (!handshake) {
+          if (incoming.length < 20) return;
+          incoming = incoming.subarray(20); handshake = true;
+          socket.write(Buffer.from([0, 0, 1, 5]));
+        }
+        while (incoming.length >= 2) {
+          const size = incoming.readUInt16BE(0);
+          if (incoming.length < size + 2) return;
+          const chunk = incoming.subarray(2, size + 2); incoming = incoming.subarray(size + 2);
+          if (size) { chunks.push(chunk); continue; }
+          const message = Buffer.concat(chunks); chunks = [];
+          if (message[1] === 1) success(true);
+          else if (message[1] === 0x6a) success(false);
+          else if (message[1] === 0x10) { sawRun = true; setImmediate(() => component.handleInput("\\u001b")); }
+          else if (message[1] === 0x0f) sawReset = true;
+        }
+      });
+    });
+    let timer;
+    try {
+      await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+      await adam({ registerCommand(n, c) { commands.set(n, c); }, registerTool() {}, on() {} });
+      const ctx = { hasUI: true, mode: "tui", ui: {
+        input: async title => title.startsWith("Neo4j URI") ? "bolt://127.0.0.1:" + server.address().port : "",
+        select: async () => "Test connection", notify: m => notices.push(m),
+        custom: factory => new Promise(resolve => {
+          component = factory({ requestRender() {} }, {}, getKeybindings(), value => { component.dispose?.(); resolve(value); });
+          if (component.render(80).join("").includes("Adam password")) {
+            component.handleInput("synthetic-only-secret"); component.handleInput("\\r");
+          }
+        })
+      }};
+      await Promise.race([
+        (async () => { await commands.get("adam:configure").handler("", ctx); await closed; })(),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("probe cancellation or socket shutdown stalled")), 3000); })
+      ]);
+      assert.ok(sawRun, "cancellation must occur after the query is pending");
+      assert.ok(sawReset, "peer must ignore RESET, not merely stall the handshake");
+      assert.equal(sockets.size, 0, "driver shutdown must close the active socket");
+      assert.ok(notices.some(m => m.includes("cancelled")));
+      assert.ok(!notices.join("").includes("synthetic-only-secret"));
+      assert.equal(existsSync(process.env.XDG_CONFIG_HOME + "/adam/connection.yaml"), false);
+    } finally {
+      clearTimeout(timer);
+      for (const socket of sockets) socket.destroy();
+      await new Promise(resolve => server.close(resolve));
+    }
+  `;
+  try {
+    execFileSync(process.execPath, ["--input-type=module", "-e", program],
+      { env: isolatedAdamEnvironment(root), cwd: root, encoding: "utf8", timeout: 10000 });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

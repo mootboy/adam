@@ -361,9 +361,14 @@
         closing (atom nil)
         close! (fn []
                  (or @closing
-                     (let [work (-> (js/Promise.resolve nil)
-                                    (.then (fn [_] (when-let [active @session] (.close active))))
-                                    (.finally (fn [] (.close driver))))]
+                     ;; Never wait for RESET/session closure before shutting
+                     ;; down the driver. Driver.close destroys active sockets,
+                     ;; including a connection whose peer never answers RESET.
+                     (let [work (js/Promise.all
+                                 #js [(-> (js/Promise.resolve nil)
+                                          (.then (fn [_] (when-let [active @session] (.close active)))))
+                                      (-> (js/Promise.resolve nil)
+                                          (.then (fn [_] (.close driver))))])]
                        (reset! closing work) work)))
         abort! (fn [] (-> (close!) (.catch (fn [_] nil))))]
     (.addEventListener signal "abort" abort! #js {:once true})
@@ -376,16 +381,28 @@
         (.then (fn [_] true))
         (.finally (fn [] (.removeEventListener signal "abort" abort!) (close!))))))
 
-(defn- probe-prompt! [ctx probe! settings]
+(defn- probe-prompt! [ctx probe! settings timeout-ms]
   (invoke (aget ctx "ui") "custom"
           (fn [tui _theme keybindings done]
             (let [controller (js/AbortController.)
-                  timer (js/setTimeout #(.abort controller) 15000)
-                  work (-> (js/Promise.resolve nil)
-                           (.then (fn [_] (probe! settings (.-signal controller))))
-                           (.then (fn [_] (if (.-aborted (.-signal controller)) :cancelled :success)))
-                           (.catch (fn [_] (if (.-aborted (.-signal controller)) :cancelled :failed))))]
-              (-> work (.then done) (.finally (fn [] (js/clearTimeout timer))))
+                  signal (.-signal controller)
+                  cancel! (atom nil)
+                  cancelled (js/Promise. (fn [resolve _]
+                                           (let [listener #(resolve :cancelled)]
+                                             (reset! cancel! listener)
+                                             (.addEventListener signal "abort" listener #js {:once true}))))
+                  timer (js/setTimeout #(.abort controller) timeout-ms)
+                  probe (-> (js/Promise.resolve nil)
+                            (.then (fn [_] (when-not (.-aborted signal) (probe! settings signal))))
+                            (.then (fn [_] (if (.-aborted signal) :cancelled :success)))
+                            (.catch (fn [_] (if (.-aborted signal) :cancelled :failed))))
+                  work (js/Promise.race #js [probe cancelled])]
+              ;; The losing probe remains rejection-handled, but never keeps the
+              ;; terminal modal open while query or cleanup promises are pending.
+              (-> work
+                  (.then done)
+                  (.finally (fn [] (js/clearTimeout timer)
+                                   (.removeEventListener signal "abort" @cancel!))))
               #js {:render (fn [width]
                              (let [label "Testing Adam connection (read-only); Esc cancels"]
                                #js [(subs label 0 (min (max 0 width) (count label)))]))
@@ -397,7 +414,7 @@
                                     (.abort controller)
                                     (invoke tui "requestRender")))}))))
 
-(defn- configure! [ctx {:keys [configure-read! configure-save! configure-test! configure-driver! configure-module-url]}]
+(defn- configure! [ctx {:keys [configure-read! configure-save! configure-test! configure-driver! configure-module-url configure-probe-timeout-ms]}]
   (let [ui (aget ctx "ui")
         read! (or configure-read! config/read-connection!)
         save! (or configure-save! config/save-connection!)
@@ -441,7 +458,7 @@
                                 "Save" (do (save! settings)
                                            (notify! ctx "Adam connection saved privately. Restart Pi, Claude MCP and detached workers to apply; the current connection is unchanged." "info"))
                                 "Test connection"
-                                (-> (probe-prompt! ctx probe! settings)
+                                (-> (probe-prompt! ctx probe! settings (or configure-probe-timeout-ms 15000))
                                     (.then (fn [result]
                                              (case result
                                                :success (do (notify! ctx "Adam connection test succeeded; nothing saved yet." "info")
@@ -461,7 +478,7 @@
                             (not (string/blank? arguments))
                             (notify! ctx "Usage: /adam:configure (no arguments; never put credentials in commands)" "error")
                             (not (and (true? (aget ctx "hasUI")) (= "tui" (aget ctx "mode"))))
-                            (notify! ctx "Adam configuration requires Pi terminal UI; use a private connection.json in other hosts." "error")
+                            (notify! ctx "Adam configuration requires Pi terminal UI; use a private connection.yaml in other hosts." "error")
                             :else (configure! ctx dependencies)))}))
 
 (defn register! [pi dependencies]
