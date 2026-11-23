@@ -209,6 +209,78 @@ test("compiled connection setup saves privately and enables the next host withou
   }
 });
 
+test("compiled setup syncs retained ancestors when retrying in a fresh process", () => {
+  const peerRequire = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"));
+  const tuiUrl = pathToFileURL(peerRequire.resolve("@earendil-works/pi-tui")).href;
+  const program = `
+    import assert from "node:assert/strict";
+    import fs from "node:fs";
+    import path from "node:path";
+    import { syncBuiltinESMExports } from "node:module";
+    import adam from ${JSON.stringify(new URL("../extension.js", import.meta.url).href)};
+    import { getKeybindings } from ${JSON.stringify(tuiUrl)};
+    const commands = new Map(), notices = [], descriptors = new Map(), directories = [];
+    await adam({ registerCommand(n,c) { commands.set(n,c); }, registerTool() {}, on() {} });
+    const phase = process.env.ADAM_TEST_SYNC_PHASE;
+    const directory = path.join(process.env.XDG_CONFIG_HOME, "adam");
+    const filename = path.join(directory, "connection.yaml");
+    const original = { openSync: fs.openSync, closeSync: fs.closeSync, fsyncSync: fs.fsyncSync };
+    fs.openSync = (...args) => { const fd = original.openSync(...args); descriptors.set(fd, args[0]); return fd; };
+    fs.closeSync = fd => { original.closeSync(fd); descriptors.delete(fd); };
+    fs.fsyncSync = fd => {
+      const isDirectory = fs.fstatSync(fd).isDirectory();
+      const target = isDirectory ? fs.realpathSync(descriptors.get(fd)) : null;
+      if (isDirectory) directories.push(target);
+      if ((phase === "file" && !isDirectory) ||
+          (phase === "directory" && target === fs.realpathSync(directory)) ||
+          (phase === "ancestor" && isDirectory && target !== fs.realpathSync(directory))) {
+        throw new Error("synthetic-retry-secret");
+      }
+      original.fsyncSync(fd);
+    };
+    syncBuiltinESMExports();
+    try {
+      await commands.get("adam:configure").handler("", { hasUI: true, mode: "tui", ui: {
+        input: async () => "", select: async () => "Save", notify: m => notices.push(m),
+        custom: factory => new Promise(resolve => {
+          const component = factory({ requestRender() {} }, {}, getKeybindings(), resolve);
+          component.handleInput("synthetic-retry-secret"); component.handleInput("\\r"); component.dispose?.();
+        })
+      }});
+    } finally { Object.assign(fs, original); syncBuiltinESMExports(); }
+    assert.equal(descriptors.size, 0);
+    assert.ok(!notices.join("").includes("synthetic-retry-secret"));
+    assert.ok(!fs.readdirSync(directory).some(n => n.startsWith(".connection-")));
+    if (phase === "retry") {
+      assert.match(notices.at(-1), /saved privately/);
+      const expected = [];
+      for (let target = fs.realpathSync(directory); ; target = path.dirname(target)) {
+        expected.push(target);
+        if (path.dirname(target) === target) break;
+      }
+      assert.deepEqual(directories, expected, "fresh-process retry must sync the complete physical ancestor chain");
+      assert.ok(fs.existsSync(filename));
+    } else {
+      assert.match(notices.at(-1), phase === "file" ? /no settings saved/ : /durability/);
+      assert.equal(fs.existsSync(filename), phase !== "file");
+    }
+  `;
+  for (const nested of [false, true]) {
+    for (const phase of ["file", "directory", "ancestor"]) {
+      const sandbox = mkdtempSync(path.join(tmpdir(), "adam-process-sync-retry-"));
+      const root = nested ? path.join(sandbox, "nested", "xdg") : sandbox;
+      try {
+        for (const attempt of [phase, "retry"]) {
+          execFileSync(process.execPath, ["--input-type=module", "-e", program], {
+            env: { ...isolatedAdamEnvironment(root), ADAM_TEST_SYNC_PHASE: attempt },
+            cwd: sandbox, encoding: "utf8", timeout: 10000,
+          });
+        }
+      } finally { rmSync(sandbox, { recursive: true, force: true }); }
+    }
+  }
+});
+
 test("compiled connection-test cancellation closes a stalled Bolt socket without awaiting RESET", () => {
   const root = mkdtempSync(path.join(tmpdir(), "adam-stalled-probe-"));
   const peerRequire = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"));
