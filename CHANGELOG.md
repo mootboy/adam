@@ -8,8 +8,13 @@ All notable changes to adam are documented here.
 
 ### Added
 
-- Load a private user-wide `connection.json` automatically in Pi, Claude MCP and detached workers, with whole-connection environment overrides and fail-closed private file validation.
+- Load a private user-wide `connection.yaml` automatically in Pi, Claude MCP and detached workers, with whole-connection environment overrides and fail-closed private file validation.
 - `/adam:configure` collects connection settings with a masked terminal-only password prompt, offers an explicit cancellable read-only connection test, and saves atomically with owner-only permissions. Restart hosts to apply; credentials never enter derivation recipes or session messages.
+
+### Fixed
+
+- Require TLS for routed Neo4j connections, including loopback seeds; unencrypted direct Bolt remains available on loopback. Reject DNS names that merely start with `127.` as non-loopback.
+- Settle connection-test cancellation independently of pending query/cleanup promises and initiate driver shutdown without waiting for session RESET replies.
 
 ## [0.5.3] - 2026-10-30
 

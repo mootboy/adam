@@ -5,6 +5,7 @@ import test from "node:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { stringify } from "yaml";
 import { isolatedAdamEnvironment } from "./support/adam-environment.js";
 
 const neo4jEnvironment = {
@@ -39,7 +40,7 @@ test(`the compiled MCP server advertises the read-only file-context tool with ${
   if (source === "environment") Object.assign(env, neo4jEnvironment);
   else {
     await mkdir(path.join(root, "adam"), { mode: 0o700 });
-    await writeFile(path.join(root, "adam", "connection.json"), JSON.stringify({
+    await writeFile(path.join(root, "adam", "connection.yaml"), stringify({
       version: 1, uri: neo4jEnvironment.ADAM_NEO4J_URI, username: "neo4j",
       password: "synthetic-file-password", database: "neo4j",
     }), { mode: 0o600 });

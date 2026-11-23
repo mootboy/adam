@@ -5,6 +5,8 @@
             ["node:crypto" :refer [randomUUID]]
             ["node:fs" :as fs]
             ["node:os" :refer [homedir]]
+            ["node:net" :refer [isIP]]
+            ["yaml" :as yaml]
             ["node:path" :as path]))
 
 (def environment-keys
@@ -33,7 +35,7 @@
     (or (= normalized "localhost")
         (= normalized "::1")
         (= normalized "[::1]")
-        (string/starts-with? normalized "127."))))
+        (and (= 4 (isIP normalized)) (string/starts-with? normalized "127.")))))
 
 (defn- uri-error [uri]
   (try
@@ -43,6 +45,9 @@
         (or (not (contains? supported-schemes scheme))
             (seq (.-username url)) (seq (.-password url)))
         "ADAM_NEO4J_URI must be a valid bolt or neo4j URI"
+
+        (= "neo4j" scheme)
+        "routed Neo4j connections require TLS; use neo4j+s or neo4j+ssc, or direct bolt on loopback"
 
         (and (not (contains? encrypted-schemes scheme))
              (not (loopback-host? (.-hostname url))))
@@ -106,7 +111,7 @@
   ([root]
    (when-not (and (string? root) (.isAbsolute path root))
      (reject! "Adam configuration root must be absolute"))
-   (.join path root "adam" "connection.json")))
+   (.join path root "adam" "connection.yaml")))
 
 (defn- safe-stat! [stat directory? private?]
   (when-not (and (contains? #{"linux" "darwin"} js/process.platform)
@@ -141,13 +146,16 @@
                           (let [n (.readSync fs fd buffer offset (- 65537 offset) offset)]
                             (if (zero? n) offset (recur (+ offset n))))))]
              (when (> size 65536) (reject! "Adam connection configuration exceeds 64 KiB"))
-             (normalize-connection
-              (js->clj (js/JSON.parse (.decode (js/TextDecoder. "utf-8" #js {:fatal true})
-                                             (.subarray buffer 0 size))) :keywordize-keys true)))
+             (let [source (.decode (js/TextDecoder. "utf-8" #js {:fatal true}) (.subarray buffer 0 size))
+                   document (.parseDocument yaml source #js {:version "1.2" :uniqueKeys true :merge false})]
+               (when (or (seq (.-errors document)) (seq (.-warnings document)))
+                 (reject! "Invalid Adam connection YAML"))
+               (normalize-connection
+                (js->clj (.toJS document #js {:maxAliasCount 0}) :keywordize-keys true))))
            (finally (.closeSync fs fd))))
        (catch :default error
          (if (= "ENOENT" (.-code error)) nil
-           (reject! "Cannot read Adam connection.json; check JSON settings, ownership, permissions (directory 0700/file 0600) and non-symlink paths")))))))
+           (reject! "Cannot read Adam connection.yaml; check YAML settings, ownership, permissions (directory 0700/file 0600) and non-symlink paths")))))))
 
 (defn save-connection!
   ([settings] (save-connection! settings (configured-config-home)))
@@ -164,13 +172,13 @@
        (read-connection! root)
        (let [fd (.openSync fs temporary "wx" 384)]
          (try
-           (.writeFileSync fs fd (str (js/JSON.stringify (clj->js normalized) nil 2) "\n") "utf8")
+           (.writeFileSync fs fd (.stringify yaml (clj->js normalized) #js {:version "1.2" :lineWidth 0}) "utf8")
            (.fsyncSync fs fd)
            (finally (.closeSync fs fd))))
        (.renameSync fs temporary filename)
        nil
        (catch :default _
-         (reject! "Cannot save Adam connection.json; check settings, ownership, private permissions and non-symlink paths"))
+         (reject! "Cannot save Adam connection.yaml; check settings, ownership, private permissions and non-symlink paths"))
        (finally
          (try (.rmSync fs temporary #js {:force true}) (catch :default _ nil)))))))
 
@@ -187,6 +195,6 @@
      (try
        (if-let [settings (read-connection! root)]
          (assoc (dissoc settings :version) :enabled? true)
-         {:enabled? false :reason (str missing-config-reason "; alternatively run /adam:configure to save a private connection.json")})
+         {:enabled? false :reason (str missing-config-reason "; alternatively run /adam:configure to save a private connection.yaml")})
        (catch :default error
          {:enabled? false :reason (.-message error)})))))

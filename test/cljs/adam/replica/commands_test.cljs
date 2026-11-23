@@ -28,11 +28,11 @@
 (defn- command-handler [registered name]
   (aget (get @registered name) "handler"))
 
-(defn- configuration-case! [{:keys [inputs actions fail-save? fail-probe? cancel-probe? mode use-driver? fail-session? arguments cancel-field?]
+(defn- configuration-case! [{:keys [inputs actions fail-save? fail-probe? cancel-probe? mode use-driver? fail-session? arguments cancel-field? hang-run? hang-session-close? hang-driver-close? cancel-after-run? probe-timeout-ms]
                              :or {inputs ["synthetic-password" "\r"] actions ["Save"] mode "tui"}}]
   (let [{:keys [pi registered]} (fake-pi)
         saved (atom []) probes (atom []) notifications (atom []) closed (atom 0)
-        choices (atom actions) custom-count (atom 0)
+        choices (atom actions) custom-count (atom 0) probe-component (atom nil)
         keys #js {:matches (fn [data action]
                              (= data (get {"tui.select.cancel" "\u001b"
                                            "tui.input.submit" "\r"
@@ -57,9 +57,11 @@
                                        (let [lines ((aget component "render") width)]
                                          (is (not (string/includes? (str lines) "synthetic-password")))
                                          (is (every? #(<= (count %) width) (array-seq lines)))))))
+                                 (when (> number 1) (reset! probe-component component))
                                  (when (and (> number 1) cancel-probe?)
                                    ((aget component "handleInput") "\u001b"))))))}}]
-    (commands/register! pi {:configure-read! (fn [] nil)
+    (commands/register! pi {:configure-probe-timeout-ms (or probe-timeout-ms 15000)
+                            :configure-read! (fn [] nil)
                             :configure-save! (fn [settings]
                                                (when fail-save? (throw (js/Error. "synthetic-password")))
                                                (swap! saved conj settings))
@@ -77,11 +79,19 @@
                                                           (is (= "RETURN 1 AS ok" query))
                                                           (is (= 0 (count (js/Object.keys parameters))))
                                                           (is (= 5000 (aget options "timeout")))
-                                                          (if fail-probe?
-                                                            (js/Promise.reject (js/Error. "synthetic-password"))
-                                                            (js/Promise.resolve #js {})))
-                                                   :close (fn [] (js/Promise.resolve nil))})
-                                   :close (fn [] (swap! closed inc) (js/Promise.resolve nil))})
+                                                          (when cancel-after-run?
+                                                            (js/setTimeout #((aget @probe-component "handleInput") "\u001b") 0))
+                                                          (cond
+                                                            hang-run? (js/Promise. (fn [_ _]))
+                                                            fail-probe? (js/Promise.reject (js/Error. "synthetic-password"))
+                                                            :else (js/Promise.resolve #js {})))
+                                                   :close (fn [] (if hang-session-close?
+                                                                   (js/Promise. (fn [_ _]))
+                                                                   (js/Promise.resolve nil)))})
+                                   :close (fn [] (swap! closed inc)
+                                            (if hang-driver-close?
+                                              (js/Promise. (fn [_ _]))
+                                              (js/Promise.resolve nil)))})
                             :configure-test! (when-not use-driver?
                                                (fn [settings signal]
                                                  (swap! probes conj settings)
@@ -89,11 +99,19 @@
                                                    fail-probe? (js/Promise.reject (js/Error. "synthetic-password"))
                                                    (.-aborted signal) (js/Promise.reject (js/Error. "cancelled"))
                                                    :else (js/Promise.resolve true))))})
-    (-> (js/Promise.resolve ((command-handler registered "adam:configure") (or arguments "") ctx))
-        (.then (fn [_]
+    (let [timer (atom nil)
+          work (js/Promise.resolve ((command-handler registered "adam:configure") (or arguments "") ctx))
+          deadline (js/Promise. (fn [resolve _]
+                                 (reset! timer (js/setTimeout #(resolve :timed-out) 750))))]
+      (-> (js/Promise.race #js [work deadline])
+        (.finally #(js/clearTimeout @timer))
+        (.then (fn [result]
+                 (is (not= :timed-out result) "configuration must settle independently of a pending query/cleanup")
                  (is (not (string/includes? (str @notifications) "synthetic-password")))
                  (when (and use-driver? (seq @probes)) (is (= 1 @closed)))
-                 {:saved @saved :probes @probes :notifications @notifications})))))
+                 (when (or cancel-after-run? probe-timeout-ms)
+                   (is (some #(string/includes? % "cancelled") @notifications)))
+                 {:saved @saved :probes @probes :notifications @notifications}))))))
 
 (deftest configure-command-requires-explicit-save-and-keeps-secrets-off-ui-output
   (async done
@@ -115,7 +133,7 @@
           [{:inputs ["synthetic-password" "\u001b"]} 0 0 nil]
           [{:actions ["Save"] :fail-save? true} 0 0 nil]
           [{:actions ["Test connection" "Save"] :fail-probe? true} 0 1 nil]
-          [{:actions ["Test connection" "Save"] :cancel-probe? true} 0 1 nil]
+          [{:actions ["Test connection" "Save"] :cancel-probe? true} 0 0 nil]
           [{:mode "rpc"} 0 0 nil]
           [{:mode "print"} 0 0 nil]
           [{:mode "json"} 0 0 nil]
@@ -126,7 +144,11 @@
           [{:actions ["Test connection" "Save"] :use-driver? true} 1 1 "synthetic-password"]
           [{:actions ["Test connection"] :use-driver? true :fail-probe? true} 0 1 nil]
           [{:actions ["Test connection"] :use-driver? true :fail-session? true} 0 1 nil]
-          [{:actions ["Test connection"] :use-driver? true :cancel-probe? true} 0 1 nil]
+          [{:actions ["Test connection"] :use-driver? true :cancel-probe? true} 0 0 nil]
+          [{:actions ["Test connection"] :use-driver? true :hang-run? true :hang-session-close? true :cancel-after-run? true} 0 1 nil]
+          [{:actions ["Test connection"] :use-driver? true :hang-run? true :hang-session-close? true :hang-driver-close? true :cancel-after-run? true} 0 1 nil]
+          [{:actions ["Test connection"] :use-driver? true :hang-run? true :hang-session-close? true :hang-driver-close? true :probe-timeout-ms 10} 0 1 nil]
+          [{:actions ["Test connection" "Save"] :use-driver? true :hang-session-close? true :hang-driver-close? true :probe-timeout-ms 10} 0 1 nil]
           [{:inputs ["oops" "\u0015" "\u001b[200~synthetic-" "password\u001b[201~" "\r"]} 1 0 "synthetic-password"]
           [{:inputs ["synthetic-passwordX" "\u007f" "\r"]} 1 0 "synthetic-password"]
           [{:inputs ["\u001b[97u" "\u001b[98;2u" "\r"]} 1 0 "ab"]])
