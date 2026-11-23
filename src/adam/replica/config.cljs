@@ -157,28 +157,46 @@
          (if (= "ENOENT" (.-code error)) nil
            (reject! "Cannot read Adam connection.yaml; check YAML settings, ownership, permissions (directory 0700/file 0600) and non-symlink paths")))))))
 
+(defn- sync-directory! [directory]
+  (let [fd (.openSync fs directory (bit-or (.-O_RDONLY (.-constants fs))
+                                         (.-O_DIRECTORY (.-constants fs))
+                                         (.-O_NOFOLLOW (.-constants fs))))]
+    (try (.fsyncSync fs fd)
+         (finally (.closeSync fs fd)))))
+
 (defn save-connection!
   ([settings] (save-connection! settings (configured-config-home)))
   ([settings root]
    (let [normalized (normalize-connection settings)
          filename (connection-path root)
          directory (.dirname path filename)
-         temporary (.join path directory (str ".connection-" (randomUUID) ".tmp"))]
+         temporary (.join path directory (str ".connection-" (randomUUID) ".tmp"))
+         published? (atom false)]
      (try
-       (.mkdirSync fs directory #js {:recursive true :mode 448})
-       (check-directories! root)
-       ;; Validate any existing destination before replacing it. Invalid or unsafe
-       ;; files need explicit operator repair, not implicit credential overwrite.
-       (read-connection! root)
-       (let [fd (.openSync fs temporary "wx" 384)]
-         (try
-           (.writeFileSync fs fd (.stringify yaml (clj->js normalized) #js {:version "1.2" :lineWidth 0}) "utf8")
-           (.fsyncSync fs fd)
-           (finally (.closeSync fs fd))))
-       (.renameSync fs temporary filename)
+       (let [created (.mkdirSync fs directory #js {:recursive true :mode 448})]
+         (check-directories! root)
+         ;; Validate any existing destination before replacing it. Invalid or unsafe
+         ;; files need explicit operator repair, not implicit credential overwrite.
+         (read-connection! root)
+         (let [fd (.openSync fs temporary "wx" 384)]
+           (try
+             (.writeFileSync fs fd (.stringify yaml (clj->js normalized) #js {:version "1.2" :lineWidth 0}) "utf8")
+             (.fsyncSync fs fd)
+             (finally (.closeSync fs fd))))
+         (.renameSync fs temporary filename)
+         (reset! published? true)
+         ;; File fsync alone does not persist rename. On first save, also sync
+         ;; each newly created directory's entry, bottom-up to its existing parent.
+         (loop [target directory]
+           (sync-directory! target)
+           (when (and created (not= target (.dirname path created)))
+             (recur (.dirname path target)))))
        nil
        (catch :default _
-         (reject! "Cannot save Adam connection.yaml; check settings, ownership, private permissions and non-symlink paths"))
+         (if @published?
+           (throw (ex-info "Adam connection file was replaced, but crash durability could not be confirmed"
+                           {::published? true}))
+           (reject! "Cannot save Adam connection.yaml; check settings, ownership, private permissions and non-symlink paths")))
        (finally
          (try (.rmSync fs temporary #js {:force true}) (catch :default _ nil)))))))
 

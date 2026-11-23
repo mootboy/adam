@@ -14,6 +14,7 @@ All notable changes to adam are documented here.
 ### Fixed
 
 - Require TLS for routed Neo4j connections, including loopback seeds; unencrypted direct Bolt remains available on loopback. Reject DNS names that merely start with `127.` as non-loopback.
+- Sync the connection directory and newly created ancestor entries before reporting save success; distinguish post-rename durability failures from failures that preserve the previous file.
 - Settle connection-test cancellation independently of pending query/cleanup promises and initiate driver shutdown without waiting for session RESET replies.
 
 ## [0.5.3] - 2026-10-30

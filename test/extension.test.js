@@ -111,7 +111,8 @@ test("compiled connection setup saves privately and enables the next host withou
   const tuiUrl = pathToFileURL(peerRequire.resolve("@earendil-works/pi-tui")).href;
   const program = `
     import assert from "node:assert/strict";
-    import { readFileSync, statSync, writeFileSync } from "node:fs";
+    import fs, { readFileSync, statSync, writeFileSync } from "node:fs";
+    import { syncBuiltinESMExports } from "node:module";
     import { spawnSync } from "node:child_process";
     import adam from ${JSON.stringify(new URL("../extension.js", import.meta.url).href)};
     import { getKeybindings } from ${JSON.stringify(tuiUrl)};
@@ -121,19 +122,19 @@ test("compiled connection setup saves privately and enables the next host withou
     await adam(pi);
     assert.equal(events.size, 0);
     const notices = [];
-    let action = "Cancel";
+    let action = "Cancel", password = "synthetic-only-secret";
     const ctx = { hasUI: true, mode: "tui", ui: {
       input: async () => "",
       select: async () => action,
       notify: (m) => notices.push(m),
       custom: (factory) => new Promise(resolve => {
         const component = factory({ requestRender() {} }, {}, getKeybindings(), resolve);
-        for (const key of ["synthetic-only-secret", "\\r"]) {
+        for (const key of [password, "\\r"]) {
           component.handleInput(key);
           for (const width of [1, 20, 100]) {
             const lines = component.render(width);
             assert.ok(lines.every(line => line.length <= width));
-            assert.ok(!lines.join("").includes("synthetic-only-secret"));
+            assert.ok(!lines.join("").includes(password));
           }
         }
         component.dispose?.();
@@ -150,6 +151,31 @@ test("compiled connection setup saves privately and enables the next host withou
     assert.equal(statSync(process.env.XDG_CONFIG_HOME + "/adam").mode & 0o777, 0o700);
     assert.ok(!notices.join("").includes(saved.password));
     assert.ok(notices.some(m => m.includes("Restart")));
+    // Exercise actual compiled save/error propagation, not an injected save stub.
+    const originalSync = fs.fsyncSync;
+    for (const phase of ["file", "directory"]) {
+      const before = readFileSync(filename, "utf8");
+      password = "synthetic-sync-" + phase;
+      fs.fsyncSync = fd => {
+        if ((phase === "directory") === fs.fstatSync(fd).isDirectory()) throw new Error(password);
+        originalSync(fd);
+      };
+      syncBuiltinESMExports();
+      try { await commands.get("adam:configure").handler("", ctx); }
+      finally { fs.fsyncSync = originalSync; syncBuiltinESMExports(); }
+      assert.ok(!notices.at(-1).includes(password), "raw fsync errors must remain private");
+      if (phase === "file") {
+        assert.equal(readFileSync(filename, "utf8"), before);
+        assert.match(notices.at(-1), /no settings saved/);
+      } else {
+        assert.equal(parse(readFileSync(filename, "utf8")).password, password);
+        assert.match(notices.at(-1), /replaced.*durability/);
+        assert.ok(!notices.at(-1).includes("no settings saved"));
+      }
+    }
+    password = saved.password;
+    await commands.get("adam:configure").handler("", ctx);
+    assert.match(notices.at(-1), /saved privately/);
     const previous = readFileSync(filename, "utf8");
     action = "Cancel";
     await commands.get("adam:configure").handler("", ctx);
